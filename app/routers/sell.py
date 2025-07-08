@@ -20,7 +20,6 @@ from aiogram.types.input_file import FSInputFile
 from app.routers.utils import clear_bot_messages, last_bot_messages, sent_photo_messages
 
 
-
 # ========== КЭШИ для альбомов ==========
 media_group_cache = {}  # {group_id: [file_id, ...]}
 media_group_tasks = {}                 # {group_id: asyncio.Task}
@@ -138,6 +137,8 @@ async def cmd_sell(m: Message, state: FSMContext):
     )
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
     await state.set_state(Sell.city)
+    print("msg_id saved:", msg.message_id, "for chat", m.chat.id)
+
 
 
 

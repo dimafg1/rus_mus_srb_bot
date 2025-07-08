@@ -51,28 +51,9 @@ PAGE = 5  # Количество записей на странице
 listing_message_ids: Dict[int, Dict[int, int]] = {}
 expanded_listing_by_chat: Dict[int, int] = {}
 # Новый словарь для хранения id сообщений с фото
-sent_photo_messages: Dict[int, list] = {}
 
 # Set up logging to see debug output.
 logging.basicConfig(level=logging.DEBUG)
-last_bot_messages: Dict[int, List[int]] = {}
-
-async def clear_bot_messages(chat_id: int, bot):
-    # Очищаем текстовые/инлайн сообщения
-    msg_ids = last_bot_messages.pop(chat_id, [])
-    for msg_id in msg_ids:
-        try:
-            await bot.delete_message(chat_id, msg_id)
-        except Exception:
-            pass
-    # Очищаем фото и медиа
-    photo_msg_ids = sent_photo_messages.pop(chat_id, [])
-    for msg_id in photo_msg_ids:
-        try:
-            await bot.delete_message(chat_id, msg_id)
-        except Exception:
-            pass
-
 
 
 # ───────────────────────── Settings ────────────────────────── #
@@ -114,11 +95,13 @@ dp.include_router(vacancy_router)
 # ───────────────── Main Menu (Reply) ────────────────────────── #
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📂 Каталог"), KeyboardButton(text="💸 Барахолка")],
-        [KeyboardButton(text="🤝 Ищу"), KeyboardButton(text="🗣 Предлагаю"), KeyboardButton(text="📅 Афиша")],
+        [KeyboardButton(text="📂 Каталог"), KeyboardButton(text="🤝 Ищу")],
+        [KeyboardButton(text="📅 Афиша"), KeyboardButton(text="💸 Барахолка")],
+        [KeyboardButton(text="❓ Помощь")],
     ],
     resize_keyboard=True,
 )
+
 
 # ───────────────── Inline Keyboards ────────────────────────── #
 def catalog_inline_initial() -> InlineKeyboardMarkup:
@@ -355,12 +338,12 @@ async def catalog_confirm_handler(cb: CallbackQuery, state: FSMContext):
 
 # ───────────── MARKET (Барахолка) Handlers ───────────── #
 @dp.message(lambda m: m.text == "💸 Барахолка")
-async def open_market(m: Message):
+async def open_market(m: Message, state: FSMContext):
     chat_id = m.chat.id
-    await clear_bot_messages(m.chat.id, m.bot)
+    await clear_bot_messages(chat_id, m.bot)
+    await state.clear()  # Сбрасываем любые незавершённые сценарии
     msg = await m.answer("💸 Барахолка – выберите действие:", reply_markup=market_inline())
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-
+    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
 
     # Удаляем старое меню поиска, если оно есть
     old_menu_id = last_search_menu_message.pop(chat_id, None)
