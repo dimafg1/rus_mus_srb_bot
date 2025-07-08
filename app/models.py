@@ -72,3 +72,16 @@ class Vacancy(SQLModel, table=True):
     owner_id: int          # Telegram user ID автора
     created_at: datetime = Field(default_factory=datetime.utcnow)
     is_closed: bool = Field(default=False)
+
+
+# ————————————————————————————————————————————————————————————
+# Тексты для сообщений, меню, справки и т.п. (BotText)
+# ————————————————————————————————————————————————————————————
+class BotText(SQLModel, table=True):
+    __tablename__ = "BotText"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(nullable=False, index=True)
+    title: Optional[str] = None
+    text: str
+    lang: str = Field(default="ru", index=True)
+    updated_at: Optional[datetime] = None

@@ -28,6 +28,8 @@ from aiogram.fsm.state import StatesGroup, State
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.routers.utils import clear_bot_messages, last_bot_messages, sent_photo_messages
+from app.texts import get_text
+
 
 
 last_search_query_message: Dict[int, int] = {}     # Сообщение "Введите запрос..."
@@ -210,9 +212,13 @@ async def fetch_listings(city_id: int, cat_id: int, offset: int = 0) -> List[Lis
         return (await s.execute(q)).scalars().all()
 
 # ───────────────── Handlers ───────────────────────────── #
-@dp.message(CommandStart())
-async def cmd_start(m: Message):
-    await m.answer("👋 Привет!\nВыберите раздел:", reply_markup=MAIN_KB)
+# @dp.message(CommandStart())
+# async def cmd_start(m: Message):
+#    greeting = await get_text("welcome", "ru")
+#    if not greeting:
+#        greeting = "👋 Привет!\nВыберите раздел:"
+#    await m.answer(greeting, reply_markup=MAIN_KB)
+
 
 @dp.message(lambda m: m.text and m.text.lower() in ["отмена", "cancel"])
 async def cancel_handler(m: Message, state: FSMContext):
@@ -585,18 +591,40 @@ async def show_listing_photo(cb: CallbackQuery):
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    args = message.get_args()  # Получаем deep link параметр
-    if args and args.startswith("toggle_"):
-        listing_id = args.split("_", 1)[1]
-        # Здесь вам нужно получить данные объявления по listing_id и отобразить их.
+    # 1. Обработка deep link, если он есть (aiogram v3!)
+    deep_link = ""
+    if message.text and " " in message.text:
+        deep_link = message.text.split(" ", 1)[1]
+    if deep_link and deep_link.startswith("toggle_"):
+        listing_id = deep_link.split("_", 1)[1]
         await message.answer(f"Показываю детали объявления с id: {listing_id}")
         return
-        
-    reply_kb = ReplyKeyboardMarkup(keyboard=[
-        [InlineKeyboardButton(text="📂 Каталог", callback_data="catalog_start")],
-        [InlineKeyboardButton(text="💸 Барахолка", callback_data="market_start")]
-    ], resize_keyboard=True)
-    await message.answer("Привет! Выберите раздел:", reply_markup=reply_kb)
+
+    # 2. Получаем приветствие из базы
+    welcome = await get_text("welcome", "ru")
+    if not welcome:
+        welcome = "👋 Привет всем!\nВыберите раздел:"
+
+    # 3. Отправляем приветствие с клавиатурой MAIN_KB
+    await message.answer(welcome, reply_markup=MAIN_KB)
+
+
+@dp.message(lambda m: m.text and m.text.strip().lower() in ["помощь", "❓ помощь", "help"])
+async def help_handler(m: Message, state: FSMContext):
+    await clear_bot_messages(m.chat.id, m.bot)  # Удаляет старые сообщения бота
+
+    help_text = await get_text("help", "ru")
+    if not help_text:
+        help_text = (
+            "Справка по использованию бота:\n"
+            "• Выберите раздел в меню ниже\n"
+            "• Для возврата используйте кнопку 'Назад'\n"
+            "• Введите 'отмена' для отмены любого действия"
+        )
+    msg = await m.answer(help_text, parse_mode="HTML")
+    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+
+
 
 @dp.callback_query(F.data.startswith("toggle:"))
 async def toggle_listing(cb: CallbackQuery):
