@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from typing import List, Dict, Optional
 from datetime import datetime
 import logging
@@ -34,8 +35,7 @@ from app.texts import get_text
 
 last_search_query_message: Dict[int, int] = {}     # Сообщение "Введите запрос..."
 last_search_menu_message: Dict[int, int] = {}      # Меню с результатами
-
-
+last_reply_menu_messages: Dict[int, list] = defaultdict(list)   # ID reply-меню по чатам
 
 async def show_market_search_results(m, state, results):
     keyboard = [
@@ -228,9 +228,20 @@ async def cancel_handler(m: Message, state: FSMContext):
 
 @dp.message(lambda m: m.text == "📂 Каталог")
 async def open_catalog(m: Message):
-    await clear_bot_messages(m.chat.id, m.bot)
+    chat_id = m.chat.id
+    # Удаляем все старые reply-меню
+    old_msg_ids = last_reply_menu_messages[chat_id]
+    for old_id in old_msg_ids:
+        try:
+            await m.bot.delete_message(chat_id, old_id)
+        except Exception:
+            pass
+    last_reply_menu_messages[chat_id] = []
+
+    await clear_bot_messages(chat_id, m.bot)
     msg = await m.answer("🏙 Каталог\nВыберите действие:", reply_markup=catalog_inline_initial())
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
+    last_reply_menu_messages[chat_id].append(msg.message_id)
 
 @dp.callback_query(F.data == "apply_catalog")
 async def apply_catalog_handler(cb: CallbackQuery, state: FSMContext):
@@ -345,11 +356,25 @@ async def catalog_confirm_handler(cb: CallbackQuery, state: FSMContext):
 # ───────────── MARKET (Барахолка) Handlers ───────────── #
 @dp.message(lambda m: m.text == "💸 Барахолка")
 async def open_market(m: Message, state: FSMContext):
-    chat_id = m.chat.id
+    chat_id = m.chat.id  # <-- вот это обязательно!
+
+    # Удаляем ВСЕ старые reply-меню
+    old_msg_ids = last_reply_menu_messages[chat_id]
+    for old_id in old_msg_ids:
+        try:
+            await m.bot.delete_message(chat_id, old_id)
+        except Exception:
+            pass
+    last_reply_menu_messages[chat_id] = []
+
+    # Удаляем все старые сообщения бота (карточки, меню и т.д.)
     await clear_bot_messages(chat_id, m.bot)
-    await state.clear()  # Сбрасываем любые незавершённые сценарии
+    await state.clear()  # Сброс FSM
+
+    # Отправляем новое меню
     msg = await m.answer("💸 Барахолка – выберите действие:", reply_markup=market_inline())
-    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
+    last_reply_menu_messages[chat_id].append(msg.message_id)
 
     # Удаляем старое меню поиска, если оно есть
     old_menu_id = last_search_menu_message.pop(chat_id, None)
@@ -366,7 +391,6 @@ async def open_market(m: Message, state: FSMContext):
             await m.bot.delete_message(chat_id, old_query_id)
         except Exception:
             pass
-
 
 
 
@@ -395,7 +419,7 @@ async def market_city(cb: CallbackQuery):
         reply_markup=markup, 
         parse_mode="HTML"
     )
-    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
 
     await cb.answer()
 
@@ -457,7 +481,7 @@ async def market_list(cb: CallbackQuery):
         reply_markup=markup,
         parse_mode="HTML"
     )
-    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
     await cb.answer()
 
 
@@ -611,8 +635,16 @@ async def cmd_start(message: Message):
 
 @dp.message(lambda m: m.text and m.text.strip().lower() in ["помощь", "❓ помощь", "help"])
 async def help_handler(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)  # Удаляет старые сообщения бота
+    chat_id = m.chat.id
+    old_msg_ids = last_reply_menu_messages[chat_id]
+    for old_id in old_msg_ids:
+        try:
+            await m.bot.delete_message(chat_id, old_id)
+        except Exception:
+            pass
+    last_reply_menu_messages[chat_id] = []
 
+    await clear_bot_messages(chat_id, m.bot)
     help_text = await get_text("help", "ru")
     if not help_text:
         help_text = (
@@ -622,7 +654,9 @@ async def help_handler(m: Message, state: FSMContext):
             "• Введите 'отмена' для отмены любого действия"
         )
     msg = await m.answer(help_text, parse_mode="HTML")
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
+    last_reply_menu_messages[chat_id].append(msg.message_id)
+
 
 
 
@@ -729,9 +763,20 @@ async def item_detail_handler(cb: CallbackQuery):
 
 @dp.message(lambda m: m.text == "🤝 Ищу")
 async def open_isk(m: Message):
-    await clear_bot_messages(m.chat.id, m.bot)
+    chat_id = m.chat.id
+    old_msg_ids = last_reply_menu_messages[chat_id]
+    for old_id in old_msg_ids:
+        try:
+            await m.bot.delete_message(chat_id, old_id)
+        except Exception:
+            pass
+    last_reply_menu_messages[chat_id] = []
+
+    await clear_bot_messages(chat_id, m.bot)
     msg = await m.answer("🤝 Ищу – выберите действие:", reply_markup=vacancy_main_inline_view("vcity"))
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
+    last_reply_menu_messages[chat_id].append(msg.message_id)
+
 
 
 @dp.callback_query(F.data.startswith("vcity:"))
@@ -780,11 +825,11 @@ async def receive_vacancy_text(m: Message, state: FSMContext):
                     ]))
     await state.clear()
 
-@dp.message(lambda m: m.text == "🗣 Предлагаю")
-async def open_predl(m: Message):
-    await clear_bot_messages(m.chat.id, m.bot)
-    msg = await m.answer("🗣 Предлагаю – выберите действие:", reply_markup=vacancy_main_inline_view("pcity"))
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+#@dp.message(lambda m: m.text == "🗣 Предлагаю")
+#async def open_predl(m: Message):
+#    await clear_bot_messages(m.chat.id, m.bot)
+#    msg = await m.answer("🗣 Предлагаю – выберите действие:", reply_markup=vacancy_main_inline_view("pcity"))
+#    last_bot_messages[m.chat.id] = [msg.message_id]
 
 
 @dp.callback_query(F.data.startswith("pcity:"))
@@ -803,11 +848,23 @@ async def predl_start_cb(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ExtendedVacancyForm.city)
     await cb.answer()
 
+# -------- АФИША --------
 @dp.message(lambda m: m.text == "📅 Афиша")
 async def open_events(m: Message):
-    await clear_bot_messages(m.chat.id, m.bot)
+    chat_id = m.chat.id
+    old_msg_ids = last_reply_menu_messages[chat_id]
+    for old_id in old_msg_ids:
+        try:
+            await m.bot.delete_message(chat_id, old_id)
+        except Exception:
+            pass
+    last_reply_menu_messages[chat_id] = []
+
+    await clear_bot_messages(chat_id, m.bot)
     msg = await m.answer("📅 Афиша – выберите действие:", reply_markup=events_main_inline())
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
+    last_reply_menu_messages[chat_id].append(msg.message_id)
+
 
 
 @dp.callback_query(F.data.startswith("ecity:"))
@@ -1168,7 +1225,7 @@ async def market_menu_back(cb: CallbackQuery, state: FSMContext):
 
     await state.clear()
     msg = await cb.message.answer("💸 Барахолка – выберите действие:", reply_markup=market_inline())
-    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    last_bot_messages[chat_id] = [msg.message_id]
     await cb.answer()
 
 
