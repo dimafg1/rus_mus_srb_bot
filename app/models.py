@@ -85,3 +85,17 @@ class BotText(SQLModel, table=True):
     text: str
     lang: str = Field(default="ru", index=True)
     updated_at: Optional[datetime] = None
+
+# ————————————————————————————————————————————————————————————
+# Меню (Menu) для главного и подменю
+# ————————————————————————————————————————————————————————————
+class Menu(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(nullable=False, index=True)
+    parent_code: str = Field(nullable=False, index=True)
+    text: str
+    callback_data: str
+    order_num: int
+    visible: int
+    lang: str
+    icon: Optional[str] = None

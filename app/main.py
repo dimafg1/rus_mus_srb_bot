@@ -10,32 +10,57 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardMarkup
+    ReplyKeyboardMarkup,
+    InputMediaPhoto,
+    KeyboardButton,
 )
-from aiogram.types.keyboard_button import KeyboardButton
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State
+from aiogram.fsm.state import State, StatesGroup
+
 from pydantic_settings import BaseSettings
 from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
 
+# --- Приложение/Бот ---
 from app.database import init_db, SessionLocal
 from app.models import City, Category, Item, Listing
+from app.keyboards import (
+    main_inline_menu,
+    market_inline,
+    photo_keyboard,
+    confirm_keyboard,
+    sold_keyboard,
+    delete_keyboard,
+    cities_inline,
+    equip_inline,
+    catalog_inline_initial,
+    catalog_city_inline,
+    catalog_application_category_inline,
+    vacancy_main_inline_view,
+    vacancy_category_inline,
+    musicians_sub_inline,
+    events_main_inline,
+)
 from app.routers.sell import router as sell_router
 from app.routers.vacancy import router as vacancy_router, VacancyForm
-from aiogram.fsm.state import StatesGroup, State
-
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from app.routers.utils import clear_bot_messages, last_bot_messages, sent_photo_messages
+from app.routers.utils import (
+    clear_bot_messages,
+    last_bot_messages,
+    sent_photo_messages,
+    my_listing_messages,
+)
 from app.texts import get_text
+
 
 
 
 last_search_query_message: Dict[int, int] = {}     # Сообщение "Введите запрос..."
 last_search_menu_message: Dict[int, int] = {}      # Меню с результатами
 last_reply_menu_messages: Dict[int, list] = defaultdict(list)   # ID reply-меню по чатам
+my_listing_messages: Dict[int, list] = defaultdict(list)
+
 
 async def show_market_search_results(m, state, results):
     keyboard = [
@@ -45,6 +70,20 @@ async def show_market_search_results(m, state, results):
     keyboard.append([InlineKeyboardButton(text="❌ Новый поиск", callback_data="market_search_new")])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await m.answer("Найдено объявлений:", reply_markup=markup)
+
+async def safe_edit_or_send(cb: CallbackQuery, text: str, reply_markup=None, parse_mode="HTML"):
+    chat_id = cb.message.chat.id
+    try:
+        msg = await cb.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    except Exception:
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        msg = await cb.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
 
 
 PAGE = 5  # Количество записей на странице
@@ -94,50 +133,47 @@ class MarketSearch(StatesGroup):
 dp.include_router(sell_router)
 dp.include_router(vacancy_router)
 
-# ───────────────── Main Menu (Inline) ────────────────────────── #
-def main_inline_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📂 Каталог", callback_data="go_catalog"),
-                InlineKeyboardButton(text="🤝 Ищу", callback_data="go_isk")
-            ],
-            [
-                InlineKeyboardButton(text="📅 Афиша", callback_data="go_events"),
-                InlineKeyboardButton(text="💸 Барахолка", callback_data="go_market")
-            ],
-            [
-                InlineKeyboardButton(text="❓ Помощь", callback_data="go_help")
-            ]
-        ]
-    )
 
 @dp.callback_query(F.data == "go_catalog")
 async def go_catalog(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
     await state.clear()
-    await cb.message.edit_text("🏙 Каталог\nВыберите действие:", reply_markup=catalog_inline_initial())
+    await safe_edit_or_send(cb, "🏙 Каталог\nВыберите действие:", catalog_inline_initial())
     await cb.answer()
+
 
 @dp.callback_query(F.data == "go_market")
 async def go_market(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
     await state.clear()
-    await cb.message.edit_text("💸 Барахолка – выберите действие:", reply_markup=market_inline())
+    await safe_edit_or_send(cb, "💸 Барахолка – выберите действие:", market_inline())
     await cb.answer()
+
 
 @dp.callback_query(F.data == "go_isk")
 async def go_isk(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
     await state.clear()
-    await cb.message.edit_text("🤝 Ищу – выберите действие:", reply_markup=vacancy_main_inline_view("vcity"))
+    await safe_edit_or_send(cb, "🤝 Ищу – выберите действие:", vacancy_main_inline_view("vcity"))
     await cb.answer()
+
 
 @dp.callback_query(F.data == "go_events")
 async def go_events(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
     await state.clear()
-    await cb.message.edit_text("📅 Афиша – выберите действие:", reply_markup=events_main_inline())
+    await safe_edit_or_send(cb, "📅 Афиша – выберите действие:", events_main_inline())
     await cb.answer()
+
 
 @dp.callback_query(F.data == "go_help")
 async def go_help(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
     help_text = await get_text("help", "ru")
     if not help_text:
         help_text = (
@@ -148,103 +184,84 @@ async def go_help(cb: CallbackQuery, state: FSMContext):
         )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
+            [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
         ]
     )
-    await cb.message.edit_text(help_text, reply_markup=kb, parse_mode="HTML")
+    await safe_edit_or_send(cb, help_text, kb)
     await cb.answer()
 
 
+
+
+from app.models import Menu  # Не забудьте импортировать модель Menu
+
+# ↓↓↓ новая функция для построения клавиатуры главного меню ↓↓↓
+async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Menu)
+            .where(Menu.parent_code == "main_menu", Menu.visible == 1, Menu.lang == lang)
+            .order_by(Menu.order_num)
+        )
+        rows = result.scalars().all()
+
+    # Группируем по две кнопки в строку
+    keyboard = []
+    temp_row = []
+    for row in rows:
+        btn = InlineKeyboardButton(
+            text=(f"{row.icon} " if row.icon else "") + row.text,
+            callback_data=row.callback_data
+        )
+        temp_row.append(btn)
+        if len(temp_row) == 2:
+            keyboard.append(temp_row)
+            temp_row = []
+    if temp_row:  # если нечетное число, добавляем последнюю кнопку
+        keyboard.append(temp_row)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+
+# ↓↓↓ обновленный хендлер ↓↓↓
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    # Удалить сообщение с приглашением к поиску
+    query_msg_id = last_search_query_message.pop(chat_id, None)
+    if query_msg_id:
+        try:
+            await cb.bot.delete_message(chat_id, query_msg_id)
+        except Exception:
+            pass
+
+    # Удалить меню поиска (если вдруг есть)
+    menu_msg_id = last_search_menu_message.pop(chat_id, None)
+    if menu_msg_id:
+        try:
+            await cb.bot.delete_message(chat_id, menu_msg_id)
+        except Exception:
+            pass
+
+    # Удалить прочие служебные сообщения
+    await clear_bot_messages(chat_id, cb.bot)
+
     await state.clear()
+
     welcome = await get_text("welcome", "ru")
     if not welcome:
         welcome = "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
-    await cb.message.edit_text(welcome, reply_markup=main_inline_menu(), parse_mode="HTML")
+
+    # Вот здесь — новый способ построения меню!
+    menu_markup = await build_main_menu(lang="ru")
+
+    await safe_edit_or_send(cb, welcome, menu_markup)
     await cb.answer()
 
 
 
-# ───────────────── Inline Keyboards ────────────────────────── #
-def catalog_inline_initial() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Белград", callback_data="citysel:belgrade"),
-         InlineKeyboardButton(text="Нови Сад", callback_data="citysel:novisad")],
-        [InlineKeyboardButton(text="📝 ПОДАТЬ ЗАЯВКУ", callback_data="apply_catalog")],
-        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
-    ])
 
-def catalog_city_inline(city_slug: str, categories: List[Category]) -> InlineKeyboardMarkup:
-    alternative = "belgrade" if city_slug != "belgrade" else "novisad"
-    buttons = [[InlineKeyboardButton(text=c.name, callback_data=f"cat:{city_slug}:{c.slug}")]
-               for c in categories]
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog:back")])
-    buttons.append([InlineKeyboardButton(text=("Белград" if alternative == "belgrade" else "Нови Сад"),
-                                          callback_data=f"citysel:{alternative}")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def catalog_application_category_inline() -> InlineKeyboardMarkup:
-    options = [
-        ("Музыканцы", "capcat:musicians"),
-        ("Вокал", "capcat:vocal"),
-        ("Коллектив/Группа", "capcat:group"),
-        ("Звук/Продакшн", "capcat:production"),
-        ("Преподавание", "capcat:teaching"),
-        ("Студии и площадки", "capcat:studio"),
-        ("Оборудование", "capcat:equipment"),
-        ("Организация и менеджмент", "capcat:management"),
-        ("Подкасты", "capcat:podcasts"),
-        ("Другое", "capcat:other")
-    ]
-    inline_buttons = [[InlineKeyboardButton(text=txt, callback_data=cb)] for txt, cb in options]
-    inline_buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog:back")])
-    return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
-
-def market_inline() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔎 Поиск по объявлениям", callback_data="market_search")],
-        [InlineKeyboardButton(text="Белград", callback_data="mcity:belgrade"),
-         InlineKeyboardButton(text="Нови Сад", callback_data="mcity:novisad")],
-        [InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ОБЪЯВЛЕНИЕ", callback_data="sell_start")],
-        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
-    ])
-
-
-def vacancy_main_inline_view(prefix: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Белград", callback_data=f"{prefix}:belgrade"),
-         InlineKeyboardButton(text="Нови Сад", callback_data=f"{prefix}:novisad")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")],
-        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
-    ])
-
-def vacancy_category_inline() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Вокал", callback_data="vcat:vocal")],
-        [InlineKeyboardButton(text="Музыканты", callback_data="vcat:musicians")],
-        [InlineKeyboardButton(text="Звукорежиссер", callback_data="vcat:sound")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")],
-        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
-    ])
-
-def musicians_sub_inline() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="клавиши", callback_data="vsub:keys")],
-        [InlineKeyboardButton(text="гитара", callback_data="vsub:guitar")],
-        [InlineKeyboardButton(text="бас", callback_data="vsub:bass")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vcat:back")],
-        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
-    ])
-
-def events_main_inline() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Белград", callback_data="ecity:belgrad"),
-         InlineKeyboardButton(text="Нови Сад", callback_data="ecity:novisad")],
-        [InlineKeyboardButton(text="Ближайшие мероприятия", callback_data="events:near"),
-         InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ИНФОРМАЦИЮ", callback_data="event_new")],
-         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="main_menu")]
-    ])
 
 # ───────────────── Database Helpers ───────────────────────────── #
 async def city_by_slug(slug: str) -> City:
@@ -492,23 +509,131 @@ async def market_list(cb: CallbackQuery):
     await cb.answer()
 
 
+@dp.callback_query(F.data == "my_listings")
+async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    user_id = cb.from_user.id
+
+    # Удаляем карточки моих объявлений
+    for msg_id in my_listing_messages.get(chat_id, []):
+        try:
+            await cb.bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass
+    my_listing_messages[chat_id] = []
+
+    await clear_bot_messages(chat_id, cb.bot)
+    await state.clear()
+
+    async with SessionLocal() as s:
+        listings = (await s.execute(
+            select(Listing)
+            .where(Listing.owner_id == user_id)
+            .order_by(Listing.created_at.desc())
+            .limit(10)
+        )).scalars().all()
+
+    if not listings:
+        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", await build_main_menu())
+        await cb.answer()
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(
+            text=f"{listing.title}" + (f" — {listing.price}" if listing.price else ""),
+            callback_data=f"listing:{listing.id}:{listing.city_id}:{listing.category_id}:my"
+        )]
+        for listing in listings
+    ]
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_market")])
+    keyboard.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    await safe_edit_or_send(cb, "<b>Ваши объявления:</b>\nВыберите для просмотра или управления.", markup)
+    await cb.answer()
 
 
+@dp.callback_query(F.data == "my_listings_back")
+async def my_listings_back_handler(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    user_id = cb.from_user.id
+
+    # Удаляем все карточки объявлений, отправленные ранее (фото и текст)
+    if my_listing_messages.get(chat_id):
+        for msg_id in my_listing_messages[chat_id]:
+            try:
+                await cb.bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+        my_listing_messages[chat_id] = []
+
+    # Также удаляем само сообщение с кнопками (если оно не из списка выше)
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    # Удаляем прочие служебные сообщения (например, подсказки)
+    await clear_bot_messages(chat_id, cb.bot)
+
+    # Показываем список ваших объявлений
+    async with SessionLocal() as s:
+        listings = (await s.execute(
+            select(Listing)
+            .where(Listing.owner_id == user_id)
+            .order_by(Listing.created_at.desc())
+            .limit(10)
+        )).scalars().all()
+
+    if not listings:
+        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", await build_main_menu())
+        await cb.answer()
+        return
 
 
+    keyboard = [
+        [InlineKeyboardButton(
+            text=f"{listing.title}" + (f" — {listing.price}" if listing.price else ""),
+            callback_data=f"listing:{listing.id}:{listing.city_id}:{listing.category_id}:my"
+        )]
+        for listing in listings
+    ]
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_market")])
+    keyboard.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    await safe_edit_or_send(cb, "<b>Ваши объявления:</b>\nВыберите для просмотра или управления.", markup)
+    await cb.answer()
 
 
 
 
 @dp.callback_query(F.data.startswith("listing:"))
 async def show_listing_details(cb: CallbackQuery):
-    _, listing_id, city_slug, cat_slug = cb.data.split(":")
-    listing_id = int(listing_id)
     chat_id = cb.message.chat.id
 
-    # 1. Заменяем меню на "Загрузка объявления..."
-    await cb.message.edit_text("Загрузка объявления...")
+    # Удаляем старое меню объявлений (то, что с кнопкой Назад)
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    parts = cb.data.split(":")
+    listing_id = int(parts[1])
+    city_slug = parts[2]
+    cat_slug = parts[3]
+    from_my = len(parts) > 4 and parts[4] == "my"
+    chat_id = cb.message.chat.id
 
+    # --- Удаляем все старые карточки моих объявлений (Вариант А) ---
+    if from_my:
+        for msg_id in my_listing_messages.get(chat_id, []):
+            try:
+                await cb.bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+        my_listing_messages[chat_id] = []
+
+    # --- Загрузка объявления из БД ---
     async with SessionLocal() as s:
         listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
@@ -520,29 +645,24 @@ async def show_listing_details(cb: CallbackQuery):
         caption += f"{listing.descr}\n"
     caption += f"Контакт: {listing.contact}"
 
-    # Кнопки: "Назад" и "Связаться с продавцом" (если есть)
     buttons = []
     if listing.owner_id == cb.from_user.id:
-        # Только для автора — "Продано"
-        buttons.append([InlineKeyboardButton(text="Продано", callback_data=f"sell_sold:{listing.id}")])
+        buttons.append([InlineKeyboardButton(text="Удалить объявление", callback_data=f"sell_sold:{listing.id}")])
     elif listing.contact and listing.contact.startswith("@"):
-        # Для всех остальных — "Связаться с продавцом"
         username = listing.contact.lstrip("@")
         buttons.append([InlineKeyboardButton(text="💬 Связаться с продавцом", url=f"https://t.me/{username}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад к объявлениям", callback_data=f"mlist:{city_slug}:{cat_slug}")])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
+    # Кнопка "Назад"
+    if from_my:
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад к моим объявлениям", callback_data="my_listings_back")])
+    else:
+        # ⬇️⬇️ возвращаем с помощью слагов!
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад к объявлениям", callback_data=f"mlist:{city_slug}:{cat_slug}")])
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     sent_ids = []
-    if photo_ids:
+    if photo_ids and photo_ids[0]:
         if len(photo_ids) == 1:
-            msg = await cb.message.answer_photo(
-                photo_ids[0],
-                caption=caption,
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
+            msg = await cb.message.answer_photo(photo_ids[0], caption=caption, reply_markup=markup, parse_mode="HTML")
             sent_ids.append(msg.message_id)
         else:
             from aiogram.types import InputMediaPhoto
@@ -550,27 +670,25 @@ async def show_listing_details(cb: CallbackQuery):
             for pid in photo_ids[1:]:
                 media_group.append(InputMediaPhoto(media=pid))
             msgs = await cb.message.answer_media_group(media=media_group)
-            # Для альбома reply_markup нельзя, поэтому отправим кнопки отдельно
-            msg2 = await cb.message.answer("Контакты/Управление:", reply_markup=keyboard)
+            msg2 = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
             sent_ids.extend([m.message_id for m in msgs])
             sent_ids.append(msg2.message_id)
     else:
-        msg = await cb.message.answer(caption, reply_markup=keyboard, parse_mode="HTML")
+        msg = await cb.message.answer(caption, reply_markup=markup, parse_mode="HTML")
         sent_ids.append(msg.message_id)
-        
-    # Сохраняем ID сообщений для удаления при возврате
-    if sent_ids:
-        sent_photo_messages.setdefault(chat_id, []).extend(sent_ids)
 
-    # 2. Удаляем сообщение "Загрузка объявления..."
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
+    # --- Запоминаем, чтобы потом чистить (только для моих объявлений) ---
+    if from_my and sent_ids:
+        my_listing_messages[chat_id].extend(sent_ids)
+
+    # Для обычных объявлений (не мои) — остается sent_photo_messages, если используете
+    if not from_my and sent_ids:
+        sent_photo_messages.setdefault(chat_id, []).extend(sent_ids)
+    if from_my and sent_ids:
+        my_listing_messages[chat_id].extend(sent_ids)
+        print("my_listing_messages[{}]: {}".format(chat_id, my_listing_messages[chat_id]))
 
     await cb.answer()
-
-
 
 
 
@@ -622,11 +740,14 @@ async def show_listing_photo(cb: CallbackQuery):
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
     await state.clear()
     welcome = await get_text("welcome", "ru")
     if not welcome:
         welcome = "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
-    await message.answer(welcome, reply_markup=main_inline_menu(), parse_mode="HTML")
+    msg = await message.answer(welcome, reply_markup=await build_main_menu(), parse_mode="HTML")
+    last_bot_messages[chat_id].append(msg.message_id)   # ДОБАВЛЯЕМ
 
 
 
@@ -869,13 +990,13 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
         if back:
             buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="market_menu_back"))
         if main:
-            buttons.append(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
+            buttons.append(InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu"))
         return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
     # Сначала отправляем кнопки
     nav_msg = await cb.bot.send_message(
         chat_id,
-        "⬅️ Назад | 🏠 Главное меню",
+        "⬅️ Назад | ☰ Главное меню",
         reply_markup=nav_kb()  # ваша функция генерации кнопок
     )
 
@@ -1025,15 +1146,6 @@ async def market_search_back(cb: CallbackQuery, state: FSMContext):
 async def market_search_new(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text("Введите новый поисковый запрос:")
     await state.set_state(MarketSearch.waiting_for_query)
-    await cb.answer()
-
-@dp.callback_query(F.data == "main_menu")
-async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    welcome = await get_text("welcome", "ru")
-    if not welcome:
-        welcome = "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
-    await cb.message.edit_text(welcome, reply_markup=main_inline_menu(), parse_mode="HTML")
     await cb.answer()
 
 

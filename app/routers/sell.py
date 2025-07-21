@@ -7,6 +7,48 @@ from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 )
+from app.keyboards import (
+    main_inline_menu,
+    market_inline,
+    photo_keyboard,
+    confirm_keyboard,
+    sold_keyboard,
+    delete_keyboard,
+    cities_inline,
+    equip_inline,
+    catalog_inline_initial,
+    catalog_city_inline,
+    catalog_application_category_inline,
+    vacancy_main_inline_view,
+    vacancy_category_inline,
+    musicians_sub_inline,
+    events_main_inline,
+)
+from app.routers.utils import sent_photo_messages, last_bot_messages, my_listing_messages, clear_bot_messages, delete_photo_prompts
+
+
+
+# --- Универсальная клавиатура для навигации ---
+def sell_nav_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="sell_back"),
+                InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")
+            ]
+        ]
+    )
+
+# --- Универсальная функция для вопроса с меню ---
+async def send_with_nav(m, text, parse_mode=None):
+    nav_msg = await m.answer("⬅️ Назад | ☰ Главное меню", reply_markup=sell_nav_keyboard())
+    last_bot_messages.setdefault(m.chat.id, []).append(nav_msg.message_id)
+    msg = await m.answer(text, parse_mode=parse_mode)
+    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    return nav_msg, msg
+
+
+
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -62,78 +104,37 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext):
     else:
         text_main = "Что-то пошло не так! Максимум фото — 3."
         text_tip = ""
+
     msg = await m.answer(text_main, reply_markup=photo_keyboard(photo_count))
     msg2 = None
+    # --- КРИТИЧЕСКИ ВАЖНО! Добавляем в глобальный кэш для удаления! ---
+    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
     if text_tip:
         msg2 = await m.answer(text_tip)
+        last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
         await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
     else:
         await state.update_data(photo_prompt_msgs=[msg.message_id])
 
-async def delete_photo_prompts(m: Message, state: FSMContext):
-    data = await state.get_data()
-    for msg_id in data.get("photo_prompt_msgs", []):
-        try:
-            await m.bot.delete_message(m.chat.id, msg_id)
-        except Exception:
-            pass
-    await state.update_data(photo_prompt_msgs=[])
 
 
-async def cities_inline() -> InlineKeyboardMarkup:
-    async with SessionLocal() as s:
-        cities = (await s.execute(select(City))).scalars().all()
-    rows = [[InlineKeyboardButton(text=c.name,
-                                  callback_data=f"sell_city:{c.slug}")]
-            for c in cities]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-async def equip_inline(parent_id: int, city_slug: str) -> InlineKeyboardMarkup:
-    async with SessionLocal() as s:
-        cats = (await s.execute(
-            select(Category).where(Category.parent_id == parent_id)
-        )).scalars().all()
-    rows = [
-        [InlineKeyboardButton(text=c.name, callback_data=f"sell_cat:{city_slug}:{c.id}")]
-        for c in cats
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def photo_keyboard(photo_count: int):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить этот шаг", callback_data="sell_skip_photo")],
-        [InlineKeyboardButton(text="Отмена", callback_data="sell_cancel")]
-    ])
-
-def confirm_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Опубликовать", callback_data="sell_ok")],
-        [InlineKeyboardButton(text="❌ Отменить",    callback_data="sell_cancel")],
-    ])
-
-def sold_keyboard(listing_id: int):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Продано", callback_data=f"sell_sold:{listing_id}")]
-        ]
-    )
-
-def delete_keyboard(listing_id: int):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Да, удалить", callback_data=f"sell_delete_yes:{listing_id}")],
-            [InlineKeyboardButton(text="Нет, отменить", callback_data=f"sell_delete_no:{listing_id}")]
-        ]
-    )
 
 # ─────────────────── /sell start ───────────
 @router.message(Command(commands=["sell"]))
 async def cmd_sell(m: Message, state: FSMContext):
     await clear_bot_messages(m.chat.id, m.bot)  # ОЧИСТКА ПЕРЕД ЗАПУСКОМ
+
+    # 1. Получаем города из базы
+    async with SessionLocal() as s:
+        cities = (await s.execute(select(City))).scalars().all()
+
+    # 2. Получаем клавиатуру для выбора города
+    kb = await cities_inline(cities)
+
+    # 3. Отправляем сообщение с клавиатурой
     msg = await m.answer(
         "💸 Создать объявление.\nСначала выберите город:",
-        reply_markup=await cities_inline()
+        reply_markup=kb
     )
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
     await state.set_state(Sell.city)
@@ -145,12 +146,37 @@ async def cmd_sell(m: Message, state: FSMContext):
 
 
 
+
+
+
 @router.callback_query(F.data == "sell_start")
 async def sell_start_button(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)  # ДОБАВИТЬ
-    await cmd_sell(cb.message, state)
+
+    # Удаляем старое меню, если это не служебное сообщение (или просто текущее)
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    # Очищаем прочие служебные сообщения
+    await clear_bot_messages(chat_id, cb.bot)
+
+    # Получаем список городов из базы
+    async with SessionLocal() as s:
+        cities = (await s.execute(select(City))).scalars().all()
+
+    # Запускаем сценарий создания объявления (меню выбора города)
+    msg = await cb.bot.send_message(
+        chat_id,
+        "💸 Создать объявление.\nСначала выберите город:",
+        reply_markup=await cities_inline(cities)
+    )
+    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await state.set_state(Sell.city)
     await cb.answer()
+
+
 
 
 # ─────────────── шаг 1 – город ─────────────
@@ -158,13 +184,21 @@ async def sell_start_button(cb: CallbackQuery, state: FSMContext):
 async def sell_city(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     city_slug = cb.data.split(":")[1]
+
     async with SessionLocal() as s:
         city = (await s.execute(select(City).where(City.slug == city_slug))).scalar_one()
         equip_root = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
-    await state.update_data(city_id=city.id, city_name=city.name)
+        subcats = (await s.execute(
+            select(Category).where(Category.parent_id == equip_root.id)
+        )).scalars().all()
+
+    await state.update_data(city_id=city.id, city_name=city.name, city_slug=city_slug)
+
+    kb = await equip_inline(subcats, city_slug)
+
     msg = await cb.message.answer(
         f"Город: <b>{city.name}</b>\nВыберите категорию:",
-        reply_markup=await equip_inline(equip_root.id, city_slug)
+        reply_markup=kb
     )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await state.set_state(Sell.cat)
@@ -182,25 +216,21 @@ async def sell_cat(cb: CallbackQuery, state: FSMContext):
     cat_id = int(cat_id)
     async with SessionLocal() as s:
         cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
-        has_children = (await s.execute(
-            select(Category).where(Category.parent_id == cat_id)
-        )).scalars().first()
-    if has_children:
+        subcats = (await s.execute(select(Category).where(Category.parent_id == cat_id))).scalars().all()
+    if subcats:
+        kb = await equip_inline(subcats, city_slug)
         msg = await cb.message.answer(
             f"Категория: <b>{cat.name}</b>\nВыберите подраздел:",
-            reply_markup=await equip_inline(cat_id, city_slug),
+            reply_markup=kb,
         )
         last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
         await state.set_state(Sell.cat)
-
     else:
+        await clear_bot_messages(cb.message.chat.id, cb.bot)
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
         await state.set_state(Sell.title)
-        msg = await cb.message.answer("Введите <b>заголовок</b> объявления (1 строка):")
-        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-
+        await send_with_nav(cb.message, "Введите <b>заголовок</b> объявления (1 строка):", parse_mode="HTML")
 
     await cb.answer()
 
@@ -208,18 +238,19 @@ async def sell_cat(cb: CallbackQuery, state: FSMContext):
 # ─────────────── шаг 3 – title ─────────────
 @router.message(Sell.title, F.text)
 async def sell_title(m: Message, state: FSMContext):
+    await clear_bot_messages(m.chat.id, m.bot)        # ОЧИЩАЕМ ПРЕЖНИЕ СЛУЖЕБНЫЕ СООБЩЕНИЯ
     await state.update_data(title=m.text.strip())
     await state.set_state(Sell.price)
-    msg = await m.answer("Укажите <b>цену</b> (например: 150 € или 12 000 rsd):")
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await send_with_nav(m, "Укажите <b>цену</b> (например: 150 € или 12 000 rsd):", parse_mode="HTML")
+
 
 # ─────────────── шаг 4 – price ─────────────
 @router.message(Sell.price, F.text)
 async def sell_price(m: Message, state: FSMContext):
+    await clear_bot_messages(m.chat.id, m.bot)        # ОЧИЩАЕМ ПРЕЖНИЕ СЛУЖЕБНЫЕ СООБЩЕНИЯ
     await state.update_data(price=m.text.strip())
     await state.set_state(Sell.descr)
-    msg = await m.answer("Короткое описание (или «-» чтобы пропустить):")
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await send_with_nav(m, "Короткое описание (или «-» чтобы пропустить):", parse_mode="HTML")
 
 # ─────────────── шаг 5 – descr ─────────────
 @router.message(Sell.descr)
@@ -227,8 +258,8 @@ async def sell_descr(m: Message, state: FSMContext):
     text = m.text.strip()
     await state.update_data(descr=None if text == "-" else text)
     await state.set_state(Sell.photo)
-    # Показываем первое приглашение (удалять нечего)
     await send_photo_prompt(m, 0, state)
+
 
 
 
@@ -348,9 +379,19 @@ async def sell_skip_photo(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(Sell.photo, F.data == "sell_cancel")
 async def sell_cancel_photo(cb: CallbackQuery, state: FSMContext):
+    # Удаляем подсказки для фото
+    await delete_photo_prompts(cb.message, state)
+    # Очищаем служебные сообщения (если есть)
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    # Выводим финальное сообщение и меню
+    msg1 = await cb.message.answer("❌ Создание объявления отменено.")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg1.message_id)
+
+    msg2 = await cb.message.answer("☰ Главное меню", reply_markup=sell_nav_keyboard())
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg2.message_id)
     await state.clear()
-    await cb.message.edit_text("❌ Создание объявления отменено.")
     await cb.answer()
+
 
 # ─────────────── предпросмотр + confirm ────
 async def preview_and_confirm(m: Message, state: FSMContext):
@@ -360,14 +401,21 @@ async def preview_and_confirm(m: Message, state: FSMContext):
               f"{data['title']} — {data['price']}\n"
               f"{data.get('descr','')}")
     kb = confirm_keyboard()
+    sent_ids = []
     if photos:
         if len(photos) == 1:
-            await m.answer_photo(photos[0])
+            msg_photo = await m.answer_photo(photos[0])
+            sent_ids.append(msg_photo.message_id)
         else:
             media = [InputMediaPhoto(media=fid) for fid in photos]
-            await m.answer_media_group(media)
+            msgs = await m.answer_media_group(media)
+            sent_ids.extend([msg.message_id for msg in msgs])
     msg = await m.answer(header, reply_markup=kb)
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    # === ДОБАВИТЬ: сохраняем id всех сообщений с фото для последующего удаления ===
+    if sent_ids:
+        sent_photo_messages.setdefault(m.chat.id, []).extend(sent_ids)
+
 
 # ─────────────── шаг 7 – confirm ───────────
 @router.callback_query(Sell.confirm, F.data == "sell_ok")
@@ -390,11 +438,16 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
         s.add(l)
         await s.commit()
         await s.refresh(l)
-    await cb.message.edit_text("✅ Объявление опубликовано!")
-    last_bot_messages.setdefault(cb.message.chat.id, []).append(cb.message.message_id)
-
+    # ОЧИСТИТЬ все сообщения бота в чате пользователя
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    # Показать уведомление об успехе
+    msg = await cb.message.answer("✅ Объявление опубликовано!")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    # Показать главное меню
+    await cb.message.answer("☰ Главное меню", reply_markup=main_inline_menu())
     await state.clear()
     await cb.answer()
+
 
 @router.callback_query(Sell.confirm, F.data == "sell_cancel")
 async def sell_cancel(cb: CallbackQuery, state: FSMContext):
@@ -413,11 +466,16 @@ async def mark_sold(cb: CallbackQuery, state: FSMContext):
         if not l or l.owner_id != cb.from_user.id:
             await cb.answer("Только владелец может удалить!", show_alert=True)
             return
-    await cb.message.answer(
+
+    kb = delete_keyboard(listing_id)
+    msg = await cb.message.answer(
         "Вы уверены, что хотите удалить своё объявление? Оно будет утеряно безвозвратно.",
-        reply_markup=delete_keyboard(listing_id)
+        reply_markup=kb
     )
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await cb.answer()
+
+
 
 @router.callback_query(F.data.startswith("sell_delete_yes:"))
 async def delete_yes(cb: CallbackQuery, state: FSMContext):
@@ -429,8 +487,12 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
             return
         await s.delete(l)
         await s.commit()
-    await cb.message.edit_text("Объявление удалено.")
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    msg = await cb.message.answer("Объявление удалено.")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await cb.message.answer("☰ Главное меню", reply_markup=main_inline_menu())
     await cb.answer()
+
 
 @router.callback_query(F.data.startswith("sell_delete_no:"))
 async def delete_no(cb: CallbackQuery, state: FSMContext):
@@ -442,4 +504,98 @@ async def sell_start_button(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.bot)   # Удалить "мусор" с экрана
     await cmd_sell(cb.message, state)           # Перейти к созданию объявления
+    await cb.answer()
+
+@router.callback_query(F.data == "sell_back")
+async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
+    cur_state = await state.get_state()
+    chat_id = cb.message.chat.id
+
+    await clear_bot_messages(chat_id, cb.bot)
+
+    if cur_state == Sell.city.state:
+        # Возврат к меню барахолки!
+        msg = await cb.message.answer(
+            "💸 Барахолка:\nВыберите действие.",
+            reply_markup=market_inline()
+        )
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await state.clear()  # сбрасываем FSM — выходим из цепочки sell
+        await cb.answer()
+        return
+
+    if cur_state == Sell.cat.state:
+        # Возврат к выбору города
+        await state.set_state(Sell.city)
+        async with SessionLocal() as s:
+            cities = (await s.execute(select(City))).scalars().all()
+        kb = await cities_inline(cities)
+        msg = await cb.message.answer(
+            "💸 Создать объявление.\nСначала выберите город:",
+            reply_markup=kb
+        )
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
+    elif cur_state == Sell.title.state:
+        data = await state.get_data()
+        city_slug = data.get("city_slug")
+        async with SessionLocal() as s:
+            cat = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
+            subcats = (await s.execute(select(Category).where(Category.parent_id == cat.id))).scalars().all()
+        kb = await equip_inline(subcats, city_slug)
+        await state.set_state(Sell.cat)
+        msg = await cb.message.answer(
+            f"Город: <b>{data.get('city_name')}</b>\nВыберите категорию:",
+            reply_markup=kb
+        )
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
+    elif cur_state == Sell.price.state:
+        await state.set_state(Sell.title)
+        await send_with_nav(cb.message, "Введите <b>заголовок</b> объявления (1 строка):", parse_mode="HTML")
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
+    elif cur_state == Sell.descr.state:
+        await state.set_state(Sell.price)
+        await send_with_nav(cb.message, "Укажите <b>цену</b> (например: 150 € или 12 000 rsd):", parse_mode="HTML")
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
+    elif cur_state == Sell.photo.state:
+        await state.set_state(Sell.descr)
+        await send_with_nav(cb.message, "Короткое описание (или «-» чтобы пропустить):", parse_mode="HTML")
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
+    elif cur_state == Sell.confirm.state:
+        await state.set_state(Sell.photo)
+        await send_photo_prompt(cb.message, 0, state)
+
+    else:
+        await state.set_state(Sell.city)
+        async with SessionLocal() as s:
+            cities = (await s.execute(select(City))).scalars().all()
+        kb = await cities_inline(cities)
+        msg = await cb.message.answer(
+            "💸 Создать объявление.\nСначала выберите город:",
+            reply_markup=kb
+        )
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
+    await cb.answer()
+
+
+
+
+@router.callback_query(F.data == "sell_city_back")
+async def sell_city_back(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    # Возвращаем пользователя к выбору города
+    async with SessionLocal() as s:
+        cities = (await s.execute(select(City))).scalars().all()
+    kb = await cities_inline(cities)
+    msg = await cb.message.edit_text(
+        "💸 Создать объявление.\nСначала выберите город:",
+        reply_markup=kb
+    )
+
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await cb.answer()
