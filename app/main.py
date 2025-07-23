@@ -550,6 +550,9 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
+    # Получаем заголовок из БД
+    header = await get_text('market_my_listings', 'ru') or "Your listings"
+
     keyboard = [
         [InlineKeyboardButton(
             text=f"{listing.title}" + (f" — {listing.price}" if listing.price else ""),
@@ -569,7 +572,8 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    await safe_edit_or_send(cb, "<b>Ваши объявления:</b>\nВыберите для просмотра или управления.", markup)
+    # Добавляем двоеточие в коде
+    await safe_edit_or_send(cb, f"<b>{header}:</b>", markup)
     await cb.answer()
 
 
@@ -1026,17 +1030,22 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
 
     nav_markup = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
+    # Получаем текст приглашения к поиску из BotText
+    query_text = await get_text('market_search_query', 'ru')
+    if not query_text:
+        query_text = "Enter your search query for listings (e.g., microphone, Yamaha, amp):"
+
     # Сначала отправляем кнопки
     nav_msg = await cb.bot.send_message(
         chat_id,
-        "⬅️ Назад | ☰ Главное меню",
+        "⬅️ Назад | ☰ Главное меню",  # (эту строку тоже можно будет перенести в БД)
         reply_markup=nav_markup
     )
 
     # Затем — текст запроса (пользователь вводит прямо под ним)
     query_msg = await cb.bot.send_message(
         chat_id,
-        "Введите запрос для поиска по объявлениям (например: микрофон, Yamaha, комбик):"
+        query_text
     )
 
     # (если нужно отслеживать оба сообщения для удаления)
@@ -1085,6 +1094,12 @@ async def handle_market_search(m: Message, state: FSMContext):
     new_search_btn = await get_common_menu_button('market_new_search')
     to_market_btn = await get_common_menu_button('market_menu_back')
 
+    # --- Получаем текстовые части из базы ---
+    found_count = await get_text('market_found_count', 'ru') or "Found"
+    found_query = await get_text('market_found_query', 'ru') or "for"
+    found_select = await get_text('market_found_select', 'ru') or "Select a listing"
+
+    # --- Не найдено ---
     if not results:
         buttons = []
         if new_search_btn:
@@ -1105,24 +1120,23 @@ async def handle_market_search(m: Message, state: FSMContext):
 
     await state.update_data(search_results=[l.id for l in results], search_query=query)
 
+    # --- Кнопки объявлений ---
     buttons = [
         [InlineKeyboardButton(
             text=(l.title if len(l.title) < 45 else l.title[:42] + "…"),
             callback_data=f"search_detail:{l.id}"
         )] for l in results
     ]
-    # Кнопки управления
-    control_row = []
     if new_search_btn:
         buttons.append([new_search_btn])
     if to_market_btn:
         buttons.append([to_market_btn])
-    if control_row:
-        buttons.append(control_row)
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    # --- Собираем текст сообщения по частям из базы ---
     msg = await m.answer(
-        f"🔎 Найдено объявлений: <b>{len(results)}</b> по запросу: <b>{query}</b>\n\nВыберите объявление:",
+        f"🔎 {found_count}: <b>{len(results)}</b> {found_query}: <b>{query}</b>\n\n{found_select}:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1277,7 +1291,7 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     ids = data.get("search_results", [])
     query = data.get("search_query", "")
     if not ids:
-        msg = await cb.message.answer("Результаты поиска не найдены.")
+        msg = await cb.message.answer("Search results not found.")  # Можно тоже вынести в базу
         last_search_menu_message[chat_id] = msg.message_id
         await state.clear()
         return
@@ -1289,23 +1303,27 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     new_search_btn = await get_common_menu_button('market_new_search')
     to_market_btn = await get_common_menu_button('market_menu_back')
 
+    # --- Служебные строки из базы ---
+    found_count = await get_text('market_found_count', 'ru') or "Found"
+    found_query = await get_text('market_found_query', 'ru') or "for"
+    found_select = await get_text('market_found_select', 'ru') or "Select a listing"
+
+    # --- Кнопки объявлений ---
     buttons = [
         [InlineKeyboardButton(
             text=(l.title if len(l.title) < 45 else l.title[:42] + "…"),
             callback_data=f"search_detail:{l.id}"
         )] for l in results
     ]
-    control_row = []
     if new_search_btn:
         buttons.append([new_search_btn])
     if to_market_btn:
         buttons.append([to_market_btn])
-    if control_row:
-        buttons.append(control_row)
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
     msg = await cb.message.answer(
-        f"🔎 Найдено объявлений: <b>{len(results)}</b> по запросу: <b>{query}</b>\n\nВыберите объявление:",
+        f"🔎 {found_count}: <b>{len(results)}</b> {found_query}: <b>{query}</b>\n\n{found_select}:",
         reply_markup=kb,
         parse_mode="HTML"
     )

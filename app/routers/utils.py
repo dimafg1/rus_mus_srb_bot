@@ -75,5 +75,5 @@ async def get_text(code: str, lang: str = "ru"):
             "SELECT text FROM BotText WHERE code = ? AND lang = ?", (code, lang)
         ) as cursor:
             row = await cursor.fetchone()
-            return row[0] if row else f"[[{code}]]"
+            return row[0] if row else None
 

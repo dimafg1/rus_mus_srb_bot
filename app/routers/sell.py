@@ -113,8 +113,9 @@ async def cmd_sell(m: Message, state: FSMContext):
     async with SessionLocal() as s:
         cities = (await s.execute(select(City))).scalars().all()
     kb = await cities_inline(cities)
+    header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
     msg = await m.answer(
-        "💸 Создать объявление.\nСначала выберите город:",
+        header,
         reply_markup=kb
     )
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
@@ -130,9 +131,10 @@ async def sell_start_button(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
     async with SessionLocal() as s:
         cities = (await s.execute(select(City))).scalars().all()
+    header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
     msg = await cb.bot.send_message(
         chat_id,
-        "💸 Создать объявление.\nСначала выберите город:",
+        header,
         reply_markup=await cities_inline(cities)
     )
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
@@ -406,13 +408,6 @@ async def delete_no(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer("Удаление отменено, объявление осталось активным.")
     await cb.answer()
 
-@router.callback_query(F.data == "sell_start")
-async def sell_start_button(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
-    await cmd_sell(cb.message, state)
-    await cb.answer()
-
 @router.callback_query(F.data == "sell_back")
 async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
     cur_state = await state.get_state()
@@ -420,6 +415,7 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
 
     if cur_state == Sell.city.state:
+        await clear_bot_messages(chat_id, cb.bot)
         msg = await cb.message.answer(
             "💸 Барахолка:\nВыберите действие.",
             reply_markup=await market_inline()
@@ -430,15 +426,18 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
         return
 
     if cur_state == Sell.cat.state:
+        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.city)
         async with SessionLocal() as s:
             cities = (await s.execute(select(City))).scalars().all()
         kb = await cities_inline(cities)
+        header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
         msg = await cb.message.answer(
-            "💸 Создать объявление.\nСначала выберите город:",
+            header,
             reply_markup=kb
         )
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
 
     elif cur_state == Sell.title.state:
         await state.set_state(Sell.cat)
@@ -448,28 +447,50 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
             cat = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
             subcats = (await s.execute(select(Category).where(Category.parent_id == cat.id))).scalars().all()
         kb = await equip_inline(subcats, city_slug)
-        await cb.message.answer(
-            f"Город: <b>{data.get('city_name')}</b>\nВыберите категорию:",
-            reply_markup=kb
-        )
+        try:
+            await cb.message.edit_text(
+                f"Город: <b>{data.get('city_name')}</b>\nВыберите категорию:",
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            # Если не удалось — пробуем удалить сообщение и создать новое
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            msg = await cb.message.answer(
+                f"Город: <b>{data.get('city_name')}</b>\nВыберите категорию:",
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+
+
+
 
     elif cur_state == Sell.price.state:
+        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.title)
         await send_with_nav(cb.message, "Введите <b>заголовок</b> объявления (1 строка):", parse_mode="HTML")
 
     elif cur_state == Sell.descr.state:
+        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.price)
         await send_with_nav(cb.message, "Укажите <b>цену</b> (например: 150 € или 12 000 rsd):", parse_mode="HTML")
 
     elif cur_state == Sell.photo.state:
+        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.descr)
         await send_with_nav(cb.message, "Короткое описание (или «-» чтобы пропустить):", parse_mode="HTML")
 
     elif cur_state == Sell.confirm.state:
+        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.photo)
         await send_photo_prompt(cb.message, 0, state)
 
     else:
+        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.city)
         async with SessionLocal() as s:
             cities = (await s.execute(select(City))).scalars().all()
@@ -482,12 +503,14 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "sell_city_back")
 async def sell_city_back(cb: CallbackQuery, state: FSMContext):
+    await clear_bot_messages(chat_id, cb.bot)
     await state.clear()
     async with SessionLocal() as s:
         cities = (await s.execute(select(City))).scalars().all()
     kb = await cities_inline(cities)
+    header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
     await cb.message.edit_text(
-        "💸 Создать объявление.\nСначала выберите город:",
+        header,
         reply_markup=kb
     )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(cb.message.message_id)
