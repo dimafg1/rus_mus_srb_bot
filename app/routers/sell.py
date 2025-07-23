@@ -72,28 +72,40 @@ class Sell(StatesGroup):
     confirm = State()
 
 # ─────────────────── helpers ───────────────
-async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext):
+async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lang="ru"):
     left = 3 - photo_count
     if photo_count == 0:
         text_main = (
-            "Пришлите <b>фото</b> (до 3 штук). Можно все сразу, можно по очереди.\n"
-            "Если вы выделите больше трёх, прикреплены будут только первые три."
+            await get_text('sell_photo_0_main', lang)
+            or "Send a <b>photo</b> (up to 3). You can send all at once or one by one.\nIf you select more than three, only the first three will be attached."
         )
-        text_tip = "Для загрузки фото нажмите на 📎 слева от строки для сообщений\n⬇️"
+        text_tip = (
+            await get_text('sell_photo_0_tip', lang)
+            or "To upload a photo, click the 📎 to the left of the message box\n⬇️"
+        )
     elif left == 2:
         text_main = (
-            "Фото добавлено (1/3).\n"
-            "Вы можете добавить ещё <b>2 фото</b>, пропустить этот шаг или отменить публикацию."
+            await get_text('sell_photo_1_main', lang)
+            or "Photo added (1/3).\nYou can add <b>2 more</b> photos, skip this step, or cancel posting."
         )
-        text_tip = "Чтобы добавить ещё фото, снова нажмите на 📎 слева\n⬇️"
+        text_tip = (
+            await get_text('sell_photo_1_tip', lang)
+            or "To add more, click the 📎 again on the left\n⬇️"
+        )
     elif left == 1:
         text_main = (
-            "Фото добавлено (2/3).\n"
-            "Вы можете добавить ещё <b>1 фото</b>, пропустить этот шаг или отменить публикацию."
+            await get_text('sell_photo_2_main', lang)
+            or "Photo added (2/3).\nYou can add <b>1 more</b> photo, skip this step, or cancel posting."
         )
-        text_tip = "Чтобы добавить ещё фото, снова нажмите на 📎 слева\n⬇️"
+        text_tip = (
+            await get_text('sell_photo_2_tip', lang)
+            or "To add more, click the 📎 again on the left\n⬇️"
+        )
     else:
-        text_main = "Что-то пошло не так! Максимум фото — 3."
+        text_main = (
+            await get_text('sell_photo_max_main', lang)
+            or "Something went wrong! Maximum is 3 photos."
+        )
         text_tip = ""
 
     msg = await m.answer(text_main, reply_markup=photo_keyboard(photo_count))
@@ -105,6 +117,7 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext):
         await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
     else:
         await state.update_data(photo_prompt_msgs=[msg.message_id])
+
 
 # ─────────────────── /sell start ───────────
 @router.message(Command(commands=["sell"]))
@@ -354,8 +367,11 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
         await s.commit()
         await s.refresh(l)
     await clear_bot_messages(cb.message.chat.id, cb.bot)
-    msg = await cb.message.answer("✅ Объявление опубликовано!")
-    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    # После публикации:
+    msg1 = await cb.message.answer("✅ Объявление опубликовано!")
+    nav_kb = await sell_nav_keyboard() 
+    msg2 = await cb.message.answer("☰ Главное меню", reply_markup=nav_kb)
+    last_bot_messages.setdefault(cb.message.chat.id, []).extend([msg1.message_id, msg2.message_id])
     nav_kb = await sell_nav_keyboard()
     await cb.message.answer("☰ Главное меню", reply_markup=nav_kb)
     await state.clear()
@@ -396,12 +412,18 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
             return
         await s.delete(l)
         await s.commit()
+    # Полная очистка старых сообщений
     await clear_bot_messages(cb.message.chat.id, cb.bot)
+    last_bot_messages[cb.message.chat.id] = []  # <--- ВАЖНО!
+    # Добавляем новые сообщения
     msg = await cb.message.answer("Объявление удалено.")
-    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    last_bot_messages[cb.message.chat.id].append(msg.message_id)
     nav_kb = await sell_nav_keyboard()
-    await cb.message.answer("☰ Главное меню", reply_markup=nav_kb)
+    msg2 = await cb.message.answer("☰ Главное меню", reply_markup=nav_kb)
+    last_bot_messages[cb.message.chat.id].append(msg2.message_id)
     await cb.answer()
+
+
 
 @router.callback_query(F.data.startswith("sell_delete_no:"))
 async def delete_no(cb: CallbackQuery, state: FSMContext):
