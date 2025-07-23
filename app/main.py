@@ -52,6 +52,9 @@ from app.routers.utils import (
     my_listing_messages,
 )
 from app.texts import get_text
+from app.routers.utils import get_text
+from app.keyboards import get_common_menu_button
+
 
 
 
@@ -136,38 +139,39 @@ dp.include_router(vacancy_router)
 
 @dp.callback_query(F.data == "go_catalog")
 async def go_catalog(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
-    await state.clear()
-    await safe_edit_or_send(cb, "🏙 Каталог\nВыберите действие:", catalog_inline_initial())
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    markup = await catalog_inline_initial()
+    await safe_edit_or_send(cb, await get_text("catalog_choose_city", "ru"), markup)
     await cb.answer()
+
 
 
 @dp.callback_query(F.data == "go_market")
 async def go_market(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
-    await state.clear()
-    await safe_edit_or_send(cb, "💸 Барахолка – выберите действие:", market_inline())
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    markup = await market_inline()
+    await safe_edit_or_send(cb, await get_text("market_choose_action", "ru"), markup)
     await cb.answer()
+
+
 
 
 @dp.callback_query(F.data == "go_isk")
 async def go_isk(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
-    await state.clear()
-    await safe_edit_or_send(cb, "🤝 Ищу – выберите действие:", vacancy_main_inline_view("vcity"))
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    markup = await vacancy_main_inline_view("vcity")
+    await safe_edit_or_send(cb, await get_text("vacancy_choose_city", "ru"), markup)
     await cb.answer()
+
 
 
 @dp.callback_query(F.data == "go_events")
 async def go_events(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
-    await state.clear()
-    await safe_edit_or_send(cb, "📅 Афиша – выберите действие:", events_main_inline())
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    markup = await events_main_inline()
+    await safe_edit_or_send(cb, await get_text("events_choose_city", "ru"), markup)
     await cb.answer()
+
 
 
 @dp.callback_query(F.data == "go_help")
@@ -182,10 +186,10 @@ async def go_help(cb: CallbackQuery, state: FSMContext):
             "• Для возврата используйте кнопку 'Назад'\n"
             "• Введите 'отмена' для отмены любого действия"
         )
+    # Получаем кнопку "Главное меню" из базы
+    main_menu_btn = await get_common_menu_button('main_menu')
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
-        ]
+        inline_keyboard=[[main_menu_btn]] if main_menu_btn else []
     )
     await safe_edit_or_send(cb, help_text, kb)
     await cb.answer()
@@ -421,7 +425,8 @@ async def market_city(cb: CallbackQuery):
     chat_id = cb.message.chat.id
     slug = cb.data.split(":", 1)[1]
     if slug == "choose":
-        await cb.message.edit_text("💸 Барахолка – выберите действие:", reply_markup=market_inline())
+        markup = await market_inline()
+        await cb.message.edit_text(await get_text("market_choose_action", "ru"), reply_markup=markup)
         await cb.answer()
         return
     city = await city_by_slug(slug)
@@ -430,22 +435,28 @@ async def market_city(cb: CallbackQuery):
     subs = await children_of(30)
     buttons = [[InlineKeyboardButton(text=sc.name, callback_data=f"mlist:{slug}:{sc.slug}")]
                for sc in subs]
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="mcity:choose")])
-    buttons.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+    # --- Динамические кнопки ---
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = "mcity:choose"  # назначаем нужный callback
+        buttons.append([back_btn])
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        buttons.append([main_menu_btn])
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     try:
         await cb.message.delete()  # Удаляем старый список объявлений
     except Exception:
         pass
     msg = await cb.bot.send_message(
-        cb.message.chat.id, 
-        f"<b>Барахолка → {city.name}</b>", 
-        reply_markup=markup, 
+        cb.message.chat.id,
+        f"<b>Барахолка → {city.name}</b>",
+        reply_markup=markup,
         parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
-
     await cb.answer()
+
 
 
 @dp.callback_query(F.data.startswith("mlist:"))
@@ -534,7 +545,8 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
         )).scalars().all()
 
     if not listings:
-        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", await build_main_menu())
+        main_menu = await build_main_menu()
+        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", main_menu)
         await cb.answer()
         return
 
@@ -545,8 +557,16 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
         )]
         for listing in listings
     ]
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_market")])
-    keyboard.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = "go_market"
+        keyboard.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     await safe_edit_or_send(cb, "<b>Ваши объявления:</b>\nВыберите для просмотра или управления.", markup)
@@ -586,10 +606,10 @@ async def my_listings_back_handler(cb: CallbackQuery, state: FSMContext):
         )).scalars().all()
 
     if not listings:
-        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", await build_main_menu())
+        main_menu = await build_main_menu()
+        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", main_menu)
         await cb.answer()
         return
-
 
     keyboard = [
         [InlineKeyboardButton(
@@ -598,8 +618,16 @@ async def my_listings_back_handler(cb: CallbackQuery, state: FSMContext):
         )]
         for listing in listings
     ]
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_market")])
-    keyboard.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = "go_market"
+        keyboard.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     await safe_edit_or_send(cb, "<b>Ваши объявления:</b>\nВыберите для просмотра или управления.", markup)
@@ -984,20 +1012,25 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
         except Exception:
             pass
 
-    # Приглашение к поиску
-    def nav_kb(back: bool = True, main: bool = True) -> InlineKeyboardMarkup:
-        buttons = []
-        if back:
-            buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="market_menu_back"))
-        if main:
-            buttons.append(InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu"))
-        return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
+    # --- Формируем кнопки навигации из базы ---
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = "market_menu_back"
+    main_menu_btn = await get_common_menu_button('main_menu')
+
+    buttons = []
+    if back_btn:
+        buttons.append(back_btn)
+    if main_menu_btn:
+        buttons.append(main_menu_btn)
+
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
     # Сначала отправляем кнопки
     nav_msg = await cb.bot.send_message(
         chat_id,
         "⬅️ Назад | ☰ Главное меню",
-        reply_markup=nav_kb()  # ваша функция генерации кнопок
+        reply_markup=nav_markup
     )
 
     # Затем — текст запроса (пользователь вводит прямо под ним)
@@ -1008,11 +1041,10 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
 
     # (если нужно отслеживать оба сообщения для удаления)
     last_search_query_message[chat_id] = query_msg.message_id
-    last_search_menu_message[chat_id] = nav_msg.message_id  # например так, если надо
+    last_search_menu_message[chat_id] = nav_msg.message_id
 
     await state.set_state(MarketSearch.waiting_for_query)
     await cb.answer()
-
 
 
 
@@ -1049,13 +1081,18 @@ async def handle_market_search(m: Message, state: FSMContext):
             .limit(10)
         )).scalars().all()
 
+    # --- Кнопки из базы ---
+    new_search_btn = await get_common_menu_button('market_new_search')
+    to_market_btn = await get_common_menu_button('market_menu_back')
+
     if not results:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="market_search")],
-                [InlineKeyboardButton(text="⬅️ В меню Барахолки", callback_data="market_menu_back")]
-            ]
-        )
+        buttons = []
+        if new_search_btn:
+            buttons.append([new_search_btn])
+        if to_market_btn:
+            buttons.append([to_market_btn])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
         msg = await m.answer(
             f"😕 Ничего не найдено по запросу: <b>{query}</b>.\n\n"
             "Попробуйте другой поисковый запрос или вернитесь в меню поиска.",
@@ -1068,17 +1105,22 @@ async def handle_market_search(m: Message, state: FSMContext):
 
     await state.update_data(search_results=[l.id for l in results], search_query=query)
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text=(l.title if len(l.title) < 45 else l.title[:42] + "…"),
-                callback_data=f"search_detail:{l.id}"
-            )] for l in results
-        ] + [
-            [InlineKeyboardButton(text="❌ Новый поиск", callback_data="market_search")],
-            [InlineKeyboardButton(text="⬅️ В меню Барахолки", callback_data="market_menu_back")]
-        ]
-    )
+    buttons = [
+        [InlineKeyboardButton(
+            text=(l.title if len(l.title) < 45 else l.title[:42] + "…"),
+            callback_data=f"search_detail:{l.id}"
+        )] for l in results
+    ]
+    # Кнопки управления
+    control_row = []
+    if new_search_btn:
+        buttons.append([new_search_btn])
+    if to_market_btn:
+        buttons.append([to_market_btn])
+    if control_row:
+        buttons.append(control_row)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     msg = await m.answer(
         f"🔎 Найдено объявлений: <b>{len(results)}</b> по запросу: <b>{query}</b>\n\nВыберите объявление:",
         reply_markup=kb,
@@ -1243,17 +1285,25 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         results = (await s.execute(select(Listing).where(Listing.id.in_(ids)))).scalars().all()
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text=(l.title if len(l.title) < 45 else l.title[:42] + "…"),
-                callback_data=f"search_detail:{l.id}"
-            )] for l in results
-        ] + [
-            [InlineKeyboardButton(text="❌ Новый поиск", callback_data="market_search")],
-            [InlineKeyboardButton(text="⬅️ В меню Барахолки", callback_data="market_menu_back")]
-        ]
-    )
+    # --- Кнопки из базы ---
+    new_search_btn = await get_common_menu_button('market_new_search')
+    to_market_btn = await get_common_menu_button('market_menu_back')
+
+    buttons = [
+        [InlineKeyboardButton(
+            text=(l.title if len(l.title) < 45 else l.title[:42] + "…"),
+            callback_data=f"search_detail:{l.id}"
+        )] for l in results
+    ]
+    control_row = []
+    if new_search_btn:
+        buttons.append([new_search_btn])
+    if to_market_btn:
+        buttons.append([to_market_btn])
+    if control_row:
+        buttons.append(control_row)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     msg = await cb.message.answer(
         f"🔎 Найдено объявлений: <b>{len(results)}</b> по запросу: <b>{query}</b>\n\nВыберите объявление:",
         reply_markup=kb,
@@ -1290,10 +1340,13 @@ async def market_menu_back(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
 
     await state.clear()
-    msg = await cb.message.answer("💸 Барахолка – выберите действие:", reply_markup=market_inline())
+    # Вот здесь нужен await!
+    msg = await cb.message.answer(
+        "💸 Барахолка – выберите действие:",
+        reply_markup=await market_inline()
+    )
     last_bot_messages[chat_id] = [msg.message_id]
     await cb.answer()
-
 
 
 

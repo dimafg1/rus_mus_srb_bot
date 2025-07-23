@@ -5,7 +5,11 @@ from typing import List
 from app.models import Category, City
 from sqlalchemy import select
 from app.database import SessionLocal  # если у вас по-другому — исправьте путь!
-from app.models import Menu  # или как у вас называется эта модель
+from app.models import Menu, City  # или как у вас называется эта модель
+from app.routers.utils import get_text
+
+
+
 
 
 # ---------- Главное меню ----------
@@ -26,38 +30,134 @@ def main_inline_menu():
         ]
     )
 
+async def get_common_menu_button(code: str, lang="ru"):
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Menu).where(Menu.code == code, Menu.visible == 1, Menu.lang == lang)
+        )
+        btn = result.scalars().first()
+    if btn:
+        return InlineKeyboardButton(
+            text=f"{btn.icon} {btn.text}" if btn.icon else btn.text,
+            callback_data=btn.callback_data
+        )
+    return None
+
+async def build_city_buttons(callback_prefix: str, lang: str = "ru"):
+    async with SessionLocal() as session:
+        result = await session.execute(select(City))
+        cities = result.scalars().all()
+    return [
+        InlineKeyboardButton(
+            text=city.name,
+            callback_data=f"{callback_prefix}:{city.slug}"
+        ) for city in cities
+    ]
+
+async def get_back_button(code="back", lang="ru"):
+    """
+    Получить кнопку Назад с нужным callback_data (по умолчанию — обычная 'back', для sell — 'sell_back').
+    """
+    btn = await get_common_menu_button(code, lang)
+    return btn
+
+
 # ---------- Барахолка ----------
-def market_inline():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔎 Поиск по объявлениям", callback_data="market_search")],
-            [InlineKeyboardButton(text="Белград", callback_data="mcity:belgrade"),
-             InlineKeyboardButton(text="Нови Сад", callback_data="mcity:novisad")],
-            [InlineKeyboardButton(text="📋 Мои объявления", callback_data="my_listings")],    # <-- ВСТАВЛЯЕМ СЮДА
-            [InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ОБЪЯВЛЕНИЕ", callback_data="sell_start")],
-            [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
-        ]
-    )
+async def build_city_buttons(callback_prefix: str, lang: str = "ru"):
+    async with SessionLocal() as session:
+        result = await session.execute(select(City))
+        cities = result.scalars().all()
+    return [
+        InlineKeyboardButton(
+            text=city.name,
+            callback_data=f"{callback_prefix}:{city.slug}"
+        ) for city in cities
+    ]
+
+async def market_inline(lang="ru"):
+    # Получаем все пункты для меню "Барахолка" из базы
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Menu)
+            .where(Menu.parent_code == "market", Menu.visible == 1, Menu.lang == lang)
+            .order_by(Menu.order_num)
+        )
+        rows = result.scalars().all()
+    
+    # Сборка клавиатуры
+    keyboard = []
+
+    # Первый пункт (обычно "🔎 Поиск по объявлениям")
+    first_row = []
+    for row in rows:
+        if row.callback_data == "market_search":
+            first_row.append(
+                InlineKeyboardButton(
+                    text=f"{row.icon} {row.text}" if row.icon else row.text,
+                    callback_data=row.callback_data
+                )
+            )
+    if first_row:
+        keyboard.append(first_row)
+
+    # Второй ряд — города (динамически)
+    city_buttons = await build_city_buttons("mcity")
+    if city_buttons:
+        keyboard.append(city_buttons)
+
+    # Остальные пункты меню (например, "Мои объявления", "Разместить объявление")
+    for row in rows:
+        if row.callback_data not in ("market_search",):  # уже добавили поиск, пропускаем
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"{row.icon} {row.text}" if row.icon else row.text,
+                    callback_data=row.callback_data
+                )
+            ])
+
+    # Добавляем "Главное меню" (общий код)
+    from app.keyboards import get_common_menu_button
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def market_city_inline(city_name, city_slug, subcats):
-    # subcats — список (имя, cb_data)
+
+async def market_city_inline(city_name, city_slug, subcats):
     buttons = [
         [InlineKeyboardButton(text=name, callback_data=cb_data)]
         for name, cb_data in subcats
     ]
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="mcity:choose")])
-    buttons.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        buttons.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        buttons.append([main_menu_btn])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def market_list_inline(city_name, city_slug, cat_name, listings):
-    # listings — список (title, cb_data)
+
+async def market_list_inline(city_name, city_slug, cat_name, listings):
     buttons = [
         [InlineKeyboardButton(text=title, callback_data=cb_data)]
         for title, cb_data in listings
     ]
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mcity:{city_slug}")])
+
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        buttons.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        buttons.append([main_menu_btn])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 
 def listing_detail_keyboard(is_owner: bool, listing_id: int, city_slug: str, cat_slug: str, contact: str):
     buttons = []
@@ -98,37 +198,62 @@ def delete_keyboard(listing_id: int):
 
 async def cities_inline(cities) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=c.name, callback_data=f"sell_city:{c.slug}")] for c in cities]
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sell_back")])
-    rows.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+
+    back_btn = await get_back_button('sell_back')
+    if back_btn:
+        rows.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        rows.append([main_menu_btn])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-async def equip_inline(categories: List[Category], city_slug: str) -> InlineKeyboardMarkup:
+async def equip_inline(categories: List[Category], city_slug: str, lang="ru") -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=c.name, callback_data=f"sell_cat:{city_slug}:{c.id}")]
         for c in categories
     ]
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sell_back")])
-    rows.append([InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
+
+    back_btn = await get_back_button('sell_back', lang)
+    if back_btn:
+        rows.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        rows.append([main_menu_btn])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ---------- Каталог ----------
-def catalog_inline_initial():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Белград", callback_data="citysel:belgrade"),
-         InlineKeyboardButton(text="Нови Сад", callback_data="citysel:novisad")],
-        [InlineKeyboardButton(text="📝 ПОДАТЬ ЗАЯВКУ", callback_data="apply_catalog")],
-        [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
-    ])
+async def catalog_inline_initial(lang="ru"):
+    city_buttons = await build_city_buttons("citysel", lang)
+    keyboard = [
+        city_buttons,
+        [InlineKeyboardButton(text="📝 ПОДАТЬ ЗАЯВКУ", callback_data="apply_catalog")]
+    ]
 
-def catalog_city_inline(city_slug: str, categories: List[Category]):
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+async def catalog_city_inline(city_slug: str, categories: List[Category], lang="ru"):
     alternative = "belgrade" if city_slug != "belgrade" else "novisad"
-    buttons = [[InlineKeyboardButton(text=c.name, callback_data=f"cat:{city_slug}:{c.slug}")]
-               for c in categories]
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog:back")])
-    buttons.append([InlineKeyboardButton(text=("Белград" if alternative == "belgrade" else "Нови Сад"),
-                                          callback_data=f"citysel:{alternative}")])
+    buttons = [[InlineKeyboardButton(text=c.name, callback_data=f"cat:{city_slug}:{c.slug}")] for c in categories]
+
+    back_btn = await get_common_menu_button('back', lang)
+    if back_btn:
+        buttons.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        buttons.append([main_menu_btn])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 
 def catalog_application_category_inline():
     options = [
@@ -148,41 +273,72 @@ def catalog_application_category_inline():
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
 # ---------- Вакансии ----------
-def vacancy_main_inline_view(prefix: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Белград", callback_data=f"{prefix}:belgrade"),
-         InlineKeyboardButton(text="Нови Сад", callback_data=f"{prefix}:novisad")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")],
-        [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
-    ])
+async def vacancy_main_inline_view(prefix: str, lang="ru"):
+    city_buttons = await build_city_buttons(prefix, lang)
+    keyboard = [
+        city_buttons
+    ]
 
-def vacancy_category_inline():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    back_btn = await get_common_menu_button('back', lang)
+    if back_btn:
+        keyboard.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+async def vacancy_category_inline(lang="ru"):
+    keyboard = [
         [InlineKeyboardButton(text="Вокал", callback_data="vcat:vocal")],
         [InlineKeyboardButton(text="Музыканты", callback_data="vcat:musicians")],
-        [InlineKeyboardButton(text="Звукорежиссер", callback_data="vcat:sound")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")],
-        [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
-    ])
+        [InlineKeyboardButton(text="Звукорежиссер", callback_data="vcat:sound")]
+    ]
 
-def musicians_sub_inline():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    back_btn = await get_common_menu_button('back', lang)
+    if back_btn:
+        keyboard.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+async def musicians_sub_inline(lang="ru"):
+    keyboard = [
         [InlineKeyboardButton(text="клавиши", callback_data="vsub:keys")],
         [InlineKeyboardButton(text="гитара", callback_data="vsub:guitar")],
-        [InlineKeyboardButton(text="бас", callback_data="vsub:bass")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vcat:back")],
-        [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
-    ])
+        [InlineKeyboardButton(text="бас", callback_data="vsub:bass")]
+    ]
+
+    back_btn = await get_common_menu_button('back', lang)
+    if back_btn:
+        keyboard.append([back_btn])
+
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # ---------- Афиша ----------
-def events_main_inline():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Белград", callback_data="ecity:belgrad"),
-         InlineKeyboardButton(text="Нови Сад", callback_data="ecity:novisad")],
-        [InlineKeyboardButton(text="Ближайшие мероприятия", callback_data="events:near"),
-         InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ИНФОРМАЦИЮ", callback_data="event_new")],
-         [InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")]
-    ])
+async def events_main_inline(lang="ru"):
+    city_buttons = await build_city_buttons("ecity", lang)
+    keyboard = [
+        city_buttons,
+        [
+            InlineKeyboardButton(text="Ближайшие мероприятия", callback_data="events:near"),
+            InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ИНФОРМАЦИЮ", callback_data="event_new")
+        ]
+    ]
+
+    main_menu_btn = await get_common_menu_button('main_menu', lang)
+    if main_menu_btn:
+        keyboard.append([main_menu_btn])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 

@@ -1,6 +1,7 @@
 # utils.py
 from collections import defaultdict
 
+
 sent_photo_messages = defaultdict(list)
 last_bot_messages = defaultdict(list)
 my_listing_messages = defaultdict(list)
@@ -63,4 +64,16 @@ async def build_menu_keyboard(parent_code="main_menu", lang="ru") -> InlineKeybo
         keyboard.append([InlineKeyboardButton(text=text, callback_data=row.callback_data)])
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     return markup
+
+import aiosqlite
+
+DB_PATH = "dev.db"  # Укажите ваш путь или используйте переменную из настроек!
+
+async def get_text(code: str, lang: str = "ru"):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT text FROM BotText WHERE code = ? AND lang = ?", (code, lang)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else f"[[{code}]]"
 
