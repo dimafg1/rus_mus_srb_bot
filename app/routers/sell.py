@@ -31,6 +31,11 @@ from app.keyboards import (
     equip_inline,
 )
 
+import sys; print("PYTHONPATH:", sys.path)
+from app.routers.utils import my_listing_messages
+print("my_listing_messages:", type(my_listing_messages))
+
+
 router = Router(name="sell")
 
 # ========== КЭШИ для альбомов ==========
@@ -54,11 +59,13 @@ async def sell_nav_keyboard(lang="ru"):
 # --- Универсальная функция для вопроса с меню ---
 async def send_with_nav(m, text, parse_mode=None):
     nav_markup = await sell_nav_keyboard()
-    nav_msg = await m.answer("⬅️ Назад | ☰ Главное меню", reply_markup=nav_markup)
+    nav_text = await get_text('return_to_menu', 'ru') or "Return"
+    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
     last_bot_messages.setdefault(m.chat.id, []).append(nav_msg.message_id)
     msg = await m.answer(text, parse_mode=parse_mode)
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
     return nav_msg, msg
+
 
 
 # ─────────────────── FSM ───────────────────
@@ -167,13 +174,19 @@ async def sell_city(cb: CallbackQuery, state: FSMContext):
         )).scalars().all()
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city_slug)
     kb = await equip_inline(subcats, city_slug)
+
+    # --- ВЫНОСИМ ТЕКСТ В БД ---
+    template = await get_text('sell_choose_category', 'ru') or "City: <b>{city_name}</b>\nChoose a category:"
+    text = template.format(city_name=city.name)
+
     msg = await cb.message.answer(
-        f"Город: <b>{city.name}</b>\nВыберите категорию:",
+        text,
         reply_markup=kb
     )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await state.set_state(Sell.cat)
     await cb.answer()
+
 
 # ─────────────── шаг 2 – категория ─────────
 @router.callback_query(F.data.startswith("sell_cat:"), Sell.cat)
@@ -186,8 +199,11 @@ async def sell_cat(cb: CallbackQuery, state: FSMContext):
         subcats = (await s.execute(select(Category).where(Category.parent_id == cat_id))).scalars().all()
     if subcats:
         kb = await equip_inline(subcats, city_slug)
+        # --- Получаем текст из базы ---
+        template = await get_text('sell_choose_subcategory', 'ru') or "Category: <b>{cat_name}</b>\nChoose a subcategory:"
+        text = template.format(cat_name=cat.name)
         msg = await cb.message.answer(
-            f"Категория: <b>{cat.name}</b>\nВыберите подраздел:",
+            text,
             reply_markup=kb,
         )
         last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
@@ -197,7 +213,8 @@ async def sell_cat(cb: CallbackQuery, state: FSMContext):
         await clear_bot_messages(cb.message.chat.id, cb.bot)
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
         await state.set_state(Sell.title)
-        await send_with_nav(cb.message, "Введите <b>заголовок</b> объявления (1 строка):", parse_mode="HTML")
+        template = await get_text('sell_ask_title', 'ru') or "Enter <b>listing title</b> (one line):"
+        await send_with_nav(cb.message, template, parse_mode="HTML")
     await cb.answer()
 
 # ─────────────── шаг 3 – title ─────────────
@@ -206,7 +223,10 @@ async def sell_title(m: Message, state: FSMContext):
     await clear_bot_messages(m.chat.id, m.bot)
     await state.update_data(title=m.text.strip())
     await state.set_state(Sell.price)
-    await send_with_nav(m, "Укажите <b>цену</b> (например: 150 € или 12 000 rsd):", parse_mode="HTML")
+    # --- Получаем текст из базы ---
+    template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
+    await send_with_nav(m, template, parse_mode="HTML")
+
 
 # ─────────────── шаг 4 – price ─────────────
 @router.message(Sell.price, F.text)
@@ -214,7 +234,10 @@ async def sell_price(m: Message, state: FSMContext):
     await clear_bot_messages(m.chat.id, m.bot)
     await state.update_data(price=m.text.strip())
     await state.set_state(Sell.descr)
-    await send_with_nav(m, "Короткое описание (или «-» чтобы пропустить):", parse_mode="HTML")
+    # --- Получаем текст из базы ---
+    template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
+    await send_with_nav(m, template, parse_mode="HTML")
+
 
 # ─────────────── шаг 5 – descr ─────────────
 @router.message(Sell.descr)
@@ -234,7 +257,8 @@ async def sell_photo(m: Message, state: FSMContext):
         media_group_cache[group_id].append(m.photo[-1].file_id)
         if group_id not in media_group_tasks:
             media_group_tasks[group_id] = None
-            wait_msg = await m.answer("⏳ Пожалуйста, подождите — загружаем фотографии…")
+            template = await get_text('sell_wait_photos', 'ru') or "⏳ Please wait — uploading photos…"
+            wait_msg = await m.answer(template)
             media_group_wait_msg[group_id] = wait_msg.message_id
             media_group_tasks[group_id] = asyncio.create_task(finalize_album(m, state, group_id))
         return
@@ -283,15 +307,19 @@ async def finalize_album(m: Message, state: FSMContext, group_id):
 async def handle_not_photo(m: Message, state: FSMContext):
     if m.photo or m.video:
         return
+
+    btn = await get_common_menu_button('delete_message', lang="ru")
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить это сообщение", callback_data=f"delmsg:{m.message_id}")]
-        ]
+        inline_keyboard=[[btn]] if btn else []
     )
+
     await m.answer(
-        "❗️Пожалуйста, отправьте только фотографию (или видео). Если выбрали не тот тип, используйте скрепку и выберите Фото/Видео.",
+        await get_text('sell_not_photo', lang="ru") or
+        "❗️Please send only a photo (or video). If you selected the wrong type, use the paperclip and choose Photo/Video.",
         reply_markup=kb
     )
+
+
 
 @router.callback_query(F.data.startswith("delmsg:"))
 async def delete_msg_cb(cb: CallbackQuery):
@@ -304,7 +332,11 @@ async def delete_msg_cb(cb: CallbackQuery):
         await cb.message.delete()
     except Exception:
         pass
-    await cb.answer("Сообщение удалено.")
+    await cb.answer(
+        await get_text('delete_message_done', lang="ru") or
+        "Message deleted."
+    )
+
 
 @router.callback_query(Sell.photo, F.data == "sell_skip_photo")
 async def sell_skip_photo(cb: CallbackQuery, state: FSMContext):
@@ -317,12 +349,25 @@ async def sell_skip_photo(cb: CallbackQuery, state: FSMContext):
 async def sell_cancel_photo(cb: CallbackQuery, state: FSMContext):
     await delete_photo_prompts(cb.message, state)
     await clear_bot_messages(cb.message.chat.id, cb.bot)
-    msg1 = await cb.message.answer("❌ Создание объявления отменено.")
+    
+    # Сообщение об отмене (русский из БД, иначе английский дефолт)
+    cancel_text = await get_text('sell_cancelled', lang="ru") or "❌ Listing creation cancelled."
+
+    msg1 = await cb.message.answer(cancel_text)
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg1.message_id)
-    msg2 = await cb.message.answer("☰ Главное меню", reply_markup=await sell_nav_keyboard())
+    
+    # Формируем клавиатуру, где уже есть кнопка "Главное меню"
+    nav_kb = await sell_nav_keyboard()
+    msg2 = await cb.message.answer(
+        (await get_text('main_menu', 'ru')) or "Main menu",
+        reply_markup=nav_kb
+    )
+
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg2.message_id)
+
     await state.clear()
     await cb.answer()
+
 
 # --- Предпросмотр + confirm ---
 async def preview_and_confirm(m: Message, state: FSMContext):
@@ -368,22 +413,30 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
         await s.refresh(l)
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     # После публикации:
-    msg1 = await cb.message.answer("✅ Объявление опубликовано!")
-    nav_kb = await sell_nav_keyboard() 
-    msg2 = await cb.message.answer("☰ Главное меню", reply_markup=nav_kb)
-    last_bot_messages.setdefault(cb.message.chat.id, []).extend([msg1.message_id, msg2.message_id])
+    msg1 = await cb.message.answer(
+        (await get_text('sell_published', 'ru')) or "✅ Listing published!"
+    )
     nav_kb = await sell_nav_keyboard()
-    await cb.message.answer("☰ Главное меню", reply_markup=nav_kb)
+    msg2 = await cb.message.answer(
+        (await get_text('return_to_menu', 'ru')) or "Return",
+        reply_markup=nav_kb
+    )
+    last_bot_messages.setdefault(cb.message.chat.id, []).extend([msg1.message_id, msg2.message_id])
     await state.clear()
     await cb.answer()
+
+
 
 @router.callback_query(Sell.confirm, F.data == "sell_cancel")
 async def sell_cancel(cb: CallbackQuery, state: FSMContext):
     for d in (media_group_cache, media_group_tasks, media_group_wait_msg):
         d.clear()
     await state.clear()
-    await cb.message.edit_text("❌ Создание объявления отменено.")
+    # Текст берём из БД, если нет — английский дефолт
+    cancel_text = (await get_text('sell_cancelled', 'ru')) or "❌ Listing creation cancelled."
+    await cb.message.edit_text(cancel_text)
     await cb.answer()
+
 
 # --- “Продано” — удаление ---
 @router.callback_query(F.data.startswith("sell_sold:"))
@@ -392,43 +445,67 @@ async def mark_sold(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         l = await s.get(Listing, listing_id)
         if not l or l.owner_id != cb.from_user.id:
-            await cb.answer("Только владелец может удалить!", show_alert=True)
+            # Берём текст из БД, дефолт — английский
+            err_text = (await get_text('sell_delete_owner_only', 'ru')) or "Only the owner can delete!"
+            await cb.answer(err_text, show_alert=True)
             return
     kb = delete_keyboard(listing_id)
+    confirm_text = (await get_text('sell_delete_confirm', 'ru')) or "Are you sure you want to delete your listing? It will be permanently lost."
     msg = await cb.message.answer(
-        "Вы уверены, что хотите удалить своё объявление? Оно будет утеряно безвозвратно.",
+        confirm_text,
         reply_markup=kb
     )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await cb.answer()
 
+
 @router.callback_query(F.data.startswith("sell_delete_yes:"))
 async def delete_yes(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
     listing_id = int(cb.data.split(":")[1])
     async with SessionLocal() as s:
         l = await s.get(Listing, listing_id)
         if not l or l.owner_id != cb.from_user.id:
-            await cb.answer("Ошибка! Только владелец может удалить.", show_alert=True)
+            err_text = (await get_text('sell_delete_only_owner', 'ru')) or "Error! Only the owner can delete."
+            await cb.answer(err_text, show_alert=True)
             return
         await s.delete(l)
         await s.commit()
-    # Полная очистка старых сообщений
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
-    last_bot_messages[cb.message.chat.id] = []  # <--- ВАЖНО!
-    # Добавляем новые сообщения
-    msg = await cb.message.answer("Объявление удалено.")
-    last_bot_messages[cb.message.chat.id].append(msg.message_id)
+    # 1. Удаляем карточки объявлений, если они есть
+    if my_listing_messages.get(chat_id):
+        for msg_id in my_listing_messages[chat_id]:
+            try:
+                await cb.bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+        #my_listing_messages[chat_id] = []
+
+    # 2. Очищаем все служебные сообщения
+    await clear_bot_messages(chat_id, cb.bot)
+    last_bot_messages[chat_id] = []
+
+    # 3. Отправляем новые сообщения и добавляем их в кэш
+    deleted_text = (await get_text('sell_deleted', 'ru')) or "Listing deleted."
+    msg = await cb.message.answer(deleted_text)
+    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
     nav_kb = await sell_nav_keyboard()
-    msg2 = await cb.message.answer("☰ Главное меню", reply_markup=nav_kb)
-    last_bot_messages[cb.message.chat.id].append(msg2.message_id)
+    menu_text = (await get_text('return_to_menu', 'ru')) or "Return"
+    msg2 = await cb.message.answer(menu_text, reply_markup=nav_kb)
+    last_bot_messages.setdefault(chat_id, []).append(msg2.message_id)
+
     await cb.answer()
+
+
 
 
 
 @router.callback_query(F.data.startswith("sell_delete_no:"))
 async def delete_no(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Удаление отменено, объявление осталось активным.")
+    cancel_text = (await get_text('sell_delete_cancel', 'ru')) or "Deletion canceled, listing is still active."
+    await cb.message.answer(cancel_text)
     await cb.answer()
+
 
 @router.callback_query(F.data == "sell_back")
 async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
@@ -438,14 +515,16 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
 
     if cur_state == Sell.city.state:
         await clear_bot_messages(chat_id, cb.bot)
+        market_text = (await get_text('market_return', 'ru')) or "💸 Marketplace:\nChoose an action."
         msg = await cb.message.answer(
-            "💸 Барахолка:\nВыберите действие.",
+            market_text,
             reply_markup=await market_inline()
         )
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await state.clear()
         await cb.answer()
         return
+
 
     if cur_state == Sell.cat.state:
         await clear_bot_messages(chat_id, cb.bot)
@@ -469,20 +548,22 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
             cat = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
             subcats = (await s.execute(select(Category).where(Category.parent_id == cat.id))).scalars().all()
         kb = await equip_inline(subcats, city_slug)
+        # --- Получаем текст из базы ---
+        template = await get_text('sell_choose_category_back', 'ru') or "City: <b>{city_name}</b>\nChoose a category:"
+        text = template.format(city_name=data.get('city_name'))
         try:
             await cb.message.edit_text(
-                f"Город: <b>{data.get('city_name')}</b>\nВыберите категорию:",
+                text,
                 reply_markup=kb,
                 parse_mode="HTML"
             )
         except Exception as e:
-            # Если не удалось — пробуем удалить сообщение и создать новое
             try:
                 await cb.message.delete()
             except Exception:
                 pass
             msg = await cb.message.answer(
-                f"Город: <b>{data.get('city_name')}</b>\nВыберите категорию:",
+                text,
                 reply_markup=kb,
                 parse_mode="HTML"
             )
@@ -491,20 +572,24 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
 
 
 
+
     elif cur_state == Sell.price.state:
         await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.title)
-        await send_with_nav(cb.message, "Введите <b>заголовок</b> объявления (1 строка):", parse_mode="HTML")
+        template = await get_text('sell_ask_title', 'ru') or "Enter <b>listing title</b> (one line):"
+        await send_with_nav(cb.message, template, parse_mode="HTML")
 
     elif cur_state == Sell.descr.state:
         await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.price)
-        await send_with_nav(cb.message, "Укажите <b>цену</b> (например: 150 € или 12 000 rsd):", parse_mode="HTML")
+        template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
+        await send_with_nav(cb.message, template, parse_mode="HTML")
 
     elif cur_state == Sell.photo.state:
         await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.descr)
-        await send_with_nav(cb.message, "Короткое описание (или «-» чтобы пропустить):", parse_mode="HTML")
+        template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
+        await send_with_nav(cb.message, template, parse_mode="HTML")
 
     elif cur_state == Sell.confirm.state:
         await clear_bot_messages(chat_id, cb.bot)
@@ -517,11 +602,13 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
         async with SessionLocal() as s:
             cities = (await s.execute(select(City))).scalars().all()
         kb = await cities_inline(cities)
+        template = await get_text('sell_create_start', 'ru') or "💸 Create a listing.\nFirst, choose a city:"
         await cb.message.answer(
-            "💸 Создать объявление.\nСначала выберите город:",
+            template,
             reply_markup=kb
         )
     await cb.answer()
+
 
 @router.callback_query(F.data == "sell_city_back")
 async def sell_city_back(cb: CallbackQuery, state: FSMContext):

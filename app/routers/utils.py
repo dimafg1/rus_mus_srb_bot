@@ -69,11 +69,10 @@ import aiosqlite
 
 DB_PATH = "dev.db"  # Укажите ваш путь или используйте переменную из настроек!
 
-async def get_text(code: str, lang: str = "ru"):
+async def get_text(code: str, lang: str = "ru", default=None):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT text FROM BotText WHERE code = ? AND lang = ?", (code, lang)
         ) as cursor:
             row = await cursor.fetchone()
-            return row[0] if row else None
-
+            return row[0] if row else (default or f"[Text not found for: {code}]")

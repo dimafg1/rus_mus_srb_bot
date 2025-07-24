@@ -17,7 +17,7 @@ from pydantic import ConfigDict                 # ✅
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-
+import sqlite3
 
 # --------------------------------------------------------------------------- #
 # Настройки читаются из .env, лишние переменные (например BOT_TOKEN) игнорируются
@@ -52,3 +52,4 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+

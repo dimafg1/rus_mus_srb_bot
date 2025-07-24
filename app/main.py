@@ -531,7 +531,7 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
             await cb.bot.delete_message(chat_id, msg_id)
         except Exception:
             pass
-    my_listing_messages[chat_id] = []
+    #my_listing_messages[chat_id] = []
 
     await clear_bot_messages(chat_id, cb.bot)
     await state.clear()
@@ -589,7 +589,7 @@ async def my_listings_back_handler(cb: CallbackQuery, state: FSMContext):
                 await cb.bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
-        my_listing_messages[chat_id] = []
+        #my_listing_messages[chat_id] = []
 
     # Также удаляем само сообщение с кнопками (если оно не из списка выше)
     try:
@@ -670,27 +670,70 @@ async def show_listing_details(cb: CallbackQuery):
         listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
+    price_label = (await get_text('listing_price', 'ru')) or "Price"
+    contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
     caption = f"<b>{listing.title}</b>\n"
     if listing.price:
-        caption += f"Цена: {listing.price}\n"
+        caption += f"{price_label}: {listing.price}\n"
     if listing.descr:
         caption += f"{listing.descr}\n"
-    caption += f"Контакт: {listing.contact}"
+    caption += f"{contact_label}: {listing.contact}"
+
 
     buttons = []
+
+    # Кнопка "Удалить объявление" — только для владельца объявления
     if listing.owner_id == cb.from_user.id:
-        buttons.append([InlineKeyboardButton(text="Удалить объявление", callback_data=f"sell_sold:{listing.id}")])
+        btn = await get_common_menu_button('btn_delete_listing', lang='ru')
+        # меняем только callback_data, текст и иконка уже есть!
+        if btn:
+            btn = InlineKeyboardButton(
+                text=btn.text,
+                callback_data=f"sell_sold:{listing.id}"
+            )
+        else:
+            btn = InlineKeyboardButton(text="❌ Delete listing", callback_data=f"sell_sold:{listing.id}")
+        buttons.append([btn])
+
+    # Кнопка "Связаться с продавцом"
     elif listing.contact and listing.contact.startswith("@"):
         username = listing.contact.lstrip("@")
-        buttons.append([InlineKeyboardButton(text="💬 Связаться с продавцом", url=f"https://t.me/{username}")])
-    # Кнопка "Назад"
+        btn = await get_common_menu_button('btn_contact_seller', lang='ru')
+        if btn:
+            btn = InlineKeyboardButton(
+                text=btn.text,
+                url=f"https://t.me/{username}"
+            )
+        else:
+            btn = InlineKeyboardButton(text="💬 Contact seller", url=f"https://t.me/{username}")
+        buttons.append([btn])
+
+    # Кнопка "Назад к моим объявлениям"
     if from_my:
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад к моим объявлениям", callback_data="my_listings_back")])
+        btn = await get_common_menu_button('btn_back_my_listings', lang='ru')
+        if btn:
+            btn = InlineKeyboardButton(
+                text=btn.text,
+                callback_data="my_listings_back"
+            )
+        else:
+            btn = InlineKeyboardButton(text="⬅️ Back to my listings", callback_data="my_listings_back")
+        buttons.append([btn])
     else:
-        # ⬇️⬇️ возвращаем с помощью слагов!
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад к объявлениям", callback_data=f"mlist:{city_slug}:{cat_slug}")])
+        btn = await get_common_menu_button('btn_back_listings', lang='ru')
+        if btn:
+            btn = InlineKeyboardButton(
+                text=btn.text,
+                callback_data=f"mlist:{city_slug}:{cat_slug}"
+            )
+        else:
+            btn = InlineKeyboardButton(text="⬅️ Back to listings", callback_data=f"mlist:{city_slug}:{cat_slug}")
+        buttons.append([btn])
+
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
+    
     sent_ids = []
     if photo_ids and photo_ids[0]:
         if len(photo_ids) == 1:
@@ -709,11 +752,7 @@ async def show_listing_details(cb: CallbackQuery):
         msg = await cb.message.answer(caption, reply_markup=markup, parse_mode="HTML")
         sent_ids.append(msg.message_id)
 
-    # --- Запоминаем, чтобы потом чистить (только для моих объявлений) ---
-    if from_my and sent_ids:
-        my_listing_messages[chat_id].extend(sent_ids)
-
-    # Для обычных объявлений (не мои) — остается sent_photo_messages, если используете
+       # Для обычных объявлений (не мои) — остается sent_photo_messages, если используете
     if not from_my and sent_ids:
         sent_photo_messages.setdefault(chat_id, []).extend(sent_ids)
     if from_my and sent_ids:
@@ -733,12 +772,15 @@ async def show_listing_photo(cb: CallbackQuery):
         listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
+    price_label = (await get_text('listing_price', 'ru')) or "Price"
+    contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
     caption = f"<b>{listing.title}</b>\n"
     if listing.price:
-        caption += f"Цена: {listing.price}\n"
+        caption += f"{price_label}: {listing.price}\n"
     if listing.descr:
         caption += f"{listing.descr}\n"
-    caption += f"Контакт: {listing.contact}"
+    caption += f"{contact_label}: {listing.contact}"
+
 
     sent_ids = []
 
@@ -838,17 +880,30 @@ async def toggle_listing(cb: CallbackQuery):
         await bot.edit_message_text(header, chat_id=str(chat_id), message_id=msg_id_current, reply_markup=new_reply, parse_mode="HTML")
         expanded_listing_by_chat[chat_id] = None
     else:
-        details = (f"\n    Цена: {listing.price}"
-                   f"\n    {listing.descr or 'Нет описания'}"
-                   f"\n    Контакт: {listing.contact}")
+        price_label = (await get_text('listing_price', 'ru')) or "Price"
+        contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
+        no_descr = (await get_text('listing_no_descr', 'ru')) or "No description"
+
+        details = (
+            f"\n    {price_label}: {listing.price}"
+            f"\n    {listing.descr or no_descr}"
+            f"\n    {contact_label}: {listing.contact}"
+        )
         full_text = f"• <b>{listing.title}</b>{details}"
         button_text = f"{listing.title} — Свернуть"
         new_reply = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=button_text, callback_data=f"toggle:{city_slug}:{cat_slug}:{listing.id}")]
         ])
-        await bot.edit_message_text(full_text, chat_id=str(chat_id), message_id=msg_id_current, reply_markup=new_reply, parse_mode="HTML")
+        await bot.edit_message_text(
+            full_text,
+            chat_id=str(chat_id),
+            message_id=msg_id_current,
+            reply_markup=new_reply,
+            parse_mode="HTML"
+        )
         expanded_listing_by_chat[chat_id] = listing_id
     await cb.answer()
+
 
 @dp.callback_query(F.data.startswith("item_detail:"))
 async def item_detail_handler(cb: CallbackQuery):
@@ -1036,11 +1091,13 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
         query_text = "Enter your search query for listings (e.g., microphone, Yamaha, amp):"
 
     # Сначала отправляем кнопки
+    nav_text = await get_text('return_to_menu', 'ru') or "Return"
     nav_msg = await cb.bot.send_message(
         chat_id,
-        "⬅️ Назад | ☰ Главное меню",  # (эту строку тоже можно будет перенести в БД)
+        nav_text,
         reply_markup=nav_markup
     )
+
 
     # Затем — текст запроса (пользователь вводит прямо под ним)
     query_msg = await cb.bot.send_message(
@@ -1153,12 +1210,15 @@ async def show_search_listing(cb: CallbackQuery):
         listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
+    price_label = (await get_text('listing_price', 'ru')) or "Price"
+    contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
     caption = f"<b>{listing.title}</b>\n"
     if listing.price:
-        caption += f"Цена: {listing.price}\n"
+        caption += f"{price_label}: {listing.price}\n"
     if listing.descr:
         caption += f"{listing.descr}\n"
-    caption += f"Контакт: {listing.contact}"
+    caption += f"{contact_label}: {listing.contact}"
+
 
     btns = []
     if listing.owner_id == cb.from_user.id:
@@ -1217,12 +1277,15 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
         city_slug = city.slug
         cat_slug = cat.slug
 
+    price_label = (await get_text('listing_price', 'ru')) or "Price"
+    contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
     caption = f"<b>{listing.title}</b>\n"
     if listing.price:
-        caption += f"Цена: {listing.price}\n"
+        caption += f"{price_label}: {listing.price}\n"
     if listing.descr:
         caption += f"{listing.descr}\n"
-    caption += f"Контакт: {listing.contact}"
+    caption += f"{contact_label}: {listing.contact}"
+
 
     btns = []
     if listing.owner_id == cb.from_user.id:
