@@ -76,3 +76,21 @@ async def get_text(code: str, lang: str = "ru", default=None):
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else (default or f"[Text not found for: {code}]")
+
+
+# --- Безопасное редактирование или отправка нового сообщения ---
+from aiogram.exceptions import TelegramBadRequest
+
+async def safe_edit_or_send(cb, text: str, reply_markup=None, parse_mode="HTML"):
+    chat_id = cb.message.chat.id
+    try:
+        msg = await cb.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest:
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        msg = await cb.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+    # Добавляем сообщение в кеш для последующего удаления
+    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)

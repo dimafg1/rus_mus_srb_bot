@@ -54,6 +54,8 @@ from app.routers.utils import (
 from app.texts import get_text
 from app.routers.utils import get_text
 from app.keyboards import get_common_menu_button
+from app.routers.market_view import router as market_view_router
+from app.routers.utils import safe_edit_or_send
 
 
 
@@ -146,12 +148,12 @@ async def go_catalog(cb: CallbackQuery, state: FSMContext):
 
 
 
-@dp.callback_query(F.data == "go_market")
-async def go_market(cb: CallbackQuery, state: FSMContext):
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
-    markup = await market_inline()
-    await safe_edit_or_send(cb, await get_text("market_choose_action", "ru"), markup)
-    await cb.answer()
+# @dp.callback_query(F.data == "go_market")
+# async def go_market(cb: CallbackQuery, state: FSMContext):
+#     await clear_bot_messages(cb.message.chat.id, cb.bot)
+#     markup = await market_inline()
+#     await safe_edit_or_send(cb, await get_text("market_choose_action", "ru"), markup)
+#     await cb.answer()
 
 
 
@@ -1434,6 +1436,11 @@ async def market_menu_back(cb: CallbackQuery, state: FSMContext):
 # ───────────────── Entrypoint ───────────────────────────── #
 async def main():
     await init_db()
+
+    # Подключаем роутеры
+    dp.include_router(market_view_router)  # 👈 добавили этот
+
+    # Запуск бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
