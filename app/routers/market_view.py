@@ -1,6 +1,7 @@
 # app/routers/market_view.py
 
 from aiogram import F
+from aiogram import Router
 from aiogram.types import CallbackQuery, InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 
@@ -15,27 +16,36 @@ from app.routers.utils import (
 )
 from app.keyboards import (
     market_inline, 
-    market_city_keyboard, 
-    market_menu_keyboard,
     build_main_menu,
     get_common_menu_button
 )
 from app.texts import get_text
-from app.states import MarketSearch
 from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.database import SessionLocal
 from app.models import Category, Listing
-from app.utils import city_by_slug, children_of, fetch_listings
-from app.routers.utils import get_common_menu_button
+from app.routers.utils import city_by_slug, children_of, fetch_listings
+from app.keyboards import get_common_menu_button
 from app.routers.utils import get_text
 from app.routers.utils import expanded_listing_by_chat, listing_message_ids
-from app.misc import bot
+# from app.misc import bot
 
-from app.utils.market_search import show_market_search_results
+
+
+from app.routers.utils import (
+    last_search_query_message,
+    last_search_menu_message,
+    last_reply_menu_messages,
+    last_bot_messages,
+    my_listing_messages,
+    sent_photo_messages,
+)
+
+from app.routers.market_utils import show_market_search_results
 import logging
+from app.states import MarketSearch
 
 
 
@@ -50,7 +60,7 @@ async def go_market(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
 
     # Загружаем текст и клавиатуру для выбора города
-    text = await get_text("market_city_select")
+    text = await get_text("market_choose_action", "ru") or "💸 Flea market – choose action:"
     markup = await market_inline()
 
     # Отправляем новое сообщение

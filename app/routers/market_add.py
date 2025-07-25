@@ -31,12 +31,21 @@ from app.keyboards import (
     equip_inline,
 )
 
+from app.routers.utils import (
+    last_search_query_message,
+    last_search_menu_message,
+    last_reply_menu_messages,
+    last_bot_messages,
+    my_listing_messages,
+    sent_photo_messages,
+)
+
 import sys; print("PYTHONPATH:", sys.path)
 from app.routers.utils import my_listing_messages
 print("my_listing_messages:", type(my_listing_messages))
 
 
-router = Router(name="sell")
+router = Router(name="market_addl")
 
 # ========== КЭШИ для альбомов ==========
 media_group_cache = {}
@@ -515,7 +524,7 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
 
     if cur_state == Sell.city.state:
         await clear_bot_messages(chat_id, cb.bot)
-        market_text = (await get_text('market_return', 'ru')) or "💸 Marketplace:\nChoose an action."
+        market_text = (await get_text('market_choose_action', 'ru')) or "💸 Marketplace:\nChoose an action."
         msg = await cb.message.answer(
             market_text,
             reply_markup=await market_inline()

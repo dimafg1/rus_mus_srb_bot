@@ -1,10 +1,20 @@
 # utils.py
 from collections import defaultdict
+from app.models import City, Category, Listing
+from app.database import SessionLocal
+from sqlalchemy import select
+from typing import Optional, List
 
 
-sent_photo_messages = defaultdict(list)
+
+last_search_query_message = {}
+last_search_menu_message = {}
+last_reply_menu_messages = defaultdict(list)
 last_bot_messages = defaultdict(list)
 my_listing_messages = defaultdict(list)
+sent_photo_messages = defaultdict(list)
+listing_message_ids = {}
+expanded_listing_by_chat = {}
 
 async def clear_bot_messages(chat_id, bot):
     # Удаляем сообщения с фото (в том числе объявления, медиагруппы и пр.)
@@ -94,3 +104,23 @@ async def safe_edit_or_send(cb, text: str, reply_markup=None, parse_mode="HTML")
 
     # Добавляем сообщение в кеш для последующего удаления
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+
+async def city_by_slug(slug: str) -> City:
+    async with SessionLocal() as s:
+        return (await s.execute(select(City).where(City.slug == slug))).scalar_one()
+
+async def children_of(parent_id: Optional[int]) -> List[Category]:
+    async with SessionLocal() as s:
+        q = select(Category).where(Category.parent_id == parent_id)
+        return (await s.execute(q)).scalars().all()
+
+async def fetch_listings(city_id: int, cat_id: int, offset: int = 0) -> List[Listing]:
+    async with SessionLocal() as s:
+        q = (select(Listing)
+             .where(Listing.city_id == city_id,
+                    Listing.category_id == cat_id,
+                    Listing.is_sold.is_(False))
+             .order_by(Listing.created_at.desc())
+             .offset(offset)
+             .limit(PAGE))
+        return (await s.execute(q)).scalars().all()

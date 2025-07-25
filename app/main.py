@@ -43,7 +43,7 @@ from app.keyboards import (
     musicians_sub_inline,
     events_main_inline,
 )
-from app.routers.sell import router as sell_router
+from app.routers.market_add import router as market_add_router
 from app.routers.vacancy import router as vacancy_router, VacancyForm
 from app.routers.utils import (
     clear_bot_messages,
@@ -57,6 +57,16 @@ from app.keyboards import get_common_menu_button
 from app.routers.market_view import router as market_view_router
 from app.routers.utils import safe_edit_or_send
 
+from app.routers.utils import (
+    last_search_query_message,
+    last_search_menu_message,
+    last_reply_menu_messages,
+    last_bot_messages,
+    my_listing_messages,
+    sent_photo_messages,
+)
+from app.states import MarketSearch
+
 
 
 
@@ -67,14 +77,14 @@ last_reply_menu_messages: Dict[int, list] = defaultdict(list)   # ID reply-ме�
 my_listing_messages: Dict[int, list] = defaultdict(list)
 
 
-async def show_market_search_results(m, state, results):
-    keyboard = [
-        [InlineKeyboardButton(text=f"{listing.title} — {listing.price or ''}", callback_data=f"market_search_detail:{listing.id}")]
-        for listing in results
-    ]
-    keyboard.append([InlineKeyboardButton(text="❌ Новый поиск", callback_data="market_search_new")])
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await m.answer("Найдено объявлений:", reply_markup=markup)
+# async def show_market_search_results(m, state, results):
+#     keyboard = [
+#         [InlineKeyboardButton(text=f"{listing.title} — {listing.price or ''}", callback_data=f"market_search_detail:{listing.id}")]
+#         for listing in results
+#     ]
+#     keyboard.append([InlineKeyboardButton(text="❌ Новый поиск", callback_data="market_search_new")])
+#     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+#     await m.answer("Найдено объявлений:", reply_markup=markup)
 
 async def safe_edit_or_send(cb: CallbackQuery, text: str, reply_markup=None, parse_mode="HTML"):
     chat_id = cb.message.chat.id
@@ -130,12 +140,12 @@ class EventForm(VacancyForm):
     date: State = State()
     details: State = State()
 
-class MarketSearch(StatesGroup):
-    waiting_for_query = State()
-    waiting_for_detail = State()
+# class MarketSearch(StatesGroup):
+#     waiting_for_query = State()
+#     waiting_for_detail = State()
 
 
-dp.include_router(sell_router)
+dp.include_router(market_add_router)
 dp.include_router(vacancy_router)
 
 
@@ -318,7 +328,7 @@ async def city_selected(cb: CallbackQuery):
     city = await city_by_slug(slug)
     roots = await children_of(None)
     header = f"<b>Каталог → {city.name}</b>"
-    markup = catalog_city_inline(slug, roots)
+    markup = await catalog_city_inline(slug, roots)
     await cb.message.edit_text(header, reply_markup=markup)
     await cb.answer()
 
@@ -339,14 +349,14 @@ async def cat_handler(cb: CallbackQuery):
     path = " → ".join(reversed(names))
     header = f"<b>Каталог → {city.name} → {path}</b>"
     if children:
-        markup = catalog_cat_inline(city_slug, children)
+        markup = await catalog_cat_inline(city_slug, children)
         await cb.message.edit_text(header, reply_markup=markup)
     else:
         # Здесь показываем содержимое выбранной категории (например, товары, услуги)
         items = await fetch_items(city.id, cat.id)
         text = header + ("\n\nПока нет анкет." if not items else "\n\n" + "\n\n".join(
             f"• <b>{i.title}</b>\n{i.descr or ''}\n<code>{i.contact}</code>" for i in items))
-        markup = catalog_cat_inline(city_slug, [])  # Кнопка "Назад"
+        markup = await catalog_cat_inline(city_slug, [])  # Кнопка "Назад"
         await cb.message.edit_text(text, reply_markup=markup)
     await cb.answer()
 
