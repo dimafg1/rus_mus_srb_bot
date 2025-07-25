@@ -478,7 +478,7 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
                 await cb.bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
-        #my_listing_messages[chat_id] = []
+        my_listing_messages[chat_id] = []
 
     # 2. Очищаем все служебные сообщения
     await clear_bot_messages(chat_id, cb.bot)
