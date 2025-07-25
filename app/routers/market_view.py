@@ -8,7 +8,7 @@ from app.texts import get_text
 from app.routers.utils import last_bot_messages
 from app.keyboards import market_inline
 from app.routers.utils import clear_bot_messages, safe_edit_or_send
-from aiogram import Router
+
 
 router = Router()
 
