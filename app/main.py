@@ -148,13 +148,27 @@ class EventForm(VacancyForm):
 dp.include_router(market_add_router)
 dp.include_router(vacancy_router)
 
+# Include catalogue routers extracted from main.py.  These routers handle
+# navigation of the specialists/portfolio catalogue (catalog_view) and
+# submission of new portfolio applications (catalog_add).  Without
+# including them the corresponding callback handlers would not be
+# registered with the dispatcher.
+from app.routers.catalog_view import router as catalog_view_router
+from app.routers.catalog_add import router as catalog_add_router
+dp.include_router(catalog_view_router)
+dp.include_router(catalog_add_router)
 
-@dp.callback_query(F.data == "go_catalog")
-async def go_catalog(cb: CallbackQuery, state: FSMContext):
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
-    markup = await catalog_inline_initial()
-    await safe_edit_or_send(cb, await get_text("catalog_choose_city", "ru"), markup)
-    await cb.answer()
+
+# NOTE: catalogue navigation has been moved to app/routers/catalog_view.py.
+# The handler registration below is intentionally disabled to avoid
+# duplicate callbacks.  See catalog_view.go_catalog for the current
+# implementation.
+# @dp.callback_query(F.data == "go_catalog")
+# async def go_catalog(cb: CallbackQuery, state: FSMContext):
+#     await clear_bot_messages(cb.message.chat.id, cb.bot)
+#     markup = await catalog_inline_initial()
+#     await safe_edit_or_send(cb, await get_text("catalog_choose_city", "ru"), markup)
+#     await cb.answer()
 
 
 @dp.callback_query(F.data == "go_isk")
@@ -307,116 +321,6 @@ async def cancel_handler(m: Message, state: FSMContext):
     await state.clear()
     await m.answer("Действие отменено.")
 
-
-@dp.callback_query(F.data == "apply_catalog")
-async def apply_catalog_handler(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("Выберите направление вашей заявки:", reply_markup=catalog_application_category_inline())
-    await state.set_state(CatalogForm.category_choice)
-    await cb.answer()
-
-@dp.callback_query(F.data.startswith("capcat:"))
-async def catalog_application_category_handler(cb: CallbackQuery, state: FSMContext):
-    category = cb.data.split(":", 1)[1]
-    await state.update_data(category_choice=category)
-    await cb.message.edit_text(f"Вы выбрали направление: <b>{category.capitalize()}</b>\nВведите название группы/студии/площадки:")
-    await state.set_state(CatalogForm.name)
-    await cb.answer()
-
-@dp.callback_query(F.data.startswith("citysel:"))
-async def city_selected(cb: CallbackQuery):
-    slug = cb.data.split(":", 1)[1]
-    city = await city_by_slug(slug)
-    roots = await children_of(None)
-    header = f"<b>Каталог → {city.name}</b>"
-    markup = await catalog_city_inline(slug, roots)
-    await cb.message.edit_text(header, reply_markup=markup)
-    await cb.answer()
-
-@dp.callback_query(F.data.startswith("cat:"))
-async def cat_handler(cb: CallbackQuery):
-    _, city_slug, cat_slug = cb.data.split(":", 2)
-    city = await city_by_slug(city_slug)
-    async with SessionLocal() as s:
-        cat = (await s.execute(select(Category).where(Category.slug == cat_slug))).scalar_one()
-    children = await children_of(cat.id)
-    names = [cat.name]
-    cur = cat
-    while cur.parent_id:
-        async with SessionLocal() as s2:
-            p = (await s2.execute(select(Category).where(Category.id == cur.parent_id))).scalar_one()
-        names.append(p.name)
-        cur = p
-    path = " → ".join(reversed(names))
-    header = f"<b>Каталог → {city.name} → {path}</b>"
-    if children:
-        markup = await catalog_cat_inline(city_slug, children)
-        await cb.message.edit_text(header, reply_markup=markup)
-    else:
-        # Здесь показываем содержимое выбранной категории (например, товары, услуги)
-        items = await fetch_items(city.id, cat.id)
-        text = header + ("\n\nПока нет анкет." if not items else "\n\n" + "\n\n".join(
-            f"• <b>{i.title}</b>\n{i.descr or ''}\n<code>{i.contact}</code>" for i in items))
-        markup = await catalog_cat_inline(city_slug, [])  # Кнопка "Назад"
-        await cb.message.edit_text(text, reply_markup=markup)
-    await cb.answer()
-
-@dp.callback_query(F.data == "catalog:back")
-async def catalog_back(cb: CallbackQuery):
-    await cb.message.edit_text("🏙 Каталог\nВыберите действие:", reply_markup=catalog_inline_initial())
-    await cb.answer()
-
-@dp.message(CatalogForm.name)
-async def get_catalog_name(m: Message, state: FSMContext):
-    await state.update_data(name=m.text)
-    await m.answer("Введите адрес (необязательно, можно пропустить):")
-    await state.set_state(CatalogForm.address)
-
-@dp.message(CatalogForm.address)
-async def get_catalog_address(m: Message, state: FSMContext):
-    await state.update_data(address=m.text)
-    await m.answer("Прикрепите фото (можно до 3-х, или пропустите):")
-    await state.set_state(CatalogForm.photo)
-
-@dp.message(CatalogForm.photo)
-async def get_catalog_photo(m: Message, state: FSMContext):
-    await state.update_data(photo=m.text)
-    await m.answer("Введите описание ваших умений или информации о группе/студии:")
-    await state.set_state(CatalogForm.description)
-
-@dp.message(CatalogForm.description)
-async def get_catalog_description(m: Message, state: FSMContext):
-    await state.update_data(description=m.text)
-    await m.answer("Введите информацию о реп. базе (ссылка, если есть):")
-    await state.set_state(CatalogForm.repo)
-
-@dp.message(CatalogForm.repo)
-async def get_catalog_repo(m: Message, state: FSMContext):
-    data = await state.get_data()
-    data["repo"] = m.text
-    summary = (
-        f"Направление: {data.get('category_choice')}\n"
-        f"Название: {data.get('name')}\n"
-        f"Адрес: {data.get('address')}\n"
-        f"Фото: {data.get('photo')}\n"
-        f"Описание: {data.get('description')}\n"
-        f"Реп. база: {data.get('repo')}"
-    )
-    await m.answer(f"Проверьте введённые данные:\n\n{summary}\n\nПодтвердите отправку.", 
-                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                         [InlineKeyboardButton(text="Да", callback_data="confirm:yes"),
-                          InlineKeyboardButton(text="Нет", callback_data="confirm:no")]
-                     ]))
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("confirm:"))
-async def catalog_confirm_handler(cb: CallbackQuery, state: FSMContext):
-    decision = cb.data.split(":", 1)[1]
-    if decision == "yes":
-        await cb.message.edit_text("Ваша заявка принята. Спасибо!")
-    else:
-        await cb.message.edit_text("Заявка отменена.")
-    await state.clear()
-    await cb.answer()
 
 # ───────────── MARKET (Барахолка) Handlers ───────────── #
 

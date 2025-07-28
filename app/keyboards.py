@@ -244,7 +244,7 @@ async def catalog_city_inline(city_slug: str, categories: List[Category], lang="
     alternative = "belgrade" if city_slug != "belgrade" else "novisad"
     buttons = [[InlineKeyboardButton(text=c.name, callback_data=f"cat:{city_slug}:{c.slug}")] for c in categories]
 
-    back_btn = await get_common_menu_button('back', lang)
+    back_btn = await get_common_menu_button('catalog_back', lang)
     if back_btn:
         buttons.append([back_btn])
 
