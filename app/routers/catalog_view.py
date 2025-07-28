@@ -96,8 +96,9 @@ async def cat_handler(cb: CallbackQuery) -> None:
             select(Category).where(Category.slug == cat_slug)
         )).scalar_one()
     children = await children_of(cat.id)
-    # build breadcrumb
+    # build breadcrumb и находим parent_cat_slug
     names = [cat.name]
+    parent_cat_slug = None
     cur = cat
     while cur.parent_id:
         async with SessionLocal() as session:
@@ -105,15 +106,41 @@ async def cat_handler(cb: CallbackQuery) -> None:
                 select(Category).where(Category.id == cur.parent_id)
             )).scalar_one()
         names.append(p.name)
+        if not parent_cat_slug:
+            parent_cat_slug = p.slug
         cur = p
     path = " → ".join(reversed(names))
     header = f"<b>Каталог → {city.name} → {path}</b>"
 
+    # универсальный блок кнопок для children и items
+    buttons = []
+    # кнопки самих подкатегорий, если они есть
     if children:
-        markup = await catalog_city_inline(city_slug, children)
+        for child in children:
+            buttons.append([InlineKeyboardButton(text=child.name, callback_data=f"cat:{city_slug}:{child.slug}")])
+
+    if parent_cat_slug:
+        # Назад к родителю
+        back_callback = f"cat:{city_slug}:{parent_cat_slug}"
+    else:
+        # Назад к списку городов
+        back_callback = f"citysel:{city_slug}"
+
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        buttons.append([InlineKeyboardButton(text=back_btn.text, callback_data=back_callback)])
+
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        buttons.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    if children:
         msg = await cb.bot.send_message(cb.message.chat.id, header, reply_markup=markup, parse_mode="HTML")
         last_bot_messages[cb.message.chat.id] = [msg.message_id]
     else:
+        # Leaf category: show items if any
         async with SessionLocal() as session:
             items = (await session.execute(
                 select(Item)
@@ -131,15 +158,6 @@ async def cat_handler(cb: CallbackQuery) -> None:
                 contact = i.contact
                 parts.append(f"• <b>{title}</b>\n{descr}\n<code>{contact}</code>")
             text += "\n\n" + "\n\n".join(parts)
-        # Provide only a Back button
-        back_btn = await get_common_menu_button('back')
-        buttons = []
-        if back_btn:
-            buttons.append([InlineKeyboardButton(text=back_btn.text, callback_data="catalog:back")])
-        main_menu_btn = await get_common_menu_button('main_menu')
-        if main_menu_btn:
-            buttons.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
-        markup = InlineKeyboardMarkup(inline_keyboard=buttons)
         msg = await cb.bot.send_message(cb.message.chat.id, text, reply_markup=markup, parse_mode="HTML")
         last_bot_messages[cb.message.chat.id] = [msg.message_id]
     await cb.answer()
