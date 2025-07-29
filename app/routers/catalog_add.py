@@ -33,6 +33,9 @@ from app.database import SessionLocal
 from app.models import Category
 from sqlalchemy import select
 from app.keyboards import get_common_menu_button
+from app.routers.utils import clear_bot_messages, last_bot_messages  # и любые другие, если используются
+from app.models import City
+
 
 
 router = Router(name="catalog_add")
@@ -73,17 +76,17 @@ async def catalog_back_handler(cb: CallbackQuery, state: FSMContext):
 
 from app.keyboards import catalog_profile_category_inline
 
-@router.callback_query(F.data.startswith("apply_city:"), CatalogAddForm.category_choice)
-async def apply_catalog_city_handler(cb: CallbackQuery, state: FSMContext):
-    city_slug = cb.data.split(":")[1]
-    markup = await catalog_profile_category_inline(city_slug)
-    await cb.message.edit_text("Выберите категорию анкеты:", reply_markup=markup)
-    await state.update_data(city=city_slug)
-    await state.set_state(CatalogAddForm.category_choice)
-    await cb.answer()
+# @router.callback_query(F.data.startswith("apply_city:"), CatalogAddForm.category_choice)
+# async def apply_catalog_city_handler(cb: CallbackQuery, state: FSMContext):
+#     city_slug = cb.data.split(":")[1]
+#     markup = await catalog_profile_category_inline(city_slug)
+#     await cb.message.edit_text("Выберите категорию анкеты:", reply_markup=markup)
+#     await state.update_data(city=city_slug)
+#     await state.set_state(CatalogAddForm.category_choice)
+#     await cb.answer()
 
 @router.callback_query(F.data == "catalog_city_back", CatalogAddForm.category_choice)
-async def back_to_city(cb: CallbackQuery, state: FSMContext):
+async def catalog_city_back(cb: CallbackQuery, state: FSMContext):
     city_buttons = await build_city_buttons("apply_city")
     markup = InlineKeyboardMarkup(inline_keyboard=[city_buttons])
     await cb.message.edit_text("Выберите город для анкеты:", reply_markup=markup)
@@ -91,26 +94,45 @@ async def back_to_city(cb: CallbackQuery, state: FSMContext):
 
 
 
-@router.callback_query(F.data.startswith("apply_city:"))
-async def apply_catalog_city_handler(cb: CallbackQuery, state: FSMContext) -> None:
+
+@router.callback_query(F.data.startswith("apply_city:"), CatalogAddForm.category_choice)
+async def catalog_city(cb: CallbackQuery, state: FSMContext):
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
     city_slug = cb.data.split(":")[1]
-    # Найти корневую категорию profile
-    async with SessionLocal() as session:
-        parent = (await session.execute(
-            select(Category).where(Category.slug == "profile")
-        )).scalar_one_or_none()
-        if not parent:
-            categories = []
-        else:
-            categories = (await session.execute(
-                select(Category).where(Category.parent_id == parent.id)
-            )).scalars().all()
-    # Меню подкатегорий (музыканты, вокал и т.д.)
-    from app.keyboards import catalog_city_inline
-    markup = await catalog_city_inline(city_slug, categories)
-    await cb.message.edit_text("Выберите категорию анкеты:", reply_markup=markup)
-    await state.update_data(city=city_slug)
+    async with SessionLocal() as s:
+        city = (await s.execute(select(City).where(City.slug == city_slug))).scalar_one()
+        profile_root = (await s.execute(select(Category).where(Category.slug == "profile"))).scalar_one()
+        subcats = (await s.execute(
+            select(Category).where(Category.parent_id == profile_root.id)
+        )).scalars().all()
+    await state.update_data(city_id=city.id, city_name=city.name, city_slug=city_slug)
+    kb = await catalog_profile_category_inline(subcats, city_slug)
+    template = f"Город: <b>{city.name}</b>\nВыберите категорию:"
+    msg = await cb.message.answer(template, reply_markup=kb, parse_mode="HTML")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await state.set_state(CatalogAddForm.category_choice)
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("profile_cat:"), CatalogAddForm.category_choice)
+async def catalog_profile_cat(cb: CallbackQuery, state: FSMContext):
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    _, city_slug, cat_id = cb.data.split(":")
+    cat_id = int(cat_id)
+    async with SessionLocal() as s:
+        cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+        subcats = (await s.execute(select(Category).where(Category.parent_id == cat_id))).scalars().all()
+    if subcats:
+        kb = await catalog_profile_category_inline(subcats, city_slug)
+        template = f"Категория: <b>{cat.name}</b>\nВыберите подкатегорию:"
+        msg = await cb.message.answer(template, reply_markup=kb, parse_mode="HTML")
+        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+        await state.update_data(cat_id=cat.id, cat_name=cat.name)
+        await state.set_state(CatalogAddForm.category_choice)
+    else:
+        await clear_bot_messages(cb.message.chat.id, cb.bot)
+        await state.update_data(cat_id=cat.id, cat_name=cat.name)
+        await state.set_state(CatalogAddForm.name)
+        await cb.message.answer("Введите название группы/студии/площадки:")
     await cb.answer()
 
 

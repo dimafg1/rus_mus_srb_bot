@@ -384,3 +384,17 @@ async def build_main_menu(lang='ru') -> InlineKeyboardMarkup:
         for row in rows
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+async def catalog_profile_category_inline(categories: List[Category], city_slug: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=c.name, callback_data=f"profile_cat:{city_slug}:{c.id}")]
+        for c in categories
+    ]
+    # Назад и Главное меню
+    back_btn = await get_common_menu_button('catalog_city_back')
+    if back_btn:
+        rows.append([back_btn])
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        rows.append([main_menu_btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
