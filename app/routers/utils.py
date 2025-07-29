@@ -4,7 +4,8 @@ from app.models import City, Category, Listing
 from app.database import SessionLocal
 from sqlalchemy import select
 from typing import Optional, List
-
+from app.models import Category, Menu  # или Menu, если категории хранятся там
+from app.database import SessionLocal
 
 
 last_search_query_message = {}
@@ -114,6 +115,8 @@ async def children_of(parent_id: Optional[int]) -> List[Category]:
         q = select(Category).where(Category.parent_id == parent_id)
         return (await s.execute(q)).scalars().all()
 
+PAGE = 10
+
 async def fetch_listings(city_id: int, cat_id: int, offset: int = 0) -> List[Listing]:
     async with SessionLocal() as s:
         q = (select(Listing)
@@ -124,3 +127,12 @@ async def fetch_listings(city_id: int, cat_id: int, offset: int = 0) -> List[Lis
              .offset(offset)
              .limit(PAGE))
         return (await s.execute(q)).scalars().all()
+    
+async def get_catalog_categories(parent_id=None):
+    async with SessionLocal() as session:
+        query = select(Category)
+        if parent_id is not None:
+            query = query.where(Category.parent_id == parent_id)
+        categories = (await session.execute(query)).scalars().all()
+    # Можно вернуть [{'name': c.name, 'callback_data': ...}, ...] для удобства
+    return categories

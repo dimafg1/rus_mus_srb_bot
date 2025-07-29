@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.database import SessionLocal  # если у вас по-другому — исправьте путь!
 from app.models import Menu, City  # или как у вас называется эта модель
 from app.routers.utils import get_text
-
+from app.routers.utils import get_catalog_categories
 
 
 
@@ -255,22 +255,53 @@ async def catalog_city_inline(city_slug: str, categories: List[Category], lang="
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def catalog_application_category_inline():
-    options = [
-        ("Музыканцы", "capcat:musicians"),
-        ("Вокал", "capcat:vocal"),
-        ("Коллектив/Группа", "capcat:group"),
-        ("Звук/Продакшн", "capcat:production"),
-        ("Преподавание", "capcat:teaching"),
-        ("Студии и площадки", "capcat:studio"),
-        ("Оборудование", "capcat:equipment"),
-        ("Организация и менеджмент", "capcat:management"),
-        ("Подкасты", "capcat:podcasts"),
-        ("Другое", "capcat:other")
+async def catalog_profile_category_inline(city_slug: str, lang="ru"):
+    async with SessionLocal() as session:
+        parent = (await session.execute(
+            select(Category).where(Category.slug == "profile")
+        )).scalar_one_or_none()
+        if not parent:
+            categories = []
+        else:
+            categories = (await session.execute(
+                select(Category).where(Category.parent_id == parent.id)
+            )).scalars().all()
+    buttons = [
+        [InlineKeyboardButton(text=cat.name, callback_data=f"capcat:{city_slug}:{cat.slug}")]
+        for cat in categories
     ]
-    inline_buttons = [[InlineKeyboardButton(text=txt, callback_data=cb)] for txt, cb in options]
+
+    # Назад и Главное меню
+    back_btn = await get_common_menu_button('catalog_city_back')
+    if back_btn:
+        buttons.append([InlineKeyboardButton(text=back_btn.text, callback_data='catalog_city_back')])
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        buttons.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+async def catalog_application_category_inline(parent_id=None):
+    categories = await get_catalog_categories(parent_id=parent_id)
+    inline_buttons = [
+        [InlineKeyboardButton(text=cat.name, callback_data=f"cat:{cat.slug}")]
+        for cat in categories
+    ]
     inline_buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog:back")])
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
+
+
+async def catalog_cities_inline(lang: str = "ru"):
+    async with SessionLocal() as session:
+        result = await session.execute(select(City))
+        cities = result.scalars().all()
+    rows = [
+        [InlineKeyboardButton(text=city.name, callback_data=f"apply_city:{city.slug}")]
+        for city in cities
+    ]
+    # Кнопка "Назад"
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog_back")])
+    # Кнопка "Главное меню"
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # ---------- Вакансии ----------
 async def vacancy_main_inline_view(prefix: str, lang="ru"):
@@ -339,8 +370,6 @@ async def events_main_inline(lang="ru"):
         keyboard.append([main_menu_btn])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 async def build_main_menu(lang='ru') -> InlineKeyboardMarkup:
     async with SessionLocal() as session:

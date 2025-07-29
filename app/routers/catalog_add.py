@@ -29,6 +29,11 @@ from aiogram.fsm.context import FSMContext
 from app.keyboards import catalog_application_category_inline
 from app.routers.utils import safe_edit_or_send
 from app.texts import get_text
+from app.database import SessionLocal
+from app.models import Category
+from sqlalchemy import select
+from app.keyboards import get_common_menu_button
+
 
 router = Router(name="catalog_add")
 
@@ -44,25 +49,73 @@ class CatalogAddForm(StatesGroup):
     confirm = State()
 
 
+from app.keyboards import build_city_buttons
+from app.keyboards import catalog_cities_inline
+
 @router.callback_query(F.data == "apply_catalog")
 async def apply_catalog_handler(cb: CallbackQuery, state: FSMContext) -> None:
-    """Start the portfolio application process.
+    markup = await catalog_cities_inline()
+    await cb.message.edit_text("Выберите город для анкеты:", reply_markup=markup)
+    await state.set_state(CatalogAddForm.category_choice)
+    await cb.answer()
 
-    The handler prompts the user to choose a high‑level direction for
-    their application (musician, vocal, production, etc.).  The
-    directions are defined in ``catalog_application_category_inline``.
-    """
-    await cb.message.edit_text(
-        "Выберите направление вашей заявки:",
-        reply_markup=catalog_application_category_inline()
-    )
+from app.keyboards import main_inline_menu
+
+from app.keyboards import catalog_inline_initial
+
+@router.callback_query(F.data == "catalog_back", CatalogAddForm.category_choice)
+async def catalog_back_handler(cb: CallbackQuery, state: FSMContext):
+    markup = await catalog_inline_initial()
+    await cb.message.edit_text("Каталог — выберите действие:", reply_markup=markup)
+    await state.clear()
+    await cb.answer()
+
+
+from app.keyboards import catalog_profile_category_inline
+
+@router.callback_query(F.data.startswith("apply_city:"), CatalogAddForm.category_choice)
+async def apply_catalog_city_handler(cb: CallbackQuery, state: FSMContext):
+    city_slug = cb.data.split(":")[1]
+    markup = await catalog_profile_category_inline(city_slug)
+    await cb.message.edit_text("Выберите категорию анкеты:", reply_markup=markup)
+    await state.update_data(city=city_slug)
+    await state.set_state(CatalogAddForm.category_choice)
+    await cb.answer()
+
+@router.callback_query(F.data == "catalog_city_back", CatalogAddForm.category_choice)
+async def back_to_city(cb: CallbackQuery, state: FSMContext):
+    city_buttons = await build_city_buttons("apply_city")
+    markup = InlineKeyboardMarkup(inline_keyboard=[city_buttons])
+    await cb.message.edit_text("Выберите город для анкеты:", reply_markup=markup)
+    await cb.answer()
+
+
+
+@router.callback_query(F.data.startswith("apply_city:"))
+async def apply_catalog_city_handler(cb: CallbackQuery, state: FSMContext) -> None:
+    city_slug = cb.data.split(":")[1]
+    # Найти корневую категорию profile
+    async with SessionLocal() as session:
+        parent = (await session.execute(
+            select(Category).where(Category.slug == "profile")
+        )).scalar_one_or_none()
+        if not parent:
+            categories = []
+        else:
+            categories = (await session.execute(
+                select(Category).where(Category.parent_id == parent.id)
+            )).scalars().all()
+    # Меню подкатегорий (музыканты, вокал и т.д.)
+    from app.keyboards import catalog_city_inline
+    markup = await catalog_city_inline(city_slug, categories)
+    await cb.message.edit_text("Выберите категорию анкеты:", reply_markup=markup)
+    await state.update_data(city=city_slug)
     await state.set_state(CatalogAddForm.category_choice)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("capcat:"), CatalogAddForm.category_choice)
 async def catalog_application_category_handler(cb: CallbackQuery, state: FSMContext) -> None:
-    """Record the selected high‑level category and ask for the name."""
     category = cb.data.split(":", 1)[1]
     await state.update_data(category_choice=category)
     await cb.message.edit_text(
