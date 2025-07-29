@@ -1,11 +1,13 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
 from app.keyboards import (
     catalog_inline_initial,
     catalog_city_inline,
     get_common_menu_button,
+    catalog_search_results_keyboard,
 )
 from app.routers.utils import (
     last_bot_messages,
@@ -20,6 +22,46 @@ from app.database import SessionLocal
 from app.texts import get_text
 
 router = Router(name="catalog_view")
+router = Router(name="catalog_search")
+
+class CatalogSearchForm(StatesGroup):
+    query = State()
+
+# Кнопка поиска в каталоге
+@router.callback_query(F.data == "catalog_search")
+async def catalog_search_start(cb: CallbackQuery, state: FSMContext):
+    await cb.message.edit_text("Введите ключевое слово для поиска в каталоге:")
+    await state.set_state(CatalogSearchForm.query)
+    await cb.answer()
+
+# Поисковый ввод
+@router.message(CatalogSearchForm.query)
+async def catalog_search_query(m: Message, state: FSMContext):
+    query = m.text.strip().lower()
+    async with SessionLocal() as session:
+        items = (await session.execute(
+            select(Item)
+            .where(
+                (Item.title.ilike(f"%{query}%")) | (Item.descr.ilike(f"%{query}%")),
+                Item.is_approved.is_(True)
+            )
+            .order_by(Item.created_at.desc())
+        )).scalars().all()
+    if not items:
+        await m.answer(
+            "Ничего не найдено по вашему запросу.",
+            reply_markup=catalog_search_results_keyboard()
+        )
+    else:
+        parts = []
+        for i in items[:10]:  # не больше 10 анкет
+            parts.append(f"• <b>{i.title}</b>\n{i.descr or ''}\n<code>{i.contact}</code>")
+        await m.answer(
+            "Результаты поиска:\n\n" + "\n\n".join(parts),
+            parse_mode="HTML",
+            reply_markup=catalog_search_results_keyboard()
+        )
+    await state.clear()
 
 
 @router.callback_query(F.data == "go_catalog")

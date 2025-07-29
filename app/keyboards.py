@@ -230,6 +230,7 @@ async def equip_inline(categories: List[Category], city_slug: str, lang="ru") ->
 async def catalog_inline_initial(lang="ru"):
     city_buttons = await build_city_buttons("citysel", lang)
     keyboard = [
+        [InlineKeyboardButton(text="🔎 Поиск по каталогу", callback_data="catalog_search")],
         city_buttons,
         [InlineKeyboardButton(text="📝 ПОДАТЬ ЗАЯВКУ", callback_data="apply_catalog")]
     ]
@@ -398,3 +399,20 @@ async def catalog_profile_category_inline(categories: List[Category], city_slug:
     if main_menu_btn:
         rows.append([main_menu_btn])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+def catalog_search_button():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔎 Поиск по каталогу", callback_data="catalog_search")]
+        ]
+    )
+
+def catalog_search_results_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Назад к поиску", callback_data="catalog_search")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+        ]
+    )
