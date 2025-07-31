@@ -416,3 +416,28 @@ def catalog_search_results_keyboard():
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
         ]
     )
+
+
+async def catalog_category_inline(categories, city_slug, parent_cat_id=None):
+    buttons = []
+    for cat in categories:
+        buttons.append([
+            InlineKeyboardButton(
+                text=cat.name,
+                callback_data=f"catalog_cat:{city_slug}:{cat.id}"
+            )
+        ])
+    # Кнопка Назад, если передан parent_cat_id (или любая ваша логика)
+    if parent_cat_id:
+        buttons.append([
+            InlineKeyboardButton(
+                text="⬅️ Назад", callback_data=f"catalog_back:{city_slug}:{parent_cat_id}"
+            )
+        ])
+    # Главное меню
+    buttons.append([
+        InlineKeyboardButton(
+            text="🏠 Главное меню", callback_data="main_menu"
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
