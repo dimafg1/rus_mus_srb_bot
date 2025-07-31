@@ -99,3 +99,28 @@ class Menu(SQLModel, table=True):
     visible: int
     lang: str
     icon: Optional[str] = None
+
+# ————————————————————————————————————————————————————————————
+# Profile для базы
+# ————————————————————————————————————————————————————————————
+class Profile(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    city_id: int = Field(foreign_key="city.id", nullable=False)
+    category_id: int = Field(foreign_key="category.id", nullable=False)
+    owner_id: int  # Telegram user ID автора
+    title: str
+    name: Optional[str] = None
+    contact: str
+    price_desc: Optional[str] = None
+    descr: Optional[str] = None
+    photo_file_ids: Optional[str] = None
+    video_file_ids: Optional[str] = None
+    audio_file_ids: Optional[str] = None
+    portfolio_file_ids: Optional[str] = None
+    plan: Optional[str] = "free"
+    order: Optional[int] = None
+    rating: Optional[float] = None
+    moderation_status: Optional[str] = "pending"
+    is_active: Optional[int] = 1
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

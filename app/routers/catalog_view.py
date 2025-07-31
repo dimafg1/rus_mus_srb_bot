@@ -30,14 +30,72 @@ class CatalogSearchForm(StatesGroup):
 # Кнопка поиска в каталоге
 @router.callback_query(F.data == "catalog_search")
 async def catalog_search_start(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("Введите ключевое слово для поиска в каталоге:")
+    """
+    Запустить режим поиска по каталогу. Вместо редактирования предыдущего сообщения,
+    как было раньше, мы очищаем интерфейс, показываем панель возврата
+    (кнопки «Назад» и «Главное меню») и затем отправляем приглашение ввести
+    поисковый запрос. Заголовок панели возврата берётся из таблицы BotText
+    с кодом ``return_to_menu`` (по умолчанию — «Возврат»).
+    """
+    chat_id = cb.message.chat.id
+
+    # Очистить старые сообщения (в т.ч. предыдущие навигационные панели)
+    await clear_bot_messages(chat_id, cb.bot)
+
+    # Формируем навигационную панель
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    back_btn = await get_common_menu_button('catalog_back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    # Кнопка «Назад» ведёт к выбору города каталога
+    if back_btn:
+        # используем текст из базы, но перезаписываем callback_data на существующий хендлер
+        nav_buttons.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+
+    # Текст приглашения к поиску. Если в базе нет отдельного текста, используем дефолт.
+    prompt = "Введите ключевое слово для поиска в каталоге:"
+    query_msg = await cb.bot.send_message(chat_id, prompt)
+
+    # Сохраняем id сообщений для последующего удаления
+    last_bot_messages[chat_id] = [nav_msg.message_id, query_msg.message_id]
+
+    # Переключаем состояние на ожидание запроса
     await state.set_state(CatalogSearchForm.query)
     await cb.answer()
 
 # Поисковый ввод
 @router.message(CatalogSearchForm.query)
 async def catalog_search_query(m: Message, state: FSMContext):
-    query = m.text.strip().lower()
+    """
+    Обработка введённого пользователем поискового запроса. Перед выводом результатов
+    очищаем интерфейс и снова рисуем панель возврата. Кнопка «Назад» в панели
+    переводит пользователя обратно к вводу поискового запроса (callback_data
+    ``catalog_search``), а кнопка «Главное меню» возвращает в главное меню.
+    """
+    chat_id = m.chat.id
+    query = m.text.strip().lower() if m.text else ""
+
+    # Очищаем предыдущие сообщения, включая панель возврата и приглашение к поиску
+    await clear_bot_messages(chat_id, m.bot)
+
+    # Формируем новую навигационную панель для результатов
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    # Получаем базовую кнопку «Назад» (текст) и назначаем callback_data на перезапуск поиска
+    base_back_btn = await get_common_menu_button('back')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_search'))
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await m.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+
+    # Выполняем поиск
     async with SessionLocal() as session:
         items = (await session.execute(
             select(Item)
@@ -47,37 +105,68 @@ async def catalog_search_query(m: Message, state: FSMContext):
             )
             .order_by(Item.created_at.desc())
         )).scalars().all()
+
+    # Формируем текст результата
     if not items:
-        await m.answer(
-            "Ничего не найдено по вашему запросу.",
-            reply_markup=catalog_search_results_keyboard()
-        )
+        result_text = "Ничего не найдено по вашему запросу."
     else:
         parts = []
-        for i in items[:10]:  # не больше 10 анкет
+        for i in items[:10]:  # выводим не больше 10 анкет
             parts.append(f"• <b>{i.title}</b>\n{i.descr or ''}\n<code>{i.contact}</code>")
-        await m.answer(
-            "Результаты поиска:\n\n" + "\n\n".join(parts),
-            parse_mode="HTML",
-            reply_markup=catalog_search_results_keyboard()
-        )
+        result_text = "Результаты поиска:\n\n" + "\n\n".join(parts)
+
+    # Отправляем сообщение с результатами. Сохраняем клавиатуру для повторного поиска и выхода в меню.
+    result_msg = await m.bot.send_message(
+        chat_id,
+        result_text,
+        parse_mode="HTML",
+        reply_markup=catalog_search_results_keyboard()
+    )
+
+    # Запоминаем отправленные сообщения для последующего удаления
+    last_bot_messages[chat_id] = [nav_msg.message_id, result_msg.message_id]
+
+    # Сбрасываем состояние
     await state.clear()
 
 
 @router.callback_query(F.data == "go_catalog")
 async def go_catalog(cb: CallbackQuery, state: FSMContext) -> None:
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    """
+    Переход в раздел каталога из главного меню. Очищает предыдущие
+    сообщения, отображает панель возврата и затем показывает список
+    действий в каталоге (поиск, выбор города, подать заявку).
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    # Панель возврата: на верхнем уровне кнопка «Назад» ведёт в главное меню
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data=main_menu_btn.callback_data if main_menu_btn else 'main_menu'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Сообщение с вариантами каталога
     markup = await catalog_inline_initial()
     text = await get_text("catalog_choose_city", "ru") or "🏙 Каталог – выберите город:"
-    await safe_edit_or_send(cb, text, markup)
+    msg = await cb.bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("citysel:"))
 async def catalog_city_handler(cb: CallbackQuery):
+    """
+    Обработка выбора города в каталоге. Показываем панель возврата и
+    список категорий профиля, доступных в выбранном городе.
+    """
+    chat_id = cb.message.chat.id
     city_slug = cb.data.split(":")[1]
-
-    # Получаем только дочерние категории profile
+    # Загружаем список дочерних категорий (profile)
     async with SessionLocal() as session:
         parent = (await session.execute(
             select(Category).where(Category.slug == "profile")
@@ -88,14 +177,39 @@ async def catalog_city_handler(cb: CallbackQuery):
             categories = (await session.execute(
                 select(Category).where(Category.parent_id == parent.id)
             )).scalars().all()
-
+    # Очищаем предыдущее
+    await clear_bot_messages(chat_id, cb.bot)
+    # Навигационная панель: назад к корню каталога
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='go_catalog'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Заголовок и кнопки категорий
+    city = await city_by_slug(city_slug)
+    text = f"<b>Каталог → {city.name}</b>\n\nВыберите категорию:"
     markup = await catalog_city_inline(city_slug, categories)
-    await cb.message.edit_text("Выберите категорию:", reply_markup=markup)
+    msg = await cb.bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cat:"))
 async def cat_handler(cb: CallbackQuery) -> None:
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    """
+    Обработка выбора категории или подкатегории. Перед выводом нового
+    содержимого очищаем старые сообщения, затем показываем панель
+    возврата, после чего отправляем сообщение с заголовком и кнопками.
+    Кнопка «Назад» в панели ведёт к родительской категории или выбору
+    города, в зависимости от уровня вложенности.
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
     _, city_slug, cat_slug = cb.data.split(":", 2)
     city = await city_by_slug(city_slug)
     async with SessionLocal() as session:
@@ -106,6 +220,7 @@ async def cat_handler(cb: CallbackQuery) -> None:
             select(Category).where(Category.parent_id == cat.id)
         )).scalars().all()
 
+    # Собираем цепочку категорий для заголовка
     names = [cat.name]
     parent_cat_slug = None
     cur = cat
@@ -121,6 +236,7 @@ async def cat_handler(cb: CallbackQuery) -> None:
     path = " → ".join(reversed(names))
     header = f"<b>Каталог → {city.name} → {path}</b>"
 
+    # Формируем кнопки содержимого
     buttons = []
     if children:
         for child in children:
@@ -138,44 +254,72 @@ async def cat_handler(cb: CallbackQuery) -> None:
             )).scalars().all()
         if items:
             for i in items:
-                # Сделайте кнопку для каждой анкеты, например по id
                 buttons.append([InlineKeyboardButton(
                     text=i.title,
                     callback_data=f"profile:{i.id}:{city_slug}:{cat.slug}"
                 )])
 
-    # Навигация
+    # Определяем куда ведёт кнопка «Назад»
     if parent_cat_slug:
         back_callback = f"cat:{city_slug}:{parent_cat_slug}"
     else:
         back_callback = f"citysel:{city_slug}"
 
+    # Формируем панель возврата
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data=back_callback))
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+
+    # Добавляем навигацию внизу списка содержимого
     back_btn = await get_common_menu_button('back')
     if back_btn:
         buttons.append([InlineKeyboardButton(text=back_btn.text, callback_data=back_callback)])
-
-    main_menu_btn = await get_common_menu_button('main_menu')
-    if main_menu_btn:
-        buttons.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
-
+    main_menu_bottom = await get_common_menu_button('main_menu')
+    if main_menu_bottom:
+        buttons.append([InlineKeyboardButton(text=main_menu_bottom.text, callback_data=main_menu_bottom.callback_data)])
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    # Формируем сообщение
+    # Отправляем основное сообщение
     if children or (not children and items):
-        msg = await cb.bot.send_message(cb.message.chat.id, header, reply_markup=markup, parse_mode="HTML")
+        msg = await cb.bot.send_message(chat_id, header, reply_markup=markup, parse_mode="HTML")
     else:
-        # Листовая, но анкет нет
-        msg = await cb.bot.send_message(cb.message.chat.id, header + "\n\nПока нет анкет.", reply_markup=markup, parse_mode="HTML")
+        msg = await cb.bot.send_message(chat_id, header + "\n\nПока нет анкет.", reply_markup=markup, parse_mode="HTML")
 
-    last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    # Сохраняем id сообщений для последующего удаления
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
     await cb.answer()
 
 
 @router.callback_query(F.data == "catalog:back")
 async def catalog_back(cb: CallbackQuery) -> None:
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    """
+    Возврат к корню каталога. Очищает все сообщения, отображает панель
+    возврата (в данном случае обе кнопки ведут в главное меню) и выводит
+    начальное сообщение каталога.
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    # Панель возврата: обе кнопки отправляют пользователя в главное меню
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data=main_menu_btn.callback_data if main_menu_btn else 'main_menu'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Сообщение каталога
     markup = await catalog_inline_initial()
     text = await get_text("catalog_choose_city", "ru") or "🏙 Каталог – выберите город:"
-    msg = await cb.bot.send_message(cb.message.chat.id, text, reply_markup=markup, parse_mode="HTML")
-    last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    msg = await cb.bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
     await cb.answer()

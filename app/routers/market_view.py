@@ -31,6 +31,7 @@ from app.keyboards import get_common_menu_button
 from app.routers.utils import get_text
 from app.routers.utils import expanded_listing_by_chat, listing_message_ids
 # from app.misc import bot
+from app.models import City
 
 
 
