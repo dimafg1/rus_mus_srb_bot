@@ -1,211 +1,415 @@
-# app/routers/catalog_add.py
+"""
+app/routers/catalog_add.py
+-------------------------
+
+This router contains the finite‑state machine for submitting a new
+specialist/portfolio entry.  A user enters several fields (category,
+name, address, photo, description, repository link) and then is
+presented with a summary for confirmation.  The original logic lived
+in ``main.py``; extracting it into its own module makes the
+monolithic ``main.py`` easier to read and parallels the structure of
+the flea‑market (Барахолка) add handlers found in
+``market_add.py``.
+
+Currently the collected data is not persisted to the database.  The
+interaction is purely conversational: once the user confirms, the
+bot thanks them.  A future enhancement could insert a row into
+``Item`` or another appropriate model.
+
+Usage:
+    from app.routers.catalog_add import router as catalog_add_router
+    dp.include_router(catalog_add_router)
+"""
 
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select
-from app.models import City, Category
-from app.models import Profile  # предполагается что класс называется Profile
-from app.database import SessionLocal
-from app.keyboards import (
-    catalog_cities_inline,
-    catalog_category_inline,   # = аналог equip_inline для каталога, выдаёт подкатегории по parent_id
-    get_common_menu_button,
-)
+
+from app.keyboards import catalog_application_category_inline
+from app.routers.utils import safe_edit_or_send
 from app.texts import get_text
-from app.routers.utils import (
-    clear_bot_messages,
-    last_bot_messages,
-)
+from app.database import SessionLocal
+from app.models import Category
+from sqlalchemy import select
+from app.keyboards import get_common_menu_button
+from app.routers.utils import clear_bot_messages, last_bot_messages  # и любые другие, если используются
+from app.models import City
+
+
 
 router = Router(name="catalog_add")
 
-class ProfileAddForm(StatesGroup):
-    city = State()
-    category = State()
-    title = State()
+
+class CatalogAddForm(StatesGroup):
+    """Finite‑state machine describing the fields for a portfolio application."""
+    category_choice = State()
     name = State()
-    contact = State()
-    description = State()
+    address = State()
     photo = State()
+    description = State()
+    repo = State()
     confirm = State()
 
-# ———————— Шаг 1: выбор города ————————
+
+from app.keyboards import build_city_buttons
+from app.keyboards import catalog_cities_inline
+
 @router.callback_query(F.data == "apply_catalog")
-async def start_catalog_add(cb: CallbackQuery, state: FSMContext):
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
+async def apply_catalog_handler(cb: CallbackQuery, state: FSMContext) -> None:
+    """
+    Начало публикации анкеты в каталоге. Перед показом списка городов
+    очищаем предыдущие сообщения и выводим навигационную панель с
+    кнопками «Назад» и «Главное меню», как это реализовано в
+    разделе Барахолка. Затем отправляем сообщение с выбором города.
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    # Панель возврата: «Назад» отправляет к корню каталога, т.е. callback «catalog:back»
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    back_btn = await get_common_menu_button('catalog_back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Сообщение выбора города
     markup = await catalog_cities_inline()
-    msg = await cb.message.answer("Выберите город:", reply_markup=markup)
-    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-    await state.set_state(ProfileAddForm.city)
+    prompt = "Выберите город для анкеты:"
+    msg = await cb.bot.send_message(chat_id, prompt, reply_markup=markup)
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.set_state(CatalogAddForm.category_choice)
     await cb.answer()
 
-# ———————— Шаг 2: выбор категории с вложенностью ————————
-@router.callback_query(F.data.startswith("apply_city:"), ProfileAddForm.city)
+from app.keyboards import main_inline_menu
+
+from app.keyboards import catalog_inline_initial
+
+@router.callback_query(F.data == "catalog_back", CatalogAddForm.category_choice)
+async def catalog_back_handler(cb: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки «catalog_back» в процессе добавления анкеты. Возвращает
+    пользователя к начальному экрану каталога. Также добавляем панель
+    возврата наверху.
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    # Панель возврата (обе кнопки ведут в главное меню)
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data=main_menu_btn.callback_data if main_menu_btn else 'main_menu'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Сообщение каталога
+    markup = await catalog_inline_initial()
+    msg = await cb.bot.send_message(chat_id, "Каталог — выберите действие:", reply_markup=markup)
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.clear()
+    await cb.answer()
+
+
+from app.keyboards import catalog_profile_category_inline
+
+# @router.callback_query(F.data.startswith("apply_city:"), CatalogAddForm.category_choice)
+# async def apply_catalog_city_handler(cb: CallbackQuery, state: FSMContext):
+#     city_slug = cb.data.split(":")[1]
+#     markup = await catalog_profile_category_inline(city_slug)
+#     await cb.message.edit_text("Выберите категорию анкеты:", reply_markup=markup)
+#     await state.update_data(city=city_slug)
+#     await state.set_state(CatalogAddForm.category_choice)
+#     await cb.answer()
+
+@router.callback_query(F.data == "catalog_city_back", CatalogAddForm.category_choice)
+async def catalog_city_back(cb: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки возврата на шаг выбора города. Показывает навигационную
+    панель и список городов.
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    # Навигационная панель: «Назад» ведёт к корню каталога
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog:back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Список городов
+    city_buttons = await build_city_buttons("apply_city")
+    markup = InlineKeyboardMarkup(inline_keyboard=[city_buttons])
+    msg = await cb.bot.send_message(chat_id, "Выберите город для анкеты:", reply_markup=markup)
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await cb.answer()
+
+
+
+
+@router.callback_query(F.data.startswith("apply_city:"), CatalogAddForm.category_choice)
 async def catalog_city(cb: CallbackQuery, state: FSMContext):
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    """
+    Пользователь выбрал город для анкеты. Очищаем предыдущее, рисуем панель
+    возврата и выводим список категорий профиля для выбранного города.
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
     city_slug = cb.data.split(":")[1]
     async with SessionLocal() as s:
         city = (await s.execute(select(City).where(City.slug == city_slug))).scalar_one()
-        root = (await s.execute(select(Category).where(Category.slug == "profile"))).scalar_one()
-        categories = (await s.execute(select(Category).where(Category.parent_id == root.id))).scalars().all()
+        profile_root = (await s.execute(select(Category).where(Category.slug == "profile"))).scalar_one()
+        subcats = (await s.execute(
+            select(Category).where(Category.parent_id == profile_root.id)
+        )).scalars().all()
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city_slug)
-    markup = await catalog_category_inline(categories, city_slug, parent_cat_id=None)
-    msg = await cb.message.answer(f"Город: <b>{city.name}</b>\nВыберите категорию:", reply_markup=markup, parse_mode="HTML")
-    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-    await state.set_state(ProfileAddForm.category)
+    # Навигационная панель: назад к выбору города
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_city_back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Список категорий профиля
+    kb = await catalog_profile_category_inline(subcats, city_slug)
+    template = f"Город: <b>{city.name}</b>\nВыберите категорию:"
+    msg = await cb.bot.send_message(chat_id, template, reply_markup=kb, parse_mode="HTML")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.set_state(CatalogAddForm.category_choice)
     await cb.answer()
 
-@router.callback_query(F.data.startswith("cat:"), ProfileAddForm.category)
-async def catalog_category(cb: CallbackQuery, state: FSMContext):
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
-    _, city_slug, cat_slug, *rest = cb.data.split(":")
+@router.callback_query(F.data.startswith("profile_cat:"), CatalogAddForm.category_choice)
+async def catalog_profile_cat(cb: CallbackQuery, state: FSMContext):
+    """
+    Пользователь выбрал категорию профиля. Если есть подкатегории, выводим
+    их список. Иначе переходим к вводу названия анкеты. В обоих случаях
+    отображается навигационная панель с «Назад» и «Главное меню».
+    """
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    _, city_slug, cat_id = cb.data.split(":")
+    cat_id = int(cat_id)
     async with SessionLocal() as s:
-        cat = (await s.execute(select(Category).where(Category.slug == cat_slug))).scalar_one()
-        subcats = (await s.execute(select(Category).where(Category.parent_id == cat.id))).scalars().all()
-    await state.update_data(cat_id=cat.id, cat_name=cat.name, cat_slug=cat.slug)
+        cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+        subcats = (await s.execute(select(Category).where(Category.parent_id == cat_id))).scalars().all()
+    # Навигационная панель: назад к выбору категории (catalog_city_back)
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_city_back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
     if subcats:
-        path = rest or []
-        path.append(cat.slug)
-        markup = await catalog_category_inline(subcats, city_slug, path=path)
-        msg = await cb.message.answer(
-            f"<b>Город: {await state.get_data()['city_name']}</b>\nВыбрана категория: <b>{cat.name}</b>\nВыберите подкатегорию:",
-            reply_markup=markup, parse_mode="HTML"
-        )
-        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-        await state.set_state(ProfileAddForm.category)
+        kb = await catalog_profile_category_inline(subcats, city_slug)
+        template = f"Категория: <b>{cat.name}</b>\nВыберите подкатегорию:"
+        msg = await cb.bot.send_message(chat_id, template, reply_markup=kb, parse_mode="HTML")
+        last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+        await state.update_data(cat_id=cat.id, cat_name=cat.name)
+        await state.set_state(CatalogAddForm.category_choice)
     else:
-        msg = await cb.message.answer(
-            f"Категория выбрана: <b>{cat.name}</b>\nВведите <b>название анкеты</b>:",
-            reply_markup=await nav_keyboard()
-        )
-        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-        await state.set_state(ProfileAddForm.title)
+        # Нет подкатегорий — переходим к вводу названия
+        await state.update_data(cat_id=cat.id, cat_name=cat.name)
+        await state.set_state(CatalogAddForm.name)
+        prompt_msg = await cb.bot.send_message(chat_id, "Введите название группы/студии/площадки:")
+        last_bot_messages[chat_id] = [nav_msg.message_id, prompt_msg.message_id]
     await cb.answer()
 
-# ———————— Шаг 3: Ввод названия анкеты (title) ————————
-@router.message(ProfileAddForm.title)
-async def catalog_title(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    await state.update_data(title=m.text)
-    msg = await m.answer("Введите ФИО или псевдоним (необязательно, можно пропустить):", reply_markup=await nav_keyboard())
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-    await state.set_state(ProfileAddForm.name)
 
-# ———————— Шаг 4: Имя (name) ————————
-@router.message(ProfileAddForm.name)
-async def catalog_name(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    await state.update_data(name=m.text)
-    user = m.from_user
-    contact = user.username and f"@{user.username}" or str(user.id)
-    await state.update_data(contact=contact)
-    msg = await m.answer("Введите дополнительную контактную информацию (или пропустите):", reply_markup=await nav_keyboard())
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-    await state.set_state(ProfileAddForm.contact)
-
-# ———————— Шаг 5: Контакт ————————
-@router.message(ProfileAddForm.contact)
-async def catalog_contact(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    contact = m.text.strip() or (await state.get_data())["contact"]
-    await state.update_data(contact=contact)
-    msg = await m.answer("Опишите себя/коллектив/услугу (или пропустите):", reply_markup=await nav_keyboard())
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-    await state.set_state(ProfileAddForm.description)
-
-# ———————— Шаг 6: Описание ————————
-@router.message(ProfileAddForm.description)
-async def catalog_descr(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    await state.update_data(descr=m.text)
-    msg = await m.answer("Прикрепите фото (до 3-х, можно пропустить):", reply_markup=await nav_keyboard())
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-    await state.set_state(ProfileAddForm.photo)
-
-# ———————— Шаг 7: Фото (один или до 3) ————————
-@router.message(ProfileAddForm.photo, F.photo)
-async def catalog_photo(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    data = await state.get_data()
-    photos = data.get("photos", []) or []
-    if len(photos) < 3:
-        photos.append(m.photo[-1].file_id)
-        await state.update_data(photos=photos)
-    if len(photos) < 3:
-        msg = await m.answer(f"Фото добавлено ({len(photos)}/3). Ещё фото или 'далее'.", reply_markup=await nav_keyboard())
-        last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-        await state.set_state(ProfileAddForm.photo)
-    else:
-        await preview_and_confirm(m, state)
-
-@router.message(ProfileAddForm.photo)
-async def catalog_photo_text(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    await preview_and_confirm(m, state)
-
-# ———————— Preview + подтверждение ————————
-async def preview_and_confirm(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    data = await state.get_data()
-    summary = (
-        f"<b>Город:</b> {data.get('city_name')}\n"
-        f"<b>Категория:</b> {data.get('cat_name')}\n"
-        f"<b>Название:</b> {data.get('title')}\n"
-        f"<b>Имя:</b> {data.get('name')}\n"
-        f"<b>Контакт:</b> {data.get('contact')}\n"
-        f"<b>Описание:</b> {data.get('descr')}\n"
-        f"<b>Фото:</b> {len(data.get('photos', []))} шт."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="profile_confirm:yes")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="profile_confirm:no")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="profile_confirm:back")],
-    ])
-    msg = await m.answer(f"Проверьте данные:\n\n{summary}", reply_markup=kb, parse_mode="HTML")
-    last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-    await state.set_state(ProfileAddForm.confirm)
-
-@router.callback_query(F.data.startswith("profile_confirm:"), ProfileAddForm.confirm)
-async def confirm_profile(cb: CallbackQuery, state: FSMContext):
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
-    d = cb.data.split(":")[1]
-    if d == "yes":
-        data = await state.get_data()
-        async with SessionLocal() as s:
-            profile = Profile(
-                city_id=data["city_id"],
-                category_id=data["cat_id"],
-                owner_id=cb.from_user.id,
-                title=data["title"],
-                name=data["name"],
-                contact=data["contact"],
-                descr=data["descr"],
-                photo_file_ids=",".join(data.get("photos", [])) if data.get("photos") else None,
-            )
-            s.add(profile)
-            await s.commit()
-        msg = await cb.message.edit_text("Ваша анкета опубликована. Спасибо!")
-        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-        await state.clear()
-    elif d == "back":
-        msg = await cb.message.edit_text("Прикрепите фото (до 3-х, можно пропустить):", reply_markup=await nav_keyboard())
-        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-        await state.set_state(ProfileAddForm.photo)
-    else:
-        msg = await cb.message.edit_text("Публикация отменена.")
-        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-        await state.clear()
-    await cb.answer()
-
-# ———————— Клавиатура "Назад"/"Главное меню" ————————
-async def nav_keyboard():
-    back_btn = await get_common_menu_button('back')
-    main_btn = await get_common_menu_button('main_menu')
-    buttons = []
+@router.callback_query(F.data.startswith("capcat:"), CatalogAddForm.category_choice)
+async def catalog_application_category_handler(cb: CallbackQuery, state: FSMContext) -> None:
+    """
+    Устаревший обработчик выбора категории заявки. Раньше просто редактировал
+    существующее сообщение. Теперь очищаем интерфейс, показываем панель
+    возврата и отправляем новый запрос на ввод названия.
+    """
+    chat_id = cb.message.chat.id
+    category = cb.data.split(":", 1)[1]
+    await state.update_data(category_choice=category)
+    await clear_bot_messages(chat_id, cb.bot)
+    # Панель возврата: назад к корню каталога
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    back_btn = await get_common_menu_button('catalog_back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
     if back_btn:
-        buttons.append([InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data)])
-    if main_btn:
-        buttons.append([InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data)])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+        nav_buttons.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # Сообщение запроса названия
+    prompt_text = f"Вы выбрали направление: <b>{category.capitalize()}</b>\nВведите название группы/студии/площадки:"
+    msg = await cb.bot.send_message(chat_id, prompt_text, parse_mode="HTML")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.set_state(CatalogAddForm.name)
+    await cb.answer()
+
+
+@router.message(CatalogAddForm.name)
+async def get_catalog_name(m: Message, state: FSMContext) -> None:
+    """
+    Запрашиваем у пользователя адрес после ввода названия. Перед отправкой
+    нового сообщения очищаем предыдущее и показываем панель возврата.
+    """
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    await state.update_data(name=m.text)
+    # Панель возврата: назад к выбору категории
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_city_back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
+    # Запрос адреса
+    msg = await m.answer("Введите адрес (необязательно, можно пропустить):")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.set_state(CatalogAddForm.address)
+
+
+@router.message(CatalogAddForm.address)
+async def get_catalog_address(m: Message, state: FSMContext) -> None:
+    """
+    Сохраняем адрес и просим прикрепить фото. Предварительно очищаем
+    предыдущие сообщения и отображаем панель возврата.
+    """
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    await state.update_data(address=m.text)
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_city_back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
+    msg = await m.answer("Прикрепите фото (можно до 3-х, или пропустите):")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.set_state(CatalogAddForm.photo)
+
+
+@router.message(CatalogAddForm.photo)
+async def get_catalog_photo(m: Message, state: FSMContext) -> None:
+    """
+    Сохраняем информацию о фото и просим описание. Добавляем панель
+    возврата.
+    """
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    await state.update_data(photo=m.text)
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_city_back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
+    msg = await m.answer("Введите описание ваших умений или информации о группе/студии:")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.set_state(CatalogAddForm.description)
+
+
+@router.message(CatalogAddForm.description)
+async def get_catalog_description(m: Message, state: FSMContext) -> None:
+    """
+    Сохраняем описание и просим информацию о репетиционной базе. Добавляем
+    панель возврата.
+    """
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    await state.update_data(description=m.text)
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_city_back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
+    msg = await m.answer("Введите информацию о реп. базе (ссылка, если есть):")
+    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    await state.set_state(CatalogAddForm.repo)
+
+
+@router.message(CatalogAddForm.repo)
+async def get_catalog_repo(m: Message, state: FSMContext) -> None:
+    """
+    Сохраняем информацию о репетиционной базе, показываем сводку и
+    предлагаем подтвердить. Также рисуем панель возврата наверху.
+    """
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    data = await state.get_data()
+    data["repo"] = m.text
+    summary = (
+        f"Направление: {data.get('category_choice')}\n"
+        f"Название: {data.get('name')}\n"
+        f"Адрес: {data.get('address')}\n"
+        f"Фото: {data.get('photo')}\n"
+        f"Описание: {data.get('description')}\n"
+        f"Реп. база: {data.get('repo')}"
+    )
+    # Навигационная панель: назад к выбору города
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    base_back_btn = await get_common_menu_button('back')
+    main_menu_btn = await get_common_menu_button('main_menu')
+    nav_buttons = []
+    if base_back_btn:
+        nav_buttons.append(InlineKeyboardButton(text=base_back_btn.text, callback_data='catalog_city_back'))
+    if main_menu_btn:
+        nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
+    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
+    # Сообщение с подтверждением
+    confirm_msg = await m.answer(
+        f"Проверьте введённые данные:\n\n{summary}\n\nПодтвердите отправку.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да", callback_data="catalog_confirm:yes"),
+             InlineKeyboardButton(text="Нет", callback_data="catalog_confirm:no")]
+        ]),
+        parse_mode="HTML"
+    )
+    last_bot_messages[chat_id] = [nav_msg.message_id, confirm_msg.message_id]
+    await state.set_state(CatalogAddForm.confirm)
+
+
+@router.callback_query(F.data.startswith("catalog_confirm:"), CatalogAddForm.confirm)
+async def catalog_confirm_handler(cb: CallbackQuery, state: FSMContext) -> None:
+    """Handle final confirmation of the portfolio application."""
+    decision = cb.data.split(":", 1)[1]
+    if decision == "yes":
+        # In a future version, persist data to the database here.
+        await cb.message.edit_text("Ваша заявка принята. Спасибо!")
+    else:
+        await cb.message.edit_text("Заявка отменена.")
+    await state.clear()
+    await cb.answer()
