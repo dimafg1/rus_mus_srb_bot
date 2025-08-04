@@ -107,11 +107,12 @@ async def market_city(cb: CallbackQuery):
     await cb.answer()
 
 
+# ====== Вывод объявлений и подкатегорий в Барахолке ======
 @router.callback_query(F.data.startswith("mlist:"))
 async def market_list(cb: CallbackQuery):
     chat_id = cb.message.chat.id
 
-    # Удаляем старые фото-сообщения (как выше)
+    # Удаляем старые фото-сообщения
     photo_ids = sent_photo_messages.pop(chat_id, [])
     for msg_id in photo_ids:
         try:
@@ -119,7 +120,7 @@ async def market_list(cb: CallbackQuery):
         except Exception:
             pass
 
-    # Удаляем "лишние" сообщения (старое меню), если они есть
+    # Удаляем старое меню (если есть)
     try:
         await cb.message.delete()
     except Exception:
@@ -131,41 +132,63 @@ async def market_list(cb: CallbackQuery):
         cat = (await s.execute(select(Category).where(Category.slug == cat_slug))).scalar_one()
         children = (await s.execute(select(Category).where(Category.parent_id == cat.id))).scalars().all()
 
-    # Если есть подкатегории — показываем их
-    if children:
-        buttons = [[InlineKeyboardButton(text=child.name, callback_data=f"mlist:{city_slug}:{child.slug}")]
-                   for child in children]
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mcity:{city_slug}")])
-        markup = InlineKeyboardMarkup(inline_keyboard=buttons)
-        msg = await cb.bot.send_message(
-            chat_id,
-            f"<b>Барахолка → {city.name} → {cat.name}</b>\n\nВыберите раздел:",
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
-        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
-        await cb.answer()
-        return
+    keyboard = []
 
-    # Если подкатегорий нет — показываем объявления
-    listings = await fetch_listings(city.id, cat.id)
-    keyboard = [
-        [InlineKeyboardButton(
-            text=f"{listing.title}" + (f" — {listing.price}" if listing.price else ""),
-            callback_data=f"listing:{listing.id}:{city_slug}:{cat_slug}"
-        )]
-        for listing in listings
-    ]
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mcity:{city_slug}")])
+    # 1. Сначала подкатегории (если есть)
+    if children:
+        for child in children:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=child.name,
+                    callback_data=f"mlist:{city_slug}:{child.slug}"
+                )
+            ])
+        # Разделительная кнопка, если дальше идут объявления
+        listings = await fetch_listings(city.id, cat.id)
+        if listings:
+            keyboard.append([InlineKeyboardButton(text="— Объявления —", callback_data="stub")])
+    else:
+        listings = await fetch_listings(city.id, cat.id)
+
+    # 2. Объявления (если есть)
+    if listings:
+        for listing in listings:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"{listing.title}" + (f" — {listing.price}" if listing.price else ""),
+                    callback_data=f"listing:{listing.id}:{city_slug}:{cat_slug}"
+                )
+            ])
+
+    # 3. Кнопка Назад
+    # Если есть родитель — назад к родителю, иначе — в список городов
+    parent_id = cat.parent_id
+    if parent_id:
+        async with SessionLocal() as s:
+            parent_cat = (await s.execute(select(Category).where(Category.id == parent_id))).scalar_one()
+            keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mlist:{city_slug}:{parent_cat.slug}")])
+    else:
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mcity:{city_slug}")])
+
+    # Заголовок
+    title = f"<b>Барахолка → {city.name} → {cat.name}</b>\n\n"
+    if children and listings:
+        subtitle = "Выберите подкатегорию или объявление:"
+    elif children:
+        subtitle = "Выберите подкатегорию:"
+    else:
+        subtitle = "Выберите объявление:"
+
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     msg = await cb.bot.send_message(
         chat_id,
-        f"<b>Барахолка → {city.name} → {cat.name}</b>\n\nВыберите объявление:",
+        title + subtitle,
         reply_markup=markup,
         parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
     await cb.answer()
+
 
 @router.callback_query(F.data == "market_search")
 async def market_search_start(cb: CallbackQuery, state: FSMContext):

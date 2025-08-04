@@ -66,6 +66,8 @@ from app.routers.utils import (
     sent_photo_messages,
 )
 from app.states import MarketSearch
+import inspect
+
 
 
 
@@ -123,6 +125,10 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode="HTML"),
 )
 dp = Dispatcher()
+
+from app.routers.admin_panel import router as admin_panel_router
+dp.include_router(admin_panel_router)
+
 
 # ───────── FSM for forms ─────────
 class CatalogForm(VacancyForm):
@@ -224,6 +230,7 @@ async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
         )
         rows = result.scalars().all()
 
+
     # Группируем по две кнопки в строку
     keyboard = []
     temp_row = []
@@ -239,6 +246,8 @@ async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
     if temp_row:  # если нечетное число, добавляем последнюю кнопку
         keyboard.append(temp_row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 
 
 
@@ -277,6 +286,15 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
 
     await safe_edit_or_send(cb, welcome, menu_markup)
     await cb.answer()
+
+    print(
+        f"FUNC: {inspect.currentframe().f_code.co_name} | "
+        f"cb.data: {getattr(cb, 'data', None)} | "
+        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
+        f"user_id: {getattr(cb.from_user, 'id', None)} | "
+        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
+        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
+    )
 
 
 
@@ -336,6 +354,12 @@ async def cmd_start(message: Message, state: FSMContext):
     msg = await message.answer(welcome, reply_markup=await build_main_menu(), parse_mode="HTML")
     last_bot_messages[chat_id].append(msg.message_id)   # ДОБАВЛЯЕМ
 
+    print(
+        f"FUNC: {inspect.currentframe().f_code.co_name} | "
+        f"chat_id: {getattr(message.chat, 'id', None)} | "
+        f"user_id: {getattr(message.from_user, 'id', None)} | "
+        f"msg_id: {getattr(message, 'message_id', None)}"
+    )
 
 
 @dp.callback_query(F.data.startswith("vcity:"))
@@ -438,6 +462,12 @@ async def get_event_details(m: Message, state: FSMContext):
                          InlineKeyboardButton(text="Нет", callback_data="confirm:no")]
                     ]))
     await state.clear()
+
+@dp.message(Command("myid"))
+async def get_my_id(message: Message):
+    await message.answer(f"Ваш Telegram ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
+
+
 
 
 # ───────────────── Entrypoint ───────────────────────────── #

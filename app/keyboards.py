@@ -226,7 +226,8 @@ async def equip_inline(categories: List[Category], city_slug: str, lang="ru") ->
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ---------- Каталог ----------
+# ------------------------------------------------------------ Каталог ----------------------------------------------------------------------
+
 async def catalog_inline_initial(lang="ru"):
     city_buttons = await build_city_buttons("citysel", lang)
     keyboard = [
@@ -255,7 +256,6 @@ async def catalog_city_inline(city_slug: str, categories: List[Category], lang="
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
 async def catalog_profile_category_inline(city_slug: str, lang="ru"):
     async with SessionLocal() as session:
         parent = (await session.execute(
@@ -280,6 +280,7 @@ async def catalog_profile_category_inline(city_slug: str, lang="ru"):
     if main_menu_btn:
         buttons.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 async def catalog_application_category_inline(parent_id=None):
     categories = await get_catalog_categories(parent_id=parent_id)
     inline_buttons = [
@@ -288,7 +289,6 @@ async def catalog_application_category_inline(parent_id=None):
     ]
     inline_buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog:back")])
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
-
 
 async def catalog_cities_inline(lang: str = "ru"):
     async with SessionLocal() as session:
@@ -303,6 +303,61 @@ async def catalog_cities_inline(lang: str = "ru"):
     # Кнопка "Главное меню"
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+async def catalog_profile_category_inline(categories: List[Category], city_slug: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=c.name, callback_data=f"profile_cat:{city_slug}:{c.id}")]
+        for c in categories
+    ]
+    # Назад и Главное меню
+    back_btn = await get_common_menu_button('catalog_city_back')
+    if back_btn:
+        rows.append([back_btn])
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        rows.append([main_menu_btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def catalog_search_button():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔎 Поиск по каталогу", callback_data="catalog_search")]
+        ]
+    )
+
+def catalog_search_results_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Назад к поиску", callback_data="catalog_search")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+        ]
+    )
+
+async def catalog_category_inline(categories, city_slug, parent_cat_id=None):
+    buttons = []
+    for cat in categories:
+        buttons.append([
+            InlineKeyboardButton(
+                text=cat.name,
+                callback_data=f"catalog_cat:{city_slug}:{cat.id}"
+            )
+        ])
+    # Кнопка Назад, если передан parent_cat_id (или любая ваша логика)
+    if parent_cat_id:
+        buttons.append([
+            InlineKeyboardButton(
+                text="⬅️ Назад", callback_data=f"catalog_back:{city_slug}:{parent_cat_id}"
+            )
+        ])
+    # Главное меню
+    buttons.append([
+        InlineKeyboardButton(
+            text="🏠 Главное меню", callback_data="main_menu"
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 
 # ---------- Вакансии ----------
 async def vacancy_main_inline_view(prefix: str, lang="ru"):
@@ -386,58 +441,3 @@ async def build_main_menu(lang='ru') -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def catalog_profile_category_inline(categories: List[Category], city_slug: str) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text=c.name, callback_data=f"profile_cat:{city_slug}:{c.id}")]
-        for c in categories
-    ]
-    # Назад и Главное меню
-    back_btn = await get_common_menu_button('catalog_city_back')
-    if back_btn:
-        rows.append([back_btn])
-    main_menu_btn = await get_common_menu_button('main_menu')
-    if main_menu_btn:
-        rows.append([main_menu_btn])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-
-def catalog_search_button():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔎 Поиск по каталогу", callback_data="catalog_search")]
-        ]
-    )
-
-def catalog_search_results_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Назад к поиску", callback_data="catalog_search")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
-        ]
-    )
-
-
-async def catalog_category_inline(categories, city_slug, parent_cat_id=None):
-    buttons = []
-    for cat in categories:
-        buttons.append([
-            InlineKeyboardButton(
-                text=cat.name,
-                callback_data=f"catalog_cat:{city_slug}:{cat.id}"
-            )
-        ])
-    # Кнопка Назад, если передан parent_cat_id (или любая ваша логика)
-    if parent_cat_id:
-        buttons.append([
-            InlineKeyboardButton(
-                text="⬅️ Назад", callback_data=f"catalog_back:{city_slug}:{parent_cat_id}"
-            )
-        ])
-    # Главное меню
-    buttons.append([
-        InlineKeyboardButton(
-            text="🏠 Главное меню", callback_data="main_menu"
-        )
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
