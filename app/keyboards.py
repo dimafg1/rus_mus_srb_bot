@@ -8,6 +8,7 @@ from app.database import SessionLocal  # если у вас по-другому 
 from app.models import Menu, City  # или как у вас называется эта модель
 from app.routers.utils import get_text
 from app.routers.utils import get_catalog_categories
+from app.routers.admin_panel import is_admin
 
 
 

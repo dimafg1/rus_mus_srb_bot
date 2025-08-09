@@ -68,6 +68,9 @@ from app.routers.utils import (
 from app.states import MarketSearch
 import inspect
 from app.routers import feedback
+from app.routers.admin_panel import is_admin
+from app.routers.admin_fields import router as admin_fields_router
+
 
 
 
@@ -121,7 +124,7 @@ dp = Dispatcher()
 
 from app.routers.admin_panel import router as admin_panel_router
 dp.include_router(admin_panel_router)
-
+dp.include_router(admin_fields_router)
 
 # ───────── FSM for forms ─────────
 class CatalogForm(VacancyForm):
@@ -265,6 +268,21 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
     # 5) Рисуем главное меню
     welcome = await get_text("welcome", "ru") or "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
     menu_markup = await build_main_menu(lang="ru")
+    try:
+        from aiogram.types import InlineKeyboardButton
+        from app.routers.admin_panel import is_admin
+        if not getattr(menu_markup, "inline_keyboard", None):
+            menu_markup.inline_keyboard = []
+        if is_admin(cb.from_user.id):
+            if not any(
+                getattr(btn, "callback_data", None) == "admin"
+                for row in menu_markup.inline_keyboard for btn in row
+            ):
+                menu_markup.inline_keyboard.append(
+                    [InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")]
+                )
+    except Exception:
+        pass    
     await safe_edit_or_send(cb, welcome, menu_markup)
     await cb.answer()
 
@@ -328,11 +346,24 @@ async def cmd_start(message: Message, state: FSMContext):
     chat_id = message.chat.id
     await clear_bot_messages(chat_id, message.bot)
     await state.clear()
+
     welcome = await get_text("welcome", "ru")
     if not welcome:
         welcome = "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
-    msg = await message.answer(welcome, reply_markup=await build_main_menu(), parse_mode="HTML")
-    last_bot_messages[chat_id].append(msg.message_id)   # ДОБАВЛЯЕМ
+
+    # базовое меню
+    markup = await build_main_menu()
+
+    # добавляем кнопку Админка ТОЛЬКО админу и без дублей
+    if is_admin(message.from_user.id):
+        if not any(getattr(btn, "callback_data", None) == "admin"
+                   for row in (markup.inline_keyboard or []) for btn in row):
+            markup.inline_keyboard.append(
+                [InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")]
+            )
+
+    msg = await message.answer(welcome, reply_markup=markup, parse_mode="HTML")
+    last_bot_messages[chat_id].append(msg.message_id)
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "

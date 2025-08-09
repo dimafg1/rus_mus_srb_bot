@@ -7,10 +7,11 @@ from app.routers.utils import clear_bot_messages, last_bot_messages
 from sqlalchemy import select, text, func, and_, or_
 from app.database import SessionLocal
 from app.models import Category
-from app.states import AdminCategoryStates
+from app.states import AdminCategoryStates, AdminFieldStates
 from aiogram.types import ReplyKeyboardRemove
 import inspect
 from datetime import datetime
+import json
 import pytz
 SERBIA_TZ = pytz.timezone("Europe/Belgrade")
 FEEDBACK_PAGE_SIZE = 10
@@ -33,10 +34,25 @@ def get_admin_menu():
                 InlineKeyboardButton(text="📬 Обратная связь", callback_data="admin_feedback")
             ],
             [
-                InlineKeyboardButton(text="◀️ Главное меню", callback_data="main_menu")
+                InlineKeyboardButton(text="👤 Панель пользователя", callback_data="main_menu")
             ]
         ]
     )
+
+# --- Утилиты для чтения/записи списка полей категории (Category.fields: JSON) ---
+async def load_category_fields(session, cat_id: int) -> list[dict]:
+    cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+    try:
+        return json.loads(cat.fields) if cat.fields else []
+    except Exception:
+        return []
+
+async def save_category_fields(session, cat_id: int, fields: list[dict]) -> None:
+    cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+    cat.fields = json.dumps(fields, ensure_ascii=False)
+    session.add(cat)
+    await session.commit()
+
 
 # ====== Вход в админ-панель ======
 @router.message(Command("admin"))
@@ -146,6 +162,16 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
 
     keyboard = []
     
+    # Кнопка «Поля категории» — показываем как и редакт/удаление: только не для корней
+    if parent_category.id not in ROOT_CATEGORY_IDS:
+        keyboard.insert(0, [
+            InlineKeyboardButton(
+                text="⚙️ Поля категории",
+                callback_data=f"admin:fields:{parent_id}"
+            )
+        ])
+
+
     for subcat in subcategories:
         keyboard.append([
             InlineKeyboardButton(
@@ -153,6 +179,8 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
                 callback_data=f"admin:edit_category:{subcat.id}"
             )
         ])
+
+
     keyboard.append([
         InlineKeyboardButton(
             text="✚ Добавить подкатегорию",
@@ -204,6 +232,8 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
         f"user_id: {getattr(cb.from_user, 'id', None)} | "
         f"msg_id: {getattr(msg, 'message_id', None)}"
     )
+
+
 
 # ====== Админ: запрос названия новой подкатегории ======
 @router.callback_query(F.data.startswith("admin:add_category:"))

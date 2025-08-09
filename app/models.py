@@ -26,7 +26,7 @@ class Category(SQLModel, table=True):
         default=None,
         sa_column=Column(Integer, ForeignKey("category.id", ondelete="SET NULL"), index=True, nullable=True)
     )
-
+    fields: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
 
 # ─────────────────────────────────────────────────────────
 # Item (анкета для каталога)

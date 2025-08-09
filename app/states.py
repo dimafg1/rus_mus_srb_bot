@@ -14,3 +14,13 @@ class AdminCategoryStates(StatesGroup):
 
 class FeedbackStates(StatesGroup):
     waiting_for_feedback_message = State()
+
+class AdminFieldStates(StatesGroup):
+    choosing_type = State()
+    waiting_label = State()
+    waiting_key = State()
+    waiting_required = State()
+    waiting_options = State()  # только для select/multiselect
+    editing_label = State()
+    editing_key = State()
+    editing_options = State()
