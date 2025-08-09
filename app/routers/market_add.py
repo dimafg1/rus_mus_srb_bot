@@ -42,6 +42,7 @@ from app.routers.utils import (
 
 import sys; print("PYTHONPATH:", sys.path)
 from app.routers.utils import my_listing_messages
+from app.routers.utils import safe_edit_or_send
 print("my_listing_messages:", type(my_listing_messages))
 
 
@@ -443,7 +444,7 @@ async def sell_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     # Текст берём из БД, если нет — английский дефолт
     cancel_text = (await get_text('sell_cancelled', 'ru')) or "❌ Listing creation cancelled."
-    await cb.message.edit_text(cancel_text)
+    await safe_edit_or_send(cb, cancel_text)
     await cb.answer()
 
 
@@ -561,7 +562,7 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
         template = await get_text('sell_choose_category_back', 'ru') or "City: <b>{city_name}</b>\nChoose a category:"
         text = template.format(city_name=data.get('city_name'))
         try:
-            await cb.message.edit_text(
+            await safe_edit_or_send(cb, 
                 text,
                 reply_markup=kb,
                 parse_mode="HTML"
@@ -627,7 +628,7 @@ async def sell_city_back(cb: CallbackQuery, state: FSMContext):
         cities = (await s.execute(select(City))).scalars().all()
     kb = await cities_inline(cities)
     header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
-    await cb.message.edit_text(
+    await safe_edit_or_send(cb, 
         header,
         reply_markup=kb
     )

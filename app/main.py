@@ -67,26 +67,19 @@ from app.routers.utils import (
 )
 from app.states import MarketSearch
 import inspect
+from app.routers import feedback
 
 
 
 
 
 
-last_search_query_message: Dict[int, int] = {}     # Сообщение "Введите запрос..."
-last_search_menu_message: Dict[int, int] = {}      # Меню с результатами
-last_reply_menu_messages: Dict[int, list] = defaultdict(list)   # ID reply-меню по чатам
-my_listing_messages: Dict[int, list] = defaultdict(list)
+# last_search_query_message: Dict[int, int] = {}     # Сообщение "Введите запрос..."
+# last_search_menu_message: Dict[int, int] = {}      # Меню с результатами
+# last_reply_menu_messages: Dict[int, list] = defaultdict(list)   # ID reply-меню по чатам
+# my_listing_messages: Dict[int, list] = defaultdict(list)
 
 
-# async def show_market_search_results(m, state, results):
-#     keyboard = [
-#         [InlineKeyboardButton(text=f"{listing.title} — {listing.price or ''}", callback_data=f"market_search_detail:{listing.id}")]
-#         for listing in results
-#     ]
-#     keyboard.append([InlineKeyboardButton(text="❌ Новый поиск", callback_data="market_search_new")])
-#     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-#     await m.answer("Найдено объявлений:", reply_markup=markup)
 
 async def safe_edit_or_send(cb: CallbackQuery, text: str, reply_markup=None, parse_mode="HTML"):
     chat_id = cb.message.chat.id
@@ -146,35 +139,17 @@ class EventForm(VacancyForm):
     date: State = State()
     details: State = State()
 
-# class MarketSearch(StatesGroup):
-#     waiting_for_query = State()
-#     waiting_for_detail = State()
 
 
 dp.include_router(market_add_router)
 dp.include_router(vacancy_router)
+dp.include_router(feedback.router)
 
-# Include catalogue routers extracted from main.py.  These routers handle
-# navigation of the specialists/portfolio catalogue (catalog_view) and
-# submission of new portfolio applications (catalog_add).  Without
-# including them the corresponding callback handlers would not be
-# registered with the dispatcher.
+
 from app.routers.catalog_view import router as catalog_view_router
 from app.routers.catalog_add import router as catalog_add_router
 dp.include_router(catalog_view_router)
 dp.include_router(catalog_add_router)
-
-
-# NOTE: catalogue navigation has been moved to app/routers/catalog_view.py.
-# The handler registration below is intentionally disabled to avoid
-# duplicate callbacks.  See catalog_view.go_catalog for the current
-# implementation.
-# @dp.callback_query(F.data == "go_catalog")
-# async def go_catalog(cb: CallbackQuery, state: FSMContext):
-#     await clear_bot_messages(cb.message.chat.id, cb.bot)
-#     markup = await catalog_inline_initial()
-#     await safe_edit_or_send(cb, await get_text("catalog_choose_city", "ru"), markup)
-#     await cb.answer()
 
 
 @dp.callback_query(F.data == "go_isk")
@@ -256,44 +231,49 @@ async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
 async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
 
-    # Удалить сообщение с приглашением к поиску
-    query_msg_id = last_search_query_message.pop(chat_id, None)
-    if query_msg_id:
-        try:
-            await cb.bot.delete_message(chat_id, query_msg_id)
-        except Exception:
-            pass
+    # 0) Диагностика перед удалением
+    print(
+        f"[BEFORE] main_menu_cb | chat_id={chat_id} | "
+        f"query_cached={last_search_query_message.get(chat_id)} | "
+        f"menu_cached={last_search_menu_message.get(chat_id)} | "
+        f"bot_msgs={last_bot_messages.get(chat_id)}"
+    )
 
-    # Удалить меню поиска (если вдруг есть)
-    menu_msg_id = last_search_menu_message.pop(chat_id, None)
-    if menu_msg_id:
-        try:
-            await cb.bot.delete_message(chat_id, menu_msg_id)
-        except Exception:
-            pass
+    # 1) Удаляем сообщение, по которому нажали
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
 
-    # Удалить прочие служебные сообщения
+    # 2) Достаём id из кэшей поиска (и логируем)
+    qid = last_search_query_message.pop(chat_id, None)
+    mid = last_search_menu_message.pop(chat_id, None)
+    print(f"[POP] main_menu_cb | query_id={qid} | menu_id={mid}")
+
+    # 3) Удаляем эти сообщения, если есть
+    for msg_id in (qid, mid):
+        if msg_id and msg_id != getattr(cb.message, "message_id", None):
+            try:
+                await cb.bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+
+    # 4) Подчистка прочих служебных
     await clear_bot_messages(chat_id, cb.bot)
-
     await state.clear()
 
-    welcome = await get_text("welcome", "ru")
-    if not welcome:
-        welcome = "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
-
-    # Вот здесь — новый способ построения меню!
+    # 5) Рисуем главное меню
+    welcome = await get_text("welcome", "ru") or "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
     menu_markup = await build_main_menu(lang="ru")
-
     await safe_edit_or_send(cb, welcome, menu_markup)
     await cb.answer()
 
+    # 6) Диагностика после
     print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
+        f"[AFTER] main_menu_cb | chat_id={chat_id} | "
+        f"query_cached={last_search_query_message.get(chat_id)} | "
+        f"menu_cached={last_search_menu_message.get(chat_id)} | "
+        f"bot_msgs={last_bot_messages.get(chat_id)}"
     )
 
 
@@ -366,25 +346,25 @@ async def cmd_start(message: Message, state: FSMContext):
 async def vacancy_isk_city(cb: CallbackQuery, state: FSMContext):
     _, city_slug = cb.data.split(":", 1)
     city = await city_by_slug(city_slug)
-    await cb.message.edit_text(f"🤝 Ищу → {city.name}\nВыберите направление для просмотра анкет:", 
+    await safe_edit_or_send(cb, f"🤝 Ищу → {city.name}\nВыберите направление для просмотра анкет:", 
                                  reply_markup=vacancy_category_inline())
     await cb.answer()
 
 @dp.callback_query(F.data == "vacancy:back")
 async def vacancy_back(cb: CallbackQuery):
-    await cb.message.edit_text("🤝 Ищу – выберите действие:", reply_markup=vacancy_main_inline_view("vcity"))
+    await safe_edit_or_send(cb, "🤝 Ищу – выберите действие:", reply_markup=vacancy_main_inline_view("vcity"))
     await cb.answer()
 
 @dp.callback_query(F.data.startswith("vcat:"))
 async def vacancy_category(cb: CallbackQuery, state: FSMContext):
     data = cb.data.split(":", 1)[1]
     if data == "musicians":
-        await cb.message.edit_text("Выберите подкатегорию для 'Музыканты':", reply_markup=musicians_sub_inline())
+        await safe_edit_or_send(cb, "Выберите подкатегорию для 'Музыканты':", reply_markup=musicians_sub_inline())
     elif data == "back":
-        await cb.message.edit_text("Выберите направление:", reply_markup=vacancy_category_inline())
+        await safe_edit_or_send(cb, "Выберите направление:", reply_markup=vacancy_category_inline())
     else:
         await state.update_data(category=data)
-        await cb.message.edit_text(f"Показываем анкеты по направлению <b>{data.capitalize()}</b>...", 
+        await safe_edit_or_send(cb, f"Показываем анкеты по направлению <b>{data.capitalize()}</b>...", 
                                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                          [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
                                      ]))
@@ -394,7 +374,7 @@ async def vacancy_category(cb: CallbackQuery, state: FSMContext):
 async def vacancy_sub_category(cb: CallbackQuery, state: FSMContext):
     sub = cb.data.split(":", 1)[1]
     await state.update_data(category=sub)
-    await cb.message.edit_text(f"Показываем анкеты по подкатегории <b>{sub.capitalize()}</b>...", 
+    await safe_edit_or_send(cb, f"Показываем анкеты по подкатегории <b>{sub.capitalize()}</b>...", 
                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                      [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
                                  ]))
@@ -413,13 +393,13 @@ async def receive_vacancy_text(m: Message, state: FSMContext):
 async def predl_city(cb: CallbackQuery, state: FSMContext):
     _, city_slug = cb.data.split(":", 1)
     city = await city_by_slug(city_slug)
-    await cb.message.edit_text(f"🗣 Предлагаю → {city.name}\nВыберите направление для просмотра анкет:", 
+    await safe_edit_or_send(cb, f"🗣 Предлагаю → {city.name}\nВыберите направление для просмотра анкет:", 
                                  reply_markup=vacancy_category_inline())
     await cb.answer()
 
 @dp.callback_query(F.data == "pcity_start")
 async def predl_start_cb(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("🗣 Разместить объявление – выберите город:", 
+    await safe_edit_or_send(cb, "🗣 Разместить объявление – выберите город:", 
                                  reply_markup=vacancy_main_inline_view("pcity"))
     await state.clear()
     await state.set_state(ExtendedVacancyForm.city)
@@ -431,18 +411,18 @@ async def predl_start_cb(cb: CallbackQuery, state: FSMContext):
 async def events_city(cb: CallbackQuery, state: FSMContext):
     _, city_slug = cb.data.split(":", 1)
     city = await city_by_slug(city_slug)
-    await cb.message.edit_text(f"📅 Афиша → {city.name}\nПока нет опубликованных мероприятий.\nНажмите '➕ Разместить информацию' для добавления.")
+    await safe_edit_or_send(cb, f"📅 Афиша → {city.name}\nПока нет опубликованных мероприятий.\nНажмите '➕ Разместить информацию' для добавления.")
     await cb.answer()
 
 @dp.callback_query(F.data == "event_new")
 async def event_new_cb(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("➕ Разместить информацию – введите дату и время мероприятия (например, 2025-05-10 19:00):")
+    await safe_edit_or_send(cb, "➕ Разместить информацию – введите дату и время мероприятия (например, 2025-05-10 19:00):")
     await state.set_state(EventForm.date)
     await cb.answer()
 
 @dp.callback_query(F.data == "events:back")
 async def events_back(cb: CallbackQuery):
-    await cb.message.edit_text("📅 Афиша – выберите действие:", reply_markup=events_main_inline())
+    await safe_edit_or_send(cb, "📅 Афиша – выберите действие:", reply_markup=events_main_inline())
     await cb.answer()
 
 @dp.message(EventForm.date)

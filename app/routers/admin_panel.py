@@ -4,12 +4,17 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.routers.utils import clear_bot_messages, last_bot_messages
-from sqlalchemy import select
+from sqlalchemy import select, text, func, and_, or_
 from app.database import SessionLocal
 from app.models import Category
 from app.states import AdminCategoryStates
 from aiogram.types import ReplyKeyboardRemove
 import inspect
+from datetime import datetime
+import pytz
+SERBIA_TZ = pytz.timezone("Europe/Belgrade")
+FEEDBACK_PAGE_SIZE = 10
+
 
 router = Router()
 
@@ -23,6 +28,9 @@ def get_admin_menu():
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="🗂 Редактировать категории", callback_data="admin:edit_categories")
+            ],
+            [
+                InlineKeyboardButton(text="📬 Обратная связь", callback_data="admin_feedback")
             ],
             [
                 InlineKeyboardButton(text="◀️ Главное меню", callback_data="main_menu")
@@ -787,3 +795,303 @@ async def admin_success_ok_cb(cb: CallbackQuery, state: FSMContext):
         f"cb.data: {cb.data} | parent_id: {parent_id} | "
         f"chat_id: {getattr(cb.message.chat, 'id', None)} | user_id: {cb.from_user.id}"
     )
+
+
+# Новый обработчик входа в обратную связь
+@router.callback_query(F.data == "admin_feedback")
+async def admin_feedback_entry(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await send_admin_feedback_list(cb, offset=0)
+
+# Новый обработчик страниц
+@router.callback_query(F.data.startswith("admin_feedback_list"))
+async def admin_feedback_list(cb: CallbackQuery):
+    # Извлекаем смещение из callback_data
+    data = cb.data.split(":")
+    offset = int(data[1]) if len(data) > 1 and data[1].isdigit() else 0
+    await send_admin_feedback_list(cb, offset=offset)
+
+# Бизнес-логика списка с пагинацией (отдельная функция!)
+async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    limit = FEEDBACK_PAGE_SIZE
+
+    async with SessionLocal() as session:
+        # всего писем
+        total = (await session.execute(text("SELECT COUNT(*) AS c FROM feedback"))).scalar_one()
+
+        result = await session.execute(
+            text(
+                "SELECT id, username, created_at, is_read "
+                "FROM feedback "
+                "ORDER BY created_at DESC, id DESC "
+                "LIMIT :limit OFFSET :offset"
+            ),
+            {"limit": limit, "offset": offset}
+        )
+        rows = result.fetchall()
+
+    keyboard = []
+
+    # Кнопка "Более поздние" (новее) — только если offset > 0
+    if offset > 0:
+        keyboard.append([InlineKeyboardButton(
+            text="⏫⏫⏫ Более поздние ⏫⏫⏫",
+            callback_data=f"admin_feedback_list:{max(0, offset - limit)}"
+        )])
+
+    # Сообщения (нумерация глобальная)
+    start_no = offset + 1
+    for i, r in enumerate(rows):
+        idx = offset + i + 1
+        status = "•" if not r.is_read else ""
+        uname = f"@{r.username}" if r.username else "Без ника"
+
+        dt = r.created_at
+        if isinstance(dt, str):
+            try:
+                dt = datetime.fromisoformat(dt)
+            except Exception:
+                dt = datetime.strptime(dt[:19], "%Y-%m-%d %H:%M:%S")
+        if dt.tzinfo is None:
+            dt = pytz.UTC.localize(dt)
+        dt = dt.astimezone(SERBIA_TZ)
+        dt_str = dt.strftime("%H:%M %d:%m:%y")
+
+        btn_text = f"{idx}. {status} {uname} · {dt_str}"
+        keyboard.append([InlineKeyboardButton(
+            text=btn_text,
+            callback_data=f"admin_feedback_view:{r.id}"
+        )])
+
+    # Кнопка "Более ранние" — если есть ещё страницы
+    if offset + limit < total:
+        keyboard.append([InlineKeyboardButton(
+            text="⏬⏬⏬ Более ранние ⏬⏬⏬",
+            callback_data=f"admin_feedback_list:{offset + limit}"
+        )])
+
+    # Кнопки возврата
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin")])
+    keyboard.append([InlineKeyboardButton(text="🛠️ Админпанель", callback_data="admin")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    end_no = min(offset + len(rows), total)
+    header = f"📬 <b>Сообщения (новые сверху)</b>\nПоказаны {start_no}–{end_no} из {total}"
+
+    msg = await cb.message.answer(header, reply_markup=markup, parse_mode="HTML")
+    last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    print(
+        f"FUNC: send_admin_feedback_list | offset: {offset} | "
+        f"chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id} | rows: {len(rows)} | total: {total}"
+    )
+
+# ── Админ: просмотр одного письма обратной связи (все кнопки в ОДНОМ сообщении)
+#     • Удаляем предыдущее сообщение (в т.ч. экран подтверждения)
+#     • Считаем позицию [pos/total], соседей (новые сверху)
+#     • Клавиатура под письмом: ⏫⏫⏫ / ⏬⏬⏬ / (🗑 Удалить  ↩️ К списку)
+@router.callback_query(F.data.startswith("admin_feedback_view:"))
+async def admin_feedback_view(cb: CallbackQuery):
+    # 1) Сносим сообщение, по которому пришли (чтобы не висели подтверждения и пр.)
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+
+    fb_id = int(cb.data.split(":")[1])
+
+    # 2) Читаем письмо + считаем позицию/соседей (новые сверху: created_at DESC, id DESC)
+    async with SessionLocal() as session:
+        res = await session.execute(
+            text(
+                "SELECT id, user_id, username, message, created_at, is_read "
+                "FROM feedback WHERE id = :id"
+            ),
+            {"id": fb_id}
+        )
+        row = res.fetchone()
+        if not row:
+            await cb.message.answer("Сообщение не найдено или удалено.")
+            return
+
+        # помечаем прочитанным
+        await session.execute(text("UPDATE feedback SET is_read = 1 WHERE id = :id"), {"id": fb_id})
+        await session.commit()
+
+        total = (await session.execute(text("SELECT COUNT(*) AS c FROM feedback"))).scalar_one()
+
+        count_newer = (await session.execute(
+            text(
+                "SELECT COUNT(*) AS c FROM feedback "
+                "WHERE created_at > :cur_dt "
+                "   OR (created_at = :cur_dt AND id > :cur_id)"
+            ),
+            {"cur_dt": row.created_at, "cur_id": row.id}
+        )).scalar_one()
+        pos = count_newer + 1
+
+        prev_row = (await session.execute(
+            text(
+                "SELECT id FROM feedback "
+                "WHERE created_at > :cur_dt "
+                "   OR (created_at = :cur_dt AND id > :cur_id) "
+                "ORDER BY created_at ASC, id ASC "
+                "LIMIT 1"
+            ),
+            {"cur_dt": row.created_at, "cur_id": row.id}
+        )).fetchone()
+        prev_id = prev_row.id if prev_row else None
+
+        next_row = (await session.execute(
+            text(
+                "SELECT id FROM feedback "
+                "WHERE created_at < :cur_dt "
+                "   OR (created_at = :cur_dt AND id < :cur_id) "
+                "ORDER BY created_at DESC, id DESC "
+                "LIMIT 1"
+            ),
+            {"cur_dt": row.created_at, "cur_id": row.id}
+        )).fetchone()
+        next_id = next_row.id if next_row else None
+
+    # 3) Текст письма
+    uname = f"@{row.username}" if row.username else "Без ника"
+    dt_val = row.created_at
+    try:
+        dt_val = datetime.fromisoformat(dt_val) if isinstance(dt_val, str) else dt_val
+    except Exception:
+        dt_val = datetime.utcnow()
+    dt_str = dt_val.strftime("%H:%M %d:%m:%y")
+
+    header = (
+        f"📨 <b>Обратная связь</b>  <i>[{pos}/{total}]</i>\n"
+        f"<b>От:</b> {uname}\n"
+        f"<b>Дата:</b> {dt_str}\n"
+    )
+    body = row.message or "—"
+    msg_text = f"{header}\n{body}"
+
+    # 4) На какую страницу возвращаться «к списку»
+    back_offset = ((pos - 1) // FEEDBACK_PAGE_SIZE) * FEEDBACK_PAGE_SIZE
+
+    # 5) Клавиатура (три строки максимум) — всё в одном сообщении
+    rows = []
+    if prev_id:
+        rows.append([InlineKeyboardButton(text="⏫⏫⏫", callback_data=f"admin_feedback_view:{prev_id}")])
+    if next_id:
+        rows.append([InlineKeyboardButton(text="⏬⏬⏬", callback_data=f"admin_feedback_view:{next_id}")])
+    rows.append([
+        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_feedback_delete:{row.id}"),
+        InlineKeyboardButton(text="↩️ К списку", callback_data=f"admin_feedback_list:{back_offset}")
+    ])
+    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    msg = await cb.message.answer(msg_text, reply_markup=markup, parse_mode="HTML")
+    last_bot_messages[chat_id] = [msg.message_id]
+
+    # 6) Лог
+    print(
+        f"FUNC: admin_feedback_view | id={fb_id} | pos={pos}/{total} | "
+        f"prev_id={prev_id} | next_id={next_id} | back_offset={back_offset} | "
+        f"sent_id={msg.message_id} | chat_id={chat_id} | user_id={cb.from_user.id}"
+    )
+
+
+
+# ⛔️ Подтверждение удаления (редактируем только клавиатуру, без мусора)
+@router.callback_query(F.data.startswith("admin_feedback_delete:"))
+async def admin_feedback_delete_confirm(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    fb_id = int(cb.data.split(":")[1])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin_feedback_view:{fb_id}")],
+        [InlineKeyboardButton(text="✅ Удалить навсегда", callback_data=f"admin_feedback_delete_yes:{fb_id}")]
+    ])
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        pass
+
+    await cb.answer("Удалить это сообщение?")
+    print(f"FUNC: admin_feedback_delete_confirm | id={fb_id} | chat_id={cb.message.chat.id} | user_id={cb.from_user.id}")
+
+
+# ── Админ: удаление письма навсегда (с переходом к соседу и чисткой подтверждения) ──
+@router.callback_query(F.data.startswith("admin_feedback_delete_yes:"))
+async def admin_feedback_delete_yes(cb: CallbackQuery):
+    # Сначала убираем экран подтверждения, чтобы он не висел
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    fb_id = int(cb.data.split(":")[1])
+
+    async with SessionLocal() as session:
+        res = await session.execute(
+            text("SELECT id, created_at FROM feedback WHERE id = :id"),
+            {"id": fb_id}
+        )
+        cur = res.fetchone()
+        if not cur:
+            await send_admin_feedback_list(cb, offset=0)
+            print(f"FUNC: admin_feedback_delete_yes | already_deleted id={fb_id}")
+            return
+
+        prev_row = (await session.execute(
+            text(
+                "SELECT id FROM feedback "
+                "WHERE created_at > :cur_dt OR (created_at = :cur_dt AND id > :cur_id) "
+                "ORDER BY created_at ASC, id ASC LIMIT 1"
+            ),
+            {"cur_dt": cur.created_at, "cur_id": cur.id}
+        )).fetchone()
+        prev_id = prev_row.id if prev_row else None
+
+        next_row = (await session.execute(
+            text(
+                "SELECT id FROM feedback "
+                "WHERE created_at < :cur_dt OR (created_at = :cur_dt AND id < :cur_id) "
+                "ORDER BY created_at DESC, id DESC LIMIT 1"
+            ),
+            {"cur_dt": cur.created_at, "cur_id": cur.id}
+        )).fetchone()
+        next_id = next_row.id if next_row else None
+
+        await session.execute(text("DELETE FROM feedback WHERE id = :id"), {"id": fb_id})
+        await session.commit()
+
+    target_id = next_id or prev_id
+    if target_id:
+        # Переходим к соседнему письму
+        from aiogram.types import CallbackQuery as CQ
+        fake = CQ(
+            id="fake",
+            from_user=cb.from_user,
+            chat_instance=cb.chat_instance,
+            message=cb.message,
+            data=f"admin_feedback_view:{target_id}",
+        )
+        await admin_feedback_view(fake)
+    else:
+        # Писем не осталось — вернёмся к списку
+        await send_admin_feedback_list(cb, offset=0)
+
+    print(f"FUNC: admin_feedback_delete_yes | deleted_id={fb_id} | next_id={next_id} | prev_id={prev_id} | chat_id={cb.message.chat.id} | user_id={cb.from_user.id}")

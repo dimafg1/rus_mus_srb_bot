@@ -57,6 +57,7 @@ async def catalog_search_start(cb: CallbackQuery, state: FSMContext):
     nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
     nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
 
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id])
     # Текст приглашения к поиску. Если в базе нет отдельного текста, используем дефолт.
     prompt = "Введите ключевое слово для поиска в каталоге:"
     query_msg = await cb.bot.send_message(chat_id, prompt)
@@ -97,6 +98,7 @@ async def catalog_search_query(m: Message, state: FSMContext):
     nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
     nav_msg = await m.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
 
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id])
     # Выполняем поиск
     async with SessionLocal() as session:
         items = (await session.execute(
@@ -153,6 +155,7 @@ async def go_catalog(cb: CallbackQuery, state: FSMContext) -> None:
     #     nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
     # nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
     # nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id])
     # Сообщение с вариантами каталога
     markup = await catalog_inline_initial()
     text = await get_text("catalog_choose_city", "ru") or "🏙 Каталог – выберите город:"
@@ -364,6 +367,7 @@ async def catalog_city_handler(cb: CallbackQuery):
 #     nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
 #     nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
 
+    # last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id])
 #     # Добавляем навигацию внизу списка содержимого
 #     back_btn = await get_common_menu_button('back')
 #     if back_btn:
@@ -405,6 +409,7 @@ async def catalog_back(cb: CallbackQuery) -> None:
     #     nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
     # nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
     # nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
+    # last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id])
     # Сообщение каталога
     markup = await catalog_inline_initial()
     text = await get_text("catalog_choose_city", "ru") or "🏙 Каталог – выберите город:"

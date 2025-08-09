@@ -5,6 +5,7 @@ from typing import List
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from app.routers.utils import safe_edit_or_send
 from aiogram.fsm.state import State, StatesGroup
 
 from sqlalchemy import select
@@ -29,7 +30,7 @@ async def vacancy_city(cb: CallbackQuery, state: FSMContext):
         city = (await s.execute(select(City).where(City.slug == slug))).scalar_one()
     await state.update_data(city_id=city.id, city_name=city.name)
 
-    await cb.message.edit_text("Укажите роль (например, «Вокалист», «Гитарист» и т.д.):", reply_markup=None)
+    await safe_edit_or_send(cb, "Укажите роль (например, «Вокалист», «Гитарист» и т.д.):", reply_markup=None)
     await state.set_state(VacancyForm.role)
     await cb.answer()
 

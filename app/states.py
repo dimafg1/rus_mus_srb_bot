@@ -11,3 +11,6 @@ class AdminCategoryStates(StatesGroup):
     waiting_for_new_category_slug = State()
     renaming_category_name = State()
     renaming_category_slug = State()
+
+class FeedbackStates(StatesGroup):
+    waiting_for_feedback_message = State()

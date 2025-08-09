@@ -81,7 +81,7 @@ async def apply_catalog_handler(cb: CallbackQuery, state: FSMContext) -> None:
     markup = await catalog_cities_inline()
     prompt = "Выберите город для анкеты:"
     msg = await cb.bot.send_message(chat_id, prompt, reply_markup=markup)
-    last_bot_messages[chat_id] = [msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await state.set_state(CatalogAddForm.category_choice)
     await cb.answer()
     print(
@@ -120,7 +120,7 @@ async def catalog_back_handler(cb: CallbackQuery, state: FSMContext):
     # Сообщение каталога
     markup = await catalog_inline_initial()
     msg = await cb.bot.send_message(chat_id, "Каталог — выберите действие:", reply_markup=markup)
-    last_bot_messages[chat_id] = [msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await state.clear()
     await cb.answer()
     print(
@@ -139,7 +139,7 @@ from app.keyboards import catalog_profile_category_inline
 # async def apply_catalog_city_handler(cb: CallbackQuery, state: FSMContext):
 #     city_slug = cb.data.split(":")[1]
 #     markup = await catalog_profile_category_inline(city_slug)
-#     await cb.message.edit_text("Выберите категорию анкеты:", reply_markup=markup)
+#     await safe_edit_or_send(cb, "Выберите категорию анкеты:", reply_markup=markup)
 #     await state.update_data(city=city_slug)
 #     await state.set_state(CatalogAddForm.category_choice)
 #     await cb.answer() 
@@ -167,7 +167,7 @@ async def catalog_city_back(cb: CallbackQuery, state: FSMContext):
         markup.inline_keyboard.append(nav_row)
 
     msg = await cb.bot.send_message(chat_id, "Выберите город для анкеты:", reply_markup=markup)
-    last_bot_messages[chat_id] = [msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await cb.answer()
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -218,7 +218,7 @@ async def catalog_city(cb: CallbackQuery, state: FSMContext):
 
     template = f"<b>Каталог ➔ {city.name}</b>"
     msg = await cb.bot.send_message(chat_id, template, reply_markup=kb, parse_mode="HTML")
-    last_bot_messages[chat_id] = [msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await state.set_state(CatalogAddForm.category_choice)
     await cb.answer()
     print(
@@ -260,7 +260,7 @@ async def catalog_profile_cat(cb: CallbackQuery, state: FSMContext):
         kb = await catalog_profile_category_inline(subcats, city_slug)
         template = f"Категория: <b>{cat.name}</b>\nВыберите подкатегорию:"
         msg = await cb.bot.send_message(chat_id, template, reply_markup=kb, parse_mode="HTML")
-        last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+        last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
         await state.set_state(CatalogAddForm.category_choice)
     else:
@@ -268,7 +268,7 @@ async def catalog_profile_cat(cb: CallbackQuery, state: FSMContext):
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
         await state.set_state(CatalogAddForm.name)
         prompt_msg = await cb.bot.send_message(chat_id, "Введите название группы/студии/площадки:")
-        last_bot_messages[chat_id] = [nav_msg.message_id, prompt_msg.message_id]
+        last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, prompt_msg.message_id])
     await cb.answer()
 
     print(
@@ -307,7 +307,7 @@ async def catalog_application_category_handler(cb: CallbackQuery, state: FSMCont
     # Сообщение запроса названия
     prompt_text = f"Вы выбрали направление: <b>{category.capitalize()}</b>\nВведите название группы/студии/площадки:"
     msg = await cb.bot.send_message(chat_id, prompt_text, parse_mode="HTML")
-    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.name)
     await cb.answer()
 
@@ -344,7 +344,7 @@ async def get_catalog_name(m: Message, state: FSMContext) -> None:
     nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
     # Запрос адреса
     msg = await m.answer("Введите адрес (необязательно, можно пропустить):")
-    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.address)
 
     print(
@@ -378,7 +378,7 @@ async def get_catalog_address(m: Message, state: FSMContext) -> None:
     nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
     nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
     msg = await m.answer("Прикрепите фото (можно до 3-х, или пропустите):")
-    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.photo)
 
     print(
@@ -412,7 +412,7 @@ async def get_catalog_photo(m: Message, state: FSMContext) -> None:
     nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
     nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
     msg = await m.answer("Введите описание ваших умений или информации о группе/студии:")
-    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.description)
 
     print(
@@ -446,7 +446,7 @@ async def get_catalog_description(m: Message, state: FSMContext) -> None:
     nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
     nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
     msg = await m.answer("Введите информацию о реп. базе (ссылка, если есть):")
-    last_bot_messages[chat_id] = [nav_msg.message_id, msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.repo)
 
     print(
@@ -498,7 +498,7 @@ async def get_catalog_repo(m: Message, state: FSMContext) -> None:
         ]),
         parse_mode="HTML"
     )
-    last_bot_messages[chat_id] = [nav_msg.message_id, confirm_msg.message_id]
+    last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, confirm_msg.message_id])
     await state.set_state(CatalogAddForm.confirm)
 
     print(
@@ -518,9 +518,9 @@ async def catalog_confirm_handler(cb: CallbackQuery, state: FSMContext) -> None:
     decision = cb.data.split(":", 1)[1]
     if decision == "yes":
         # In a future version, persist data to the database here.
-        await cb.message.edit_text("Ваша заявка принята. Спасибо!")
+        await safe_edit_or_send(cb, "Ваша заявка принята. Спасибо!")
     else:
-        await cb.message.edit_text("Заявка отменена.")
+        await safe_edit_or_send(cb, "Заявка отменена.")
     await state.clear()
     await cb.answer()
 
