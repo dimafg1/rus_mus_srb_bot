@@ -141,7 +141,7 @@ async def admin_main_menu_cb(cb: CallbackQuery):
         f"msg_id: {getattr(msg, 'message_id', None)}"
     )
 
-# ====== Админ: многоуровневое меню подкатегорий ======
+# ====== Админ: многоуровневое меню подкатегорий (с хлебными крошками) ======
 @router.callback_query(F.data.startswith("admin:edit_category:"))
 async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = None):
     if not is_admin(cb.from_user.id):
@@ -149,28 +149,54 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
-    parent_id = int(cb.data.split(":")[-1])
+
+    try:
+        parent_id = int(cb.data.split(":")[-1])
+    except Exception:
+        await cb.answer("Неверные данные", show_alert=True)
+        return
+
     ROOT_CATEGORY_IDS = {30, 80}
 
     async with SessionLocal() as session:
+        # Текущая категория
         parent_category = (await session.execute(
             select(Category).where(Category.id == parent_id)
         )).scalar_one()
+
+        # Собираем цепочку родителей до корня
+        chain_names: list[str] = []
+        cur = parent_category
+        while cur:
+            chain_names.append(cur.name)
+            if cur.parent_id is None:
+                break
+            cur = (await session.execute(
+                select(Category).where(Category.id == cur.parent_id)
+            )).scalar_one()
+
+        breadcrumb = " → ".join(reversed(chain_names))
+
+        # Дочерние подкатегории
         subcategories = (await session.execute(
             select(Category).where(Category.parent_id == parent_id)
         )).scalars().all()
 
+    # Клавиатура
     keyboard = []
-    
-    # Кнопка «Поля категории» — показываем как и редакт/удаление: только не для корней
+
+    # Кнопка «Поля категории» — не для корней
     if parent_category.id not in ROOT_CATEGORY_IDS:
-        keyboard.insert(0, [
+        keyboard.append([
             InlineKeyboardButton(
-                text="⚙️ Поля категории",
+                text="⚙️ Дополнительные поля категории",
                 callback_data=f"admin:fields:{parent_id}"
             )
         ])
 
+    keyboard.append([
+        InlineKeyboardButton(text="------ Подкатегории ------", callback_data="noop")
+    ])
 
     for subcat in subcategories:
         keyboard.append([
@@ -180,34 +206,29 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
             )
         ])
 
-
     keyboard.append([
         InlineKeyboardButton(
             text="✚ Добавить подкатегорию",
             callback_data=f"admin:add_category:{parent_id}"
         )
     ])
-    
+
     if parent_category.id not in ROOT_CATEGORY_IDS:
-        keyboard.append([
-            InlineKeyboardButton(
-                text="———————————————",
-                callback_data="noop"
-            )
-        ])
+        keyboard.append([InlineKeyboardButton(text="———————————————", callback_data="noop")])
         keyboard.append([
             InlineKeyboardButton(
                 text=f"✏️ Редактировать {parent_category.name}",
                 callback_data=f"admin:rename_category:{parent_category.id}"
             )
         ])
-        if not subcategories:  # <--- Показывать "Удалить" ТОЛЬКО если нет подкатегорий!
+        if not subcategories:  # показывать «Удалить» только если нет подкатегорий
             keyboard.append([
                 InlineKeyboardButton(
                     text=f"🗑️ Удалить {parent_category.name}",
                     callback_data=f"admin:delete_category:{parent_category.id}"
                 )
             ])
+
     keyboard.append([
         InlineKeyboardButton(
             text="⬅️ Назад",
@@ -218,18 +239,23 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
             )
         )
     ])
+
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    msg = await cb.message.answer(
-        f"📂Категория  -  <b>{parent_category.name}</b>\n\nВыберите подкатегорию или действие.",
-        reply_markup=markup,
-        parse_mode="HTML"
+
+    # Заголовок с полной цепочкой
+    text = (
+        f"📂 Категории: \n\n<b>{breadcrumb}</b>\n\n"
     )
+
+    msg = await cb.message.answer(text, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"cb.data: {getattr(cb, 'data', None)} | "
         f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
         f"user_id: {getattr(cb.from_user, 'id', None)} | "
+        f"breadcrumb: {breadcrumb} | "
         f"msg_id: {getattr(msg, 'message_id', None)}"
     )
 

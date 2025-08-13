@@ -1,0 +1,22 @@
+{
+  "custom-terminal-commands.commands": [
+    {
+      "text": "▶",
+      "tooltip": "Запустить бота",
+      "command": "workbench.action.tasks.runTask",
+      "args": "▶ Запустить бота"
+    },
+    {
+      "text": "🔄",
+      "tooltip": "Перезапустить бота",
+      "command": "workbench.action.tasks.runTask",
+      "args": "🔄 Перезапустить бота"
+    },
+    {
+      "text": "⛔",
+      "tooltip": "Остановить бота",
+      "command": "workbench.action.tasks.runTask",
+      "args": "⛔ Остановить бота"
+    }
+  ]
+}

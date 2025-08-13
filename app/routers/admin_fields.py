@@ -39,7 +39,7 @@ async def field_key_exists(session, cat_id: int, key: str) -> bool:
     return any(isinstance(f, dict) and str(f.get("key", "")).lower() == key_l for f in fields)
 
 
-# ====== Админ: Поля категории — меню ======
+# ====== Админ: Поля категории — меню (стрелки справа) ======
 @router.callback_query(F.data.regexp(r"^admin:fields:(\d+)$"))
 async def admin_fields_menu(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
@@ -47,33 +47,45 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext):
 
     chat_id = cb.message.chat.id
     try:
+        cat_id = int(re.match(r"^admin:fields:(\d+)$", cb.data).group(1))
+    except Exception:
+        await cb.answer("Неверные данные", show_alert=True); return
+
+    # подчистка
+    try:
         await cb.message.delete()
     except Exception:
         pass
     await clear_bot_messages(chat_id, cb.bot)
 
-    cat_id = int(re.match(r"^admin:fields:(\d+)$", cb.data).group(1))
-    if cat_id in ROOT_CATEGORY_IDS:
-        await cb.answer("Для корневых разделов поля не настраиваются.", show_alert=True)
-        # назад в меню категории
-        fake = CallbackQuery.model_construct(
-            id="fake", from_user=cb.from_user, chat_instance=cb.chat_instance,
-            message=cb.message, data=f"admin:edit_category:{cat_id}"
-        )
-        from app.routers.admin_panel import admin_edit_subcategories_cb
-        await admin_edit_subcategories_cb(fake, state)
-        print(f"FUNC: {inspect.currentframe().f_code.co_name} | step: root_forbidden | chat_id: {chat_id} | user_id: {cb.from_user.id} | cat_id: {cat_id}")
-        return
-
     async with SessionLocal() as s:
         category = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
         fields = await load_category_fields(s, cat_id)
 
-    rows = []
+    rows: list[list[InlineKeyboardButton]] = []
+
     if fields:
-        for i, fld in enumerate(fields, start=1):
-            title = (fld.get("label") or fld.get("name") or f"Поле {i}") if isinstance(fld, dict) else f"Поле {i}"
-            rows.append([InlineKeyboardButton(text=f"• {title}", callback_data=f"admin:field_edit:{cat_id}:{i-1}")])
+        n = len(fields)
+        for idx, fld in enumerate(fields):
+            if isinstance(fld, dict):
+                ftype = (fld.get("type") or "text")
+                required_star = "★ " if fld.get("required") else ""   # <-- звёздочка в НАЧАЛЕ
+                label = (fld.get("label") or fld.get("name") or f"Поле {idx+1}")
+            else:
+                ftype, required_star, label = "text", "", f"Поле {idx+1}"
+
+            # без «• », звёздочка стоит перед номером
+            title = f"{required_star}{idx+1}. {label} ({ftype})"
+
+            line: list[InlineKeyboardButton] = [
+                InlineKeyboardButton(text=title, callback_data=f"admin:field_edit:{cat_id}:{idx}")
+            ]
+            if idx > 0:
+                line.append(InlineKeyboardButton(text="⬆️", callback_data=f"admin:field_move:{cat_id}:{idx}:up"))
+            if idx < n - 1:
+                line.append(InlineKeyboardButton(text="⬇️", callback_data=f"admin:field_move:{cat_id}:{idx}:down"))
+
+            rows.append(line)
     else:
         rows.append([InlineKeyboardButton(text="— Полей пока нет —", callback_data="noop")])
 
@@ -82,12 +94,16 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext):
 
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.message.answer(
-        f"⚙️ <b>Поля категории</b>\n<b>{category.name}</b>\n\nВыберите поле или действие.",
+        f"⚙️ <b>Дополнительные поля категории</b>\n<b>{category.name}</b>\n\nВыберите поле или действие.",
         reply_markup=markup, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
 
-    print(f"FUNC: {inspect.currentframe().f_code.co_name} | step: show_fields_menu | chat_id: {chat_id} | user_id: {cb.from_user.id} | cat_id: {cat_id} | fields_count: {len(fields)} | msg_id: {msg.message_id}")
+    print(
+        f"FUNC: {inspect.currentframe().f_code.co_name} | "
+        f"step: show_fields_menu | chat_id: {chat_id} | user_id: {cb.from_user.id} | "
+        f"cat_id: {cat_id} | fields_count: {len(fields)} | msg_id: {msg.message_id}"
+    )
 
 # ====== Админ: Поля — старт добавления ======
 @router.callback_query(F.data.regexp(r"^admin:fields:add:(\d+)$"))
@@ -270,6 +286,8 @@ async def admin_field_edit_label_start(cb: CallbackQuery, state: FSMContext):
 
     await clear_bot_messages(chat_id, cb.bot)
     await state.update_data(edit_cat_id=cat_id, edit_idx=idx)
+    await state.set_state(AdminFieldStates.editing_label)
+
 
     # достаём текущий label
     async with SessionLocal() as s:
@@ -330,6 +348,8 @@ async def admin_field_edit_key_start(cb: CallbackQuery, state: FSMContext):
 
     await clear_bot_messages(chat_id, cb.bot)
     await state.update_data(edit_cat_id=cat_id, edit_idx=idx)
+    await state.set_state(AdminFieldStates.editing_key)
+
 
     # достаём текущий key
     async with SessionLocal() as s:
@@ -671,3 +691,163 @@ async def persist_field_and_back(cb_or_msg, state: FSMContext):
     last_bot_messages[chat_id] = [msg.message_id]
 
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | saved_field: {field} | cat_id: {cat_id} | chat_id: {chat_id} | user_id: {user_id} | msg_id: {msg.message_id}")
+
+
+# ====== Админ: просмотр одного поля (детали + кнопки) ======
+@router.callback_query(F.data.startswith("admin:fields:view:"))
+async def admin_field_view(cb: CallbackQuery, state: FSMContext):
+    """
+    Показывает детали одного поля + даёт действия:
+    ⬆️/⬇️ переместить, ✏️ редактировать, 🗑 удалить, ⬅️ назад.
+    """
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True); return
+
+    chat_id = cb.message.chat.id
+    try:
+        _, _, _, cat_id_s, idx_s = cb.data.split(":")
+        cat_id, idx = int(cat_id_s), int(idx_s)
+    except Exception:
+        await cb.answer("Неверные данные", show_alert=True); return
+
+    # подчистка
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    async with SessionLocal() as s:
+        category = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+        fields = await load_category_fields(s, cat_id)
+
+    if not isinstance(fields, list) or idx < 0 or idx >= len(fields):
+        await cb.answer("Поле не найдено", show_alert=True)
+        # вернёмся к списку полей
+        fake = CallbackQuery(
+            id="fake", from_user=cb.from_user, chat_instance=cb.chat_instance,
+            message=cb.message, data=f"admin:fields:{cat_id}"
+        )
+        await admin_fields_menu(fake, state)
+        return
+
+    f = fields[idx] if isinstance(fields[idx], dict) else {}
+    ftype   = f.get("type", "text")
+    flabel  = f.get("label", "(без названия)")
+    fkey    = f.get("key", "-")
+    freq    = "Да" if f.get("required") else "Нет"
+    fopts   = f.get("options") if isinstance(f.get("options"), list) else None
+
+    text = (
+        f"⚙️ <b>Поле категории:</b> {category.name}\n\n"
+        f"<b>Название:</b> {flabel}\n"
+        f"<b>Ключ:</b> <code>{fkey}</code>\n"
+        f"<b>Тип:</b> {ftype}\n"
+        f"<b>Обязательно:</b> {freq}\n"
+        + (f"<b>Варианты:</b> {', '.join(map(str, fopts))}\n" if ftype == "select" and fopts else "")
+    )
+
+    rows = []
+    # перемещение
+    rows.append([
+        InlineKeyboardButton(text="⬆️ Выше", callback_data=f"admin:field_move:{cat_id}:{idx}:up"),
+        InlineKeyboardButton(text="⬇️ Ниже", callback_data=f"admin:field_move:{cat_id}:{idx}:down"),
+    ])
+    # редактирование/удаление (предполагаем, что эти обработчики у вас уже есть)
+    rows.append([
+        InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"admin:field_edit:{cat_id}:{idx}"),
+        InlineKeyboardButton(text="🗑 Удалить",       callback_data=f"admin:field_delete_confirm:{cat_id}:{idx}"),
+    ])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+    msg = await cb.bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+    last_bot_messages[chat_id] = [msg.message_id]
+
+    import inspect
+    print(
+        f"FUNC: {inspect.currentframe().f_code.co_name} | "
+        f"chat_id: {chat_id} | user_id: {cb.from_user.id} | cat_id: {cat_id} | idx: {idx} | "
+        f"msg_id: {msg.message_id}"
+    )
+
+
+# ====== Админ: перемещение поля вверх/вниз ======
+@router.callback_query(F.data.startswith("admin:field_move:"))
+async def admin_field_move(cb: CallbackQuery, state: FSMContext):
+    """
+    Перемещает поле в списке полей категории.
+    """
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True); return
+
+    chat_id = cb.message.chat.id
+
+    # ожидаем: admin:field_move:<cat_id>:<idx>:<direction>
+    parts = cb.data.split(":")
+    if len(parts) != 5:
+        await cb.answer("Неверные данные", show_alert=True); return
+    _, _, cat_id_s, idx_s, direction = parts
+
+    try:
+        cat_id = int(cat_id_s)
+        idx = int(idx_s)
+        direction = direction.lower()
+    except Exception:
+        await cb.answer("Неверные данные", show_alert=True); return
+
+    # подчистка
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    async with SessionLocal() as s:
+        fields = await load_category_fields(s, cat_id)
+        if not isinstance(fields, list):
+            fields = []
+        n = len(fields)
+
+        if idx < 0 or idx >= n:
+            await cb.answer("Поле не найдено", show_alert=True)
+            fake = CallbackQuery(
+                id="fake", from_user=cb.from_user, chat_instance=cb.chat_instance,
+                message=cb.message, data=f"admin:fields:{cat_id}"
+            )
+            await admin_fields_menu(fake, state)
+            return
+
+        new_idx = idx
+        if direction == "up":
+            if idx == 0:
+                await cb.answer("Уже наверху", show_alert=True)
+            else:
+                fields[idx-1], fields[idx] = fields[idx], fields[idx-1]
+                new_idx = idx - 1
+                await save_category_fields(s, cat_id, fields)
+        elif direction == "down":
+            if idx == n - 1:
+                await cb.answer("Уже внизу", show_alert=True)
+            else:
+                fields[idx+1], fields[idx] = fields[idx], fields[idx+1]
+                new_idx = idx + 1
+                await save_category_fields(s, cat_id, fields)
+        else:
+            await cb.answer("Неизвестное направление", show_alert=True)
+
+    # после перемещения просто перерисуем список полей
+    fake = CallbackQuery(
+        id="fake",
+        from_user=cb.from_user,
+        chat_instance=cb.chat_instance,
+        message=cb.message,
+        data=f"admin:fields:{cat_id}",
+    )
+    await admin_fields_menu(fake, state)
+
+    print(
+        f"FUNC: {inspect.currentframe().f_code.co_name} | "
+        f"chat_id: {chat_id} | user_id: {cb.from_user.id} | cat_id: {cat_id} | "
+        f"idx: {idx} -> {new_idx} | dir: {direction}"
+    )

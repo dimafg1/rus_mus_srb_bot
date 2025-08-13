@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "▶ Запустить бота",
+      "type": "shell",
+      "command": "poetry run python -m app.main",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}" }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "🔄 Перезапустить бота",
+      "type": "shell",
+      "command": "pkill -f 'python -m app.main' || true && poetry run python -m app.main",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}" }
+      },
+      "problemMatcher": [],
+      "detail": "macOS/Linux"
+    },
+    {
+      "label": "⛔ Остановить бота",
+      "type": "shell",
+      "command": "pkill -f 'python -m app.main' || true",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "detail": "macOS/Linux"
+    }
+  ]
+}
