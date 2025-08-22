@@ -44,6 +44,8 @@ from app.keyboards import (
     events_main_inline,
 )
 from app.routers.market_add import router as market_add_router
+from app.routers.market_edit import router as market_edit_router   # 🔹 добавили
+
 from app.routers.vacancy import router as vacancy_router, VacancyForm
 from app.routers.utils import (
     clear_bot_messages,
@@ -70,6 +72,9 @@ import inspect
 from app.routers import feedback
 from app.routers.admin_panel import is_admin
 from app.routers.admin_fields import router as admin_fields_router
+from app.routers.user_extra_fields import router as user_extra_fields_router
+from app.routers.market_edit import router as market_edit_router
+from app.routers.market_edit_overview import router as market_edit_overview_router
 
 
 
@@ -125,6 +130,7 @@ dp = Dispatcher()
 from app.routers.admin_panel import router as admin_panel_router
 dp.include_router(admin_panel_router)
 dp.include_router(admin_fields_router)
+dp.include_router(market_edit_overview_router)
 
 # ───────── FSM for forms ─────────
 class CatalogForm(VacancyForm):
@@ -145,8 +151,10 @@ class EventForm(VacancyForm):
 
 
 dp.include_router(market_add_router)
+dp.include_router(market_edit_router)
 dp.include_router(vacancy_router)
 dp.include_router(feedback.router)
+dp.include_router(user_extra_fields_router)
 
 
 from app.routers.catalog_view import router as catalog_view_router
@@ -486,10 +494,28 @@ async def main():
     await init_db()
 
     # Подключаем роутеры
-    dp.include_router(market_view_router)  # 👈 добавили этот
+    dp.include_router(market_view_router)  # 👈 как у вас было
 
-    # Запуск бота
-    await dp.start_polling(bot)
+    # Тихая и корректная остановка по Ctrl+C / SIGTERM
+    try:
+        await dp.start_polling(bot)
+    except asyncio.CancelledError:
+        # Опрос отменён — штатная ситуация при остановке
+        pass
+    finally:
+        # Закрываем HTTP-сессию бота и прочие ресурсы
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
+        # Если у вас есть пулы/коннекты к БД/кэшу — закрывайте их здесь.
+        # Например:
+        # await engine.dispose()
+        print("Bot stopped gracefully.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Гасим traceback на Windows при Ctrl+C
+        print("Interrupted by user.")

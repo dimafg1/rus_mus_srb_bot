@@ -10,6 +10,7 @@ import inspect
 
 from app.database import SessionLocal
 from app.models import Category, Listing, City
+import json
 from app.keyboards import (
     market_inline,
     build_main_menu,
@@ -31,6 +32,10 @@ from app.routers.utils import (
     fetch_listings,
     expanded_listing_by_chat,
     listing_message_ids,
+    render_flex_block,
+    render_main_fields,
+    render_contact,
+    render_flex_compact
 )
 
 router = Router()
@@ -534,18 +539,40 @@ async def show_listing_details(cb: CallbackQuery):
 
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
-    price_label = (await get_text('listing_price', 'ru')) or "Price"
-    contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
-    caption = f"<b>{listing.title}</b>\n"
-    if listing.price:
-        caption += f"{price_label}: {listing.price}\n"
-    if listing.descr:
-        caption += f"{listing.descr}\n"
-    caption += f"{contact_label}: {listing.contact}"
+    # Формируем caption
+    caption_parts = []
 
+    # Основные поля
+    main_block = await render_main_fields(listing)
+    if main_block:
+        caption_parts.append(main_block)
+
+    # Доп. сведения (flex)
+    async with SessionLocal() as s:
+        flex_block = await render_flex_block(s, listing, lang="ru")
+    if flex_block:
+        caption_parts.append(flex_block)
+
+    # Контакт (всегда в конце)
+    contact_block = await render_contact(listing, lang="ru")
+    if contact_block:
+        caption_parts.append(contact_block)
+
+    caption = "\n\n".join(caption_parts)
+
+    # --- кнопки ---
     buttons = []
 
     if listing.owner_id == cb.from_user.id:
+        # ✏️ Редактировать
+        edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
+        edit_btn = InlineKeyboardButton(
+            text=edit_btn.text if edit_btn else "✏️ Редактировать",
+            callback_data=f"edit_listing_overview:{listing.id}"
+        )
+        buttons.append([edit_btn])
+
+        # ❌ Удалить (как у вас было)
         btn = await get_common_menu_button('btn_delete_listing', lang='ru')
         btn = InlineKeyboardButton(text=btn.text, callback_data=f"sell_sold:{listing.id}") if btn \
             else InlineKeyboardButton(text="❌ Delete listing", callback_data=f"sell_sold:{listing.id}")
@@ -570,6 +597,7 @@ async def show_listing_details(cb: CallbackQuery):
 
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
+    # --- отправка ---
     sent_ids = []
     if photo_ids and photo_ids[0]:
         if len(photo_ids) == 1:
@@ -729,6 +757,12 @@ async def toggle_listing(cb: CallbackQuery):
             f"\n    {listing.descr or no_descr}"
             f"\n    {contact_label}: {listing.contact}"
         )
+        # Доп. сведения – компактно
+        async with SessionLocal() as s:
+            flex_compact = await render_flex_compact(s, listing, indent="    ", lang="ru")
+        if flex_compact:
+            details += "\n" + flex_compact
+
         full_text = f"• <b>{listing.title}</b>{details}"
         button_text = f"{listing.title} — Свернуть"
         new_reply = InlineKeyboardMarkup(inline_keyboard=[[
@@ -899,6 +933,11 @@ async def show_search_listing(cb: CallbackQuery):
     if listing.descr:
         caption += f"{listing.descr}\n"
     caption += f"{contact_label}: {listing.contact}"
+    async with SessionLocal() as s:
+        flex_block = await render_flex_block(s, listing, lang="ru")
+    if flex_block:
+        caption += "\n" + flex_block
+
 
     btns = []
     if listing.owner_id == cb.from_user.id:
@@ -947,6 +986,11 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
     if listing.descr:
         caption += f"{listing.descr}\n"
     caption += f"{contact_label}: {listing.contact}"
+    async with SessionLocal() as s:
+        flex_block = await render_flex_block(s, listing, lang="ru")
+    if flex_block:
+        caption += "\n" + flex_block
+
 
     btns = []
     if listing.owner_id == cb.from_user.id:

@@ -24,3 +24,29 @@ class AdminFieldStates(StatesGroup):
     editing_label = State()
     editing_key = State()
     editing_options = State()
+
+class EditListing(StatesGroup):
+    waiting_price = State()
+    waiting_descr = State()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Состояния для создания объявления (у вас уже есть)
+# ─────────────────────────────────────────────────────────────────────────────
+class AddListing(StatesGroup):
+    waiting_title = State()
+    waiting_price = State()
+    waiting_descr = State()
+    waiting_city = State()
+    waiting_category = State()
+    waiting_confirm = State()
+    waiting_flex = State()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Состояния для редактирования объявления (новые)
+# ─────────────────────────────────────────────────────────────────────────────
+class EditListing(StatesGroup):
+    waiting_title = State()   # шаг 1 — редактирование заголовка
+    waiting_price = State()   # шаг 2 — редактирование цены
+    waiting_descr = State()   # шаг 3 — редактирование описания
+    waiting_flex = State()    # шаг 4 — редактирование flex-полей

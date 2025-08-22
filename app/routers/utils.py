@@ -3,9 +3,16 @@ from collections import defaultdict
 from app.models import City, Category, Listing
 from app.database import SessionLocal
 from sqlalchemy import select
-from typing import Optional, List
+from typing import Dict, Any, Optional, List
 from app.models import Category, Menu  # или Menu, если категории хранятся там
 from app.database import SessionLocal
+import json
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.texts import get_text
+from PIL import Image, ImageDraw, ImageFont
+import tempfile
+import os
+
 
 
 last_search_query_message = {}
@@ -136,3 +143,159 @@ async def get_catalog_categories(parent_id=None):
         categories = (await session.execute(query)).scalars().all()
     # Можно вернуть [{'name': c.name, 'callback_data': ...}, ...] для удобства
     return categories
+
+# ───────────────────────────── FLEX (доп. поля) ─────────────────────────────
+
+def _flex_html(s: Any) -> str:
+    """Простейшее экранирование для HTML-режима."""
+    t = str(s)
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def _flex_fmt_value(val: Any) -> Optional[str]:
+    if val in (None, "", [], {}):
+        return None
+    if isinstance(val, bool):
+        return "Да" if val else "Нет"
+    if isinstance(val, list):
+        s = ", ".join(str(x).strip() for x in val if str(x).strip())
+        return s or None
+    return str(val).strip() or None
+
+def _flex_parse(flex_data: Any) -> Dict[str, Any]:
+    if flex_data is None:
+        return {}
+    if isinstance(flex_data, dict):
+        return flex_data
+    if isinstance(flex_data, str):
+        try:
+            obj = json.loads(flex_data)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+async def _flex_labels_for_category(session: AsyncSession, category_id: int, lang: str = "ru") -> Dict[str, str]:
+    """
+    Подгрузка подписей для ключей flex из Category.fields.
+    В будущем сюда можно добавить поддержку разных языков (lang).
+    """
+    labels: Dict[str, str] = {}
+    cat = await session.get(Category, category_id)
+    if not cat or not cat.fields:
+        return labels
+    try:
+        defs = json.loads(cat.fields)
+        if isinstance(defs, list):
+            for f in defs:
+                key = str(f.get("key", "")).strip().lower()
+                if not key:
+                    continue
+                # пока просто используем одно и то же поле label
+                label = (f.get("label") or key).strip()
+                labels[key] = label or key
+    except Exception:
+        pass
+    return labels
+
+async def render_flex_block(session: AsyncSession, listing: Listing, lang: str = "ru") -> str:
+    """
+    Без заголовка. Формат строк:
+    <b>Label:</b> value
+
+    Между логическими строками — пустая строка для читаемости.
+    """
+    flex = _flex_parse(listing.flex)
+    if not flex:
+        return ""
+    labels = await _flex_labels_for_category(session, listing.category_id, lang=lang)
+
+    lines: List[str] = []
+    for raw_key, raw_val in flex.items():
+        key = str(raw_key).strip().lower()
+        val = _flex_fmt_value(raw_val)
+        if not key or val is None:
+            continue
+        label = labels.get(key, key)
+        lines.append(f"<b>{label}:</b> {val}")
+
+    if not lines:
+        return ""
+    return "\n\n".join(lines)
+
+async def render_flex_compact(session: AsyncSession, listing: Listing, indent: str = "    ", lang: str = "ru") -> str:
+    """
+    Компактная версия для «разворота»: без жирного заголовка блока,
+    но с отступами и пустыми строками.
+    """
+    block = await render_flex_block(session, listing, lang=lang)
+    if not block:
+        return ""
+    return "\n".join(indent + line if line else "" for line in block.splitlines())
+
+
+async def render_main_fields(listing) -> str:
+    """
+    Форматируем основные поля объявления.
+    Между блоками оставляем пустую строку.
+    """
+    lines = []
+
+    if listing.title:
+        lines.append(f"<b>{listing.title.strip()}</b>")
+
+    if listing.price:
+        lines.append(f"<b>Цена:</b> {listing.price}")
+
+    if listing.descr:
+        lines.append(f"<b>Описание:</b> {listing.descr.strip()}")
+
+    return "\n\n".join(lines)
+
+
+async def render_contact(listing, lang="ru") -> str:
+    """
+    Контакт всегда в конце, отдельным блоком.
+    """
+    if not listing.contact:
+        return ""
+    contact_label = await get_text("listing_contact", lang) or "Контакт"
+    return f"<b>{contact_label}:</b> {listing.contact.strip()}"
+
+
+def make_listing_banner(title: str, price: str | None) -> str:
+    """
+    Генерирует простую баннер-картинку с Заголовком и Ценой.
+    Возвращает путь к временному PNG-файлу (удалите сами после отправки).
+    """
+    W, H = 1280, 360
+    bg = (20, 32, 45)     # тёмный фон
+    fg = (255, 255, 255)  # белый текст
+    sub = (180, 220, 255) # светлее для цены
+
+    img = Image.new("RGB", (W, H), bg)
+    draw = ImageDraw.Draw(img)
+
+    # Шрифты: пробуем системный, иначе default
+    try:
+        font_title = ImageFont.truetype("Arial.ttf", 64)
+        font_price = ImageFont.truetype("Arial.ttf", 44)
+    except Exception:
+        font_title = ImageFont.load_default()
+        font_price = ImageFont.load_default()
+
+    title = (title or "").strip()
+    price = (price or "").strip()
+
+    # Текст: отступы
+    pad_x, pad_y = 240, 36
+    # Заголовок
+    draw.text((pad_x, pad_y), title, font=font_title, fill=fg)
+    # Цена, если есть
+    if price:
+        draw.text((pad_x, pad_y + 64 + 24), f"Цена: {price}", font=font_price, fill=sub)
+
+    # Сохраняем во временный файл
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    img.save(tmp.name, "PNG")
+    tmp.close()
+    return tmp.name

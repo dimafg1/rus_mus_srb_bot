@@ -44,16 +44,16 @@ async def get_common_menu_button(code: str, lang="ru"):
         )
     return None
 
-async def build_city_buttons(callback_prefix: str, lang: str = "ru"):
-    async with SessionLocal() as session:
-        result = await session.execute(select(City))
-        cities = result.scalars().all()
-    return [
-        InlineKeyboardButton(
-            text=city.name,
-            callback_data=f"{callback_prefix}:{city.slug}"
-        ) for city in cities
-    ]
+# async def build_city_buttons(callback_prefix: str, lang: str = "ru"):
+#     async with SessionLocal() as session:
+#         result = await session.execute(select(City))
+#         cities = result.scalars().all()
+#     return [
+#         InlineKeyboardButton(
+#             text=city.name,
+#             callback_data=f"{callback_prefix}:{city.slug}"
+#         ) for city in cities
+#     ]
 
 async def get_back_button(code="back", lang="ru"):
     """

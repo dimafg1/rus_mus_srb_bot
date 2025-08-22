@@ -35,7 +35,50 @@ from sqlalchemy import select
 from app.keyboards import get_common_menu_button
 from app.routers.utils import clear_bot_messages, last_bot_messages  # и любые другие, если используются
 from app.models import City
+# --- Доп. поля категории (универсальный опрос) ---
+from app.routers.user_extra_fields import start_extra_fields_for_category
+
 import inspect
+
+# --- безопасные отладочные принты ---
+import inspect as _inspect
+
+def _safe_rows(*objs):
+    """
+    Вернёт количество рядов в первой найденной клавиатуре из переданных объектов.
+    Если ни одна не найдена — 'n/a'.
+    """
+    for o in objs:
+        try:
+            if o and getattr(o, "inline_keyboard", None) is not None:
+                return len(o.inline_keyboard)
+        except Exception:
+            pass
+    return "n/a"
+
+def _safe_last_ids(chat_id):
+    try:
+        return last_bot_messages.get(chat_id)
+    except Exception:
+        return "n/a"
+
+def _p(where, chat_id=None, user_id=None, extra=""):
+    """
+    Единообразный принт в конце хендлеров.
+    """
+    try:
+        func = _inspect.currentframe().f_back.f_code.co_name
+    except Exception:
+        func = where
+    out = [f"FUNC: {func}"]
+    if chat_id is not None:
+        out.append(f"chat_id: {chat_id}")
+    if user_id is not None:
+        out.append(f"user_id: {user_id}")
+    if extra:
+        out.append(extra)
+    print(" | ".join(out))
+
 
 
 
@@ -84,14 +127,12 @@ async def apply_catalog_handler(cb: CallbackQuery, state: FSMContext) -> None:
     last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await state.set_state(CatalogAddForm.category_choice)
     await cb.answer()
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+
+    _p("apply_catalog_handler",
+    chat_id=cb.message.chat.id,
+    user_id=cb.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(markup)} | msg_ids:{_safe_last_ids(cb.message.chat.id)}")
+
 
 from app.keyboards import main_inline_menu
 
@@ -123,14 +164,10 @@ async def catalog_back_handler(cb: CallbackQuery, state: FSMContext):
     last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await state.clear()
     await cb.answer()
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("catalog_back_handler",
+    chat_id=cb.message.chat.id,
+    user_id=cb.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(markup)} | msg_ids:{_safe_last_ids(cb.message.chat.id)}")
 
 
 from app.keyboards import catalog_profile_category_inline
@@ -169,14 +206,11 @@ async def catalog_city_back(cb: CallbackQuery, state: FSMContext):
     msg = await cb.bot.send_message(chat_id, "Выберите город для анкеты:", reply_markup=markup)
     last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await cb.answer()
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("catalog_city_back",
+    chat_id=cb.message.chat.id,
+    user_id=cb.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(markup)} | msg_ids:{_safe_last_ids(cb.message.chat.id)}")
+
 
 
 
@@ -221,14 +255,11 @@ async def catalog_city(cb: CallbackQuery, state: FSMContext):
     last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
     await state.set_state(CatalogAddForm.category_choice)
     await cb.answer()
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(kb.inline_keyboard) if 'kb' in locals() else 'n/a'}"
-    )
+    _p("catalog_city",
+    chat_id=cb.message.chat.id,
+    user_id=cb.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(kb)} | msg_ids:{_safe_last_ids(cb.message.chat.id)}")
+
 
 
 @router.callback_query(F.data.startswith("profile_cat:"), CatalogAddForm.category_choice)
@@ -264,21 +295,30 @@ async def catalog_profile_cat(cb: CallbackQuery, state: FSMContext):
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
         await state.set_state(CatalogAddForm.category_choice)
     else:
-        # Нет подкатегорий — переходим к вводу названия
+        # Нет подкатегорий — сначала спросим доп. поля этой категории,
+        # потом продолжим к вводу названия.
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
-        await state.set_state(CatalogAddForm.name)
-        prompt_msg = await cb.bot.send_message(chat_id, "Введите название группы/студии/площадки:")
-        last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, prompt_msg.message_id])
-    await cb.answer()
+        await start_extra_fields_for_category(cb, state, cat.id, resume_data="catalog:extras_done")
+        await cb.answer()
+        return
+    # await cb.answer()
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("catalog_profile_cat",
+    chat_id=cb.message.chat.id,
+    user_id=cb.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(locals().get('kb'), locals().get('nav_markup'))} | msg_ids:{_safe_last_ids(cb.message.chat.id)}")
+
+
+# ====== Каталог: продолжить после опроса доп. полей ======
+@router.callback_query(F.data == "catalog:extras_done")
+async def catalog_extras_done(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    await state.set_state(CatalogAddForm.name)
+    prompt_msg = await cb.bot.send_message(chat_id, "Введите название группы/студии/площадки:")
+    last_bot_messages.setdefault(chat_id, []).append(prompt_msg.message_id)
+    await cb.answer()
+    print(f"FUNC: catalog_extras_done | chat_id: {chat_id} | user_id: {cb.from_user.id}")
 
 
 
@@ -311,14 +351,11 @@ async def catalog_application_category_handler(cb: CallbackQuery, state: FSMCont
     await state.set_state(CatalogAddForm.name)
     await cb.answer()
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("catalog_application_category_handler",
+    chat_id=cb.message.chat.id,
+    user_id=cb.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(locals().get('nav_markup'))} | msg_ids:{_safe_last_ids(cb.message.chat.id)}")
+
 
 
 
@@ -347,14 +384,11 @@ async def get_catalog_name(m: Message, state: FSMContext) -> None:
     last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.address)
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("get_catalog_name",
+    chat_id=m.chat.id,
+    user_id=m.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(locals().get('nav_markup'))} | msg_ids:{_safe_last_ids(m.chat.id)}")
+
 
 
 
@@ -381,14 +415,11 @@ async def get_catalog_address(m: Message, state: FSMContext) -> None:
     last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.photo)
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("get_catalog_address",
+    chat_id=m.chat.id,
+    user_id=m.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(locals().get('nav_markup'))} | msg_ids:{_safe_last_ids(m.chat.id)}")
+
 
 
 
@@ -415,14 +446,11 @@ async def get_catalog_photo(m: Message, state: FSMContext) -> None:
     last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.description)
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("get_catalog_photo",
+    chat_id=m.chat.id,
+    user_id=m.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(locals().get('nav_markup'))} | msg_ids:{_safe_last_ids(m.chat.id)}")
+
 
 
 
@@ -449,35 +477,50 @@ async def get_catalog_description(m: Message, state: FSMContext) -> None:
     last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
     await state.set_state(CatalogAddForm.repo)
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("get_catalog_description",
+    chat_id=m.chat.id,
+    user_id=m.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(locals().get('nav_markup'))} | msg_ids:{_safe_last_ids(m.chat.id)}")
+
 
 
 
 @router.message(CatalogAddForm.repo)
 async def get_catalog_repo(m: Message, state: FSMContext) -> None:
-    """
-    Сохраняем информацию о репетиционной базе, показываем сводку и
-    предлагаем подтвердить. Также рисуем панель возврата наверху.
-    """
     chat_id = m.chat.id
     await clear_bot_messages(chat_id, m.bot)
     data = await state.get_data()
     data["repo"] = m.text
+
+    # --- соберём «Доп. сведения» из FSM (extra_values / extra_defs) ---
+    extras = data.get("extra_values", {}) or {}
+    defs   = data.get("extra_defs", []) or []
+    labels = {}
+    order  = []
+    for dfin in defs:
+        if isinstance(dfin, dict):
+            k = str(dfin.get("key","")).strip().lower() or "field"
+            labels[k] = dfin.get("label") or k
+            order.append(k)
+    extra_lines = []
+    for k in order:
+        if k in extras:
+            v = extras[k]
+            if isinstance(v, bool): v = "Да" if v else "Нет"
+            elif isinstance(v, list): v = ", ".join(map(str, v))
+            extra_lines.append(f"{labels.get(k, k)}: {v}")
+    extras_block = ("\n\nДоп. сведения:\n" + "\n".join(f"• {x}" for x in extra_lines)) if extra_lines else ""
+
     summary = (
-        f"Направление: {data.get('category_choice')}\n"
+        f"Направление: {data.get('cat_name') or data.get('category_choice')}\n"
         f"Название: {data.get('name')}\n"
         f"Адрес: {data.get('address')}\n"
         f"Фото: {data.get('photo')}\n"
         f"Описание: {data.get('description')}\n"
         f"Реп. база: {data.get('repo')}"
+        f"{extras_block}"
     )
+
     # Навигационная панель: назад к выбору города
     nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
     base_back_btn = await get_common_menu_button('back')
@@ -501,14 +544,11 @@ async def get_catalog_repo(m: Message, state: FSMContext) -> None:
     last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, confirm_msg.message_id])
     await state.set_state(CatalogAddForm.confirm)
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    _p("get_catalog_repo",
+    chat_id=m.chat.id,
+    user_id=m.from_user.id,
+    extra=f"keyboard_rows:{_safe_rows(locals().get('nav_markup'))} | msg_ids:{_safe_last_ids(m.chat.id)}")
+
 
 
 
@@ -524,11 +564,9 @@ async def catalog_confirm_handler(cb: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await cb.answer()
 
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | "
-        f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
-        f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_ids: {last_bot_messages.get(cb.message.chat.id) if 'last_bot_messages' in globals() else 'n/a'} | "
-        f"keyboard_rows: {len(markup.inline_keyboard) if 'markup' in locals() else 'n/a'}"
-    )
+    chat_id = cb.message.chat.id
+    _p("catalog_confirm_handler",
+    chat_id=chat_id,
+    user_id=cb.from_user.id,
+    extra=f"msg_ids:{_safe_last_ids(chat_id)}")
+
