@@ -567,7 +567,7 @@ async def show_listing_details(cb: CallbackQuery):
         # ✏️ Редактировать
         edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
         edit_btn = InlineKeyboardButton(
-            text=edit_btn.text if edit_btn else "✏️ Редактировать",
+            text=edit_btn.text if edit_btn else "✏️ Редактировать все поля",
             callback_data=f"edit_listing_overview:{listing.id}"
         )
         buttons.append([edit_btn])

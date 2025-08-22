@@ -737,13 +737,23 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
             text_extra = "При желании укажите дополнительные сведения для этой категории:"
 
         # Верхние действия
+        # Получаем слаги для кнопки «К объявлению»
+        city = (await s.execute(select(City).where(City.id == l.city_id))).scalar_one()
+        cat  = (await s.execute(select(Category).where(Category.id == l.category_id))).scalar_one()
         rows = [
             [InlineKeyboardButton(
-                text="🧩 Заполнить дополнительные поля",
-                callback_data=f"sell_extras_start:{data['cat_id']}"
+                text="✏️ Редактировать все поля",
+                callback_data=f"edit_listing_overview:{l.id}"
             )],
-            [InlineKeyboardButton(text="⏭ Пропустить", callback_data="sell_extras_skip")],
+            [InlineKeyboardButton(
+                text="📄 К объявлению",
+                callback_data=f"listing:{l.id}:{city.slug}:{cat.slug}:my"
+            )],
         ]
+        print(
+            f"FUNC: sell_ok | buttons => edit_listing_overview:{l.id} ; "
+            f"listing:{l.id}:{city.slug}:{cat.slug}:my | chat_id={chat_id} | user_id={cb.from_user.id}"
+        )
 
         # НИЗ: «Барахолка» + «Главное меню» (без «Назад»)
         market_btn = await get_common_menu_button('go_market', 'ru')  # код из вашего главного меню
@@ -773,99 +783,99 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
         print(f"FUNC: sell_ok | ERROR {e}")
 
 # ====== Доп. поля: старт мастера (после публикации) ======
-@router.callback_query(F.data.startswith("sell_extras_start:"))
-async def sell_extras_start_after_pub(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
-    try:
-        cat_id = int(cb.data.split(":", 1)[1])
-    except Exception:
-        await cb.answer("Нет данных категории.", show_alert=True)
-        print("FUNC: sell_extras_start_after_pub | error: no cat_id")
-        return
-    # ЗАПУСК БЕЗ resume_data -> не будет «Продолжить»
-    await start_extra_fields_for_category(cb, state, cat_id, resume_data=None)
-    await cb.answer()
-    print(f"FUNC: sell_extras_start_after_pub | cat_id={cat_id} | user_id={cb.from_user.id}")
+# @router.callback_query(F.data.startswith("sell_extras_start:"))
+# async def sell_extras_start_after_pub(cb: CallbackQuery, state: FSMContext):
+#     chat_id = cb.message.chat.id
+#     await clear_bot_messages(chat_id, cb.bot)
+#     try:
+#         cat_id = int(cb.data.split(":", 1)[1])
+#     except Exception:
+#         await cb.answer("Нет данных категории.", show_alert=True)
+#         print("FUNC: sell_extras_start_after_pub | error: no cat_id")
+#         return
+#     # ЗАПУСК БЕЗ resume_data -> не будет «Продолжить»
+#     await start_extra_fields_for_category(cb, state, cat_id, resume_data="sell:extras_done_after_pub")
+#     await cb.answer()
+#     print(f"FUNC: sell_extras_start_after_pub | cat_id={cat_id} | resume='sell:extras_done_after_pub' | user_id={cb.from_user.id}")
 
 # ====== Доп. поля: завершение мастера (после публикации) ======
-@router.callback_query(F.data == "sell:extras_done_after_pub")
-async def sell_extras_done_after_pub(cb: CallbackQuery, state: FSMContext):
-    """
-    Завершение мастера дополнительных полей после публикации. На этом этапе
-    пользователь ввёл необходимые значения, и их нужно сохранить в
-    соответствующее объявление в колонке flex. Мы извлекаем из FSM
-    идентификатор объявления, а также словарь значений дополнительных
-    полей (они сохраняются в FSM под ключом VAL_KEY в модуле
-    user_extra_fields). После обновления записи в БД отправляем
-    пользователю сообщение о завершении и очищаем стейт.
-    """
-    # Готовим нижнюю навигацию: назад/главное меню
-    back_btn = await get_common_menu_button('sell_back', 'ru')
-    main_btn = await get_common_menu_button('main_menu', 'ru')
-    rows = []
-    row = []
-    if back_btn:
-        row.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
-    if main_btn:
-        row.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
-    if row:
-        rows.append(row)
-    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+# @router.callback_query(F.data == "sell:extras_done_after_pub")
+# async def sell_extras_done_after_pub(cb: CallbackQuery, state: FSMContext):
+#     """
+#     Завершение мастера дополнительных полей после публикации. На этом этапе
+#     пользователь ввёл необходимые значения, и их нужно сохранить в
+#     соответствующее объявление в колонке flex. Мы извлекаем из FSM
+#     идентификатор объявления, а также словарь значений дополнительных
+#     полей (они сохраняются в FSM под ключом VAL_KEY в модуле
+#     user_extra_fields). После обновления записи в БД отправляем
+#     пользователю сообщение о завершении и очищаем стейт.
+#     """
+#     # Готовим нижнюю навигацию: назад/главное меню
+#     back_btn = await get_common_menu_button('sell_back', 'ru')
+#     main_btn = await get_common_menu_button('main_menu', 'ru')
+#     rows = []
+#     row = []
+#     if back_btn:
+#         row.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
+#     if main_btn:
+#         row.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
+#     if row:
+#         rows.append(row)
+#     kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
-    # Читаем текущие данные FSM: сюда входит listing_id, а также
-    # ответы пользователя на дополнительные поля под ключом VAL_KEY
-    data = await state.get_data()
-    listing_id = data.get("listing_id")
-    extra_values = data.get(VAL_KEY) or {}
+#     # Читаем текущие данные FSM: сюда входит listing_id, а также
+#     # ответы пользователя на дополнительные поля под ключом VAL_KEY
+#     data = await state.get_data()
+#     listing_id = data.get("listing_id")
+#     extra_values = data.get(VAL_KEY) or {}
 
-    # Обновляем запись объявления, если id найден
-    if listing_id:
-        try:
-            async with SessionLocal() as s:
-                l = await s.get(Listing, listing_id)
-                if l:
-                    # сериализуем словарь в JSON; если словарь пустой, оставляем None
-                    l.flex = json.dumps(extra_values, ensure_ascii=False) if extra_values else None
-                    # добавляем запись обратно в сессию и коммитим
-                    s.add(l)
-                    await s.commit()
-                else:
-                    # Такой записи нет; просто продолжаем
-                    pass
-        except Exception as e:
-            # В случае ошибки записываем в лог. Для пользователя
-            # выводим уведомление о том, что сохранение не удалось.
-            await cb.message.answer(
-                f"❌ Не удалось сохранить доп. поля: <code>{type(e).__name__}</code>",
-                parse_mode="HTML"
-            )
+#     # Обновляем запись объявления, если id найден
+#     if listing_id:
+#         try:
+#             async with SessionLocal() as s:
+#                 l = await s.get(Listing, listing_id)
+#                 if l:
+#                     # сериализуем словарь в JSON; если словарь пустой, оставляем None
+#                     l.flex = json.dumps(extra_values, ensure_ascii=False) if extra_values else None
+#                     # добавляем запись обратно в сессию и коммитим
+#                     s.add(l)
+#                     await s.commit()
+#                 else:
+#                     # Такой записи нет; просто продолжаем
+#                     pass
+#         except Exception as e:
+#             # В случае ошибки записываем в лог. Для пользователя
+#             # выводим уведомление о том, что сохранение не удалось.
+#             await cb.message.answer(
+#                 f"❌ Не удалось сохранить доп. поля: <code>{type(e).__name__}</code>",
+#                 parse_mode="HTML"
+#             )
 
-    # Сообщаем пользователю о завершении и очищаем FSM
-    await cb.message.answer("Готово. Спасибо!", reply_markup=kb)
-    await state.clear()
-    await cb.answer()
-    print(f"FUNC: sell_extras_done_after_pub | user_id={cb.from_user.id} | listing_id={listing_id} | extras={bool(extra_values)}")
+#     # Сообщаем пользователю о завершении и очищаем FSM
+#     await cb.message.answer("Готово. Спасибо!", reply_markup=kb)
+#     await state.clear()
+#     await cb.answer()
+#     print(f"FUNC: sell_extras_done_after_pub | user_id={cb.from_user.id} | listing_id={listing_id} | extras={bool(extra_values)}")
 
 # ====== Доп. поля: «Пропустить» (после публикации) ======
-@router.callback_query(F.data == "sell_extras_skip")
-async def sell_extras_skip(cb: CallbackQuery, state: FSMContext):
-    back_btn = await get_common_menu_button('sell_back', 'ru')
-    main_btn = await get_common_menu_button('main_menu', 'ru')
-    rows = []
-    row = []
-    if back_btn:
-        row.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
-    if main_btn:
-        row.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
-    if row:
-        rows.append(row)
-    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+# @router.callback_query(F.data == "sell_extras_skip")
+# async def sell_extras_skip(cb: CallbackQuery, state: FSMContext):
+#     back_btn = await get_common_menu_button('sell_back', 'ru')
+#     main_btn = await get_common_menu_button('main_menu', 'ru')
+#     rows = []
+#     row = []
+#     if back_btn:
+#         row.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
+#     if main_btn:
+#         row.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
+#     if row:
+#         rows.append(row)
+#     kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
-    await cb.message.answer("Ок, без дополнительных сведений.", reply_markup=kb)
-    await state.clear()
-    await cb.answer()
-    print(f"FUNC: sell_extras_skip | user_id={cb.from_user.id}")
+#     await cb.message.answer("Ок, без дополнительных сведений.", reply_markup=kb)
+#     await state.clear()
+#     await cb.answer()
+#     print(f"FUNC: sell_extras_skip | user_id={cb.from_user.id}")
 
 # ====== Доп. поля: старт мастера ПОСЛЕ публикации (из единой кнопки) ======
 # @router.callback_query(F.data == "sell_extras_start")
