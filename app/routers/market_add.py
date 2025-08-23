@@ -963,10 +963,23 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("sell_delete_no:"))
-async def delete_no(cb: CallbackQuery, state: FSMContext):
-    cancel_text = (await get_text('sell_delete_cancel', 'ru')) or "Deletion canceled, listing is still active."
-    await cb.message.answer(cancel_text)
+async def sell_delete_no(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    listing_id = int(cb.data.split(":")[1])
+
+    # Удаляем только окно подтверждения (без «спасибо» и прочего)
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    # Ничего не отправляем, просто закрываем спиннер
     await cb.answer()
+
+    print(
+        f"FUNC: sell_delete_no | CANCELLED | listing_id={listing_id} | "
+        f"chat_id={chat_id} | user_id={cb.from_user.id}"
+    )
 
 
 @router.callback_query(F.data == "sell_back")

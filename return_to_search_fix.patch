@@ -1,0 +1,103 @@
+--- app/routers/market_view.py
++++ app/routers/market_view.py
+@@
+ router = Router()
+ 
++# ─────────────────────────────────────────────────────────
++# ФЛАГ «пришли из поиска» по чатам (для корректного «Назад»)
++# ─────────────────────────────────────────────────────────
++came_from_search_by_chat: dict[int, bool] = {}
++
+@@
+ async def market_menu_back(cb: CallbackQuery, state: FSMContext):
+     chat_id = cb.message.chat.id
++    # Сбрасываем режим «из поиска», чтобы логика «Назад» не залипала
++    came_from_search_by_chat.pop(chat_id, None)
+ 
+@@
+-@router.callback_query(F.data.startswith("listing:"))
+-async def show_listing_details(cb: CallbackQuery):
++@router.callback_query(F.data.startswith("listing:"))
++async def show_listing_details(cb: CallbackQuery, state: FSMContext):
+     chat_id = cb.message.chat.id
+ 
+-    try:
+-        await cb.message.delete()
+-    except Exception:
+-        pass
++    await clear_bot_messages(chat_id, cb.bot)
++    try:
++        await cb.message.delete()
++    except Exception:
++        pass
+@@
+-    if from_my:
+-        btn = await get_common_menu_button('btn_back_my_listings', lang='ru')
+-        btn = InlineKeyboardButton(text=btn.text, callback_data="my_listings_back") if btn \
+-            else InlineKeyboardButton(text="⬅️ Back to my listings", callback_data="my_listings_back")
+-        buttons.append([btn])
+-    else:
+-        btn = await get_common_menu_button('btn_back_listings', lang='ru')
+-        btn = InlineKeyboardButton(text=btn.text, callback_data=f"mlist:{city_slug}:{cat_slug}") if btn \
+-            else InlineKeyboardButton(text="⬅️ Back to listings", callback_data=f"mlist:{city_slug}:{cat_slug}")
+-        buttons.append([btn])
++    data = await state.get_data()
++    fsm_has_search = bool(data.get("search_results"))
++    from_search = came_from_search_by_chat.get(chat_id, False) or fsm_has_search
++
++    if from_search:
++        btn = await get_common_menu_button('btn_back_search', lang='ru')
++        btn = InlineKeyboardButton(text=btn.text, callback_data="market_search_results") if btn \
++            else InlineKeyboardButton(text="⬅️ Назад к поиску", callback_data="market_search_results")
++        buttons.append([btn])
++    else:
++        if from_my:
++            btn = await get_common_menu_button('btn_back_my_listings', lang='ru')
++            btn = InlineKeyboardButton(text=btn.text, callback_data="my_listings_back") if btn \
++                else InlineKeyboardButton(text="⬅️ Back to my listings", callback_data="my_listings_back")
++            buttons.append([btn])
++        else:
++            btn = await get_common_menu_button('btn_back_listings', lang='ru')
++            btn = InlineKeyboardButton(text=btn.text, callback_data=f"mlist:{city_slug}:{cat_slug}") if btn \
++                else InlineKeyboardButton(text="⬅️ Back to listings", callback_data=f"mlist:{city_slug}:{cat_slug}")
++            buttons.append([btn])
+@@
+-    print(
+-        f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | user_id: {cb.from_user.id} | "
+-        f"last_search_query_message: {last_search_query_message.get(chat_id)} | "
+-        f"last_search_menu_message: {last_search_menu_message.get(chat_id)} | "
+-        f"last_bot_messages: {last_bot_messages.get(chat_id)}"
+-    )
++    print(
++        f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | user_id: {cb.from_user.id} | "
++        f"from_my={from_my} | from_search={from_search} | fsm_has_search={fsm_has_search} | "
++        f"last_search_query_message: {last_search_query_message.get(chat_id)} | "
++        f"last_search_menu_message: {last_search_menu_message.get(chat_id)} | "
++        f"last_bot_messages: {last_bot_messages.get(chat_id)}"
++    )
+@@
+-@router.callback_query(F.data.startswith("search_listing:"))
+-async def show_search_listing(cb: CallbackQuery):
++@router.callback_query(F.data.startswith("search_listing:"))
++async def show_search_listing(cb: CallbackQuery):
++    chat_id = cb.message.chat.id
++    await clear_bot_messages(chat_id, cb.bot)
++    try:
++        await cb.message.delete()
++    except Exception:
++        pass
++    came_from_search_by_chat[chat_id] = True
+@@
+-@router.callback_query(F.data.startswith("search_detail:"), MarketSearch.waiting_for_detail)
+-async def show_search_detail(cb: CallbackQuery, state: FSMContext):
+-    chat_id = cb.message.chat.id
+-    await clear_bot_messages(chat_id, cb.bot)
++@router.callback_query(F.data.startswith("search_detail:"), MarketSearch.waiting_for_detail)
++async def show_search_detail(cb: CallbackQuery, state: FSMContext):
++    chat_id = cb.message.chat.id
++    await clear_bot_messages(chat_id, cb.bot)
++    try:
++        await cb.message.delete()
++    except Exception:
++        pass
++    came_from_search_by_chat[chat_id] = True
