@@ -345,7 +345,13 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
         return
 
     async with SessionLocal() as s:
-        results = (await s.execute(select(Listing).where(Listing.id.in_(ids)))).scalars().all()
+        db_results = (await s.execute(
+            select(Listing).where(Listing.id.in_(ids))
+        )).scalars().all()
+
+    # сохраняем порядок как в ids
+    by_id = {l.id: l for l in db_results}
+    results = [by_id[i] for i in ids if i in by_id]
 
     new_search_btn = await get_common_menu_button('market_new_search')
     to_market_btn = await get_common_menu_button('market_menu_back')
@@ -442,8 +448,15 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
 
     # Загружаем и показываем список как обычно
     async with SessionLocal() as s:
-        results = (await s.execute(select(Listing).where(Listing.id.in_(ids)))).scalars().all()
+        db_results = (await s.execute(
+            select(Listing).where(Listing.id.in_(ids))
+        )).scalars().all()
 
+    by_id = {l.id: l for l in db_results}
+    results = [by_id[i] for i in ids if i in by_id]
+
+    # синхронизируем кэш (опционально, но полезно)
+    last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
     # Если все id «протухли» (объявления удалены), тоже отправим fallback
     if not results:
         new_search_btn = await get_common_menu_button('market_new_search', lang='ru')
