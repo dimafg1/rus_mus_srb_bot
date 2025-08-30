@@ -1,7 +1,7 @@
 # app/routers/market_view.py
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 from sqlalchemy.exc import NoResultFound
@@ -37,8 +37,14 @@ from app.routers.utils import (
     render_contact,
     render_flex_compact
 )
+import os, urllib.parse
+from aiogram.types import WebAppInfo
+
 
 router = Router()
+
+WEBAPP_BASE = os.getenv("WEBAPP_BASE", "https://unixound.com/rus_mus_srb_bot").rstrip("/")
+
 # ─────────────────────────────────────────────────────────
 # ФЛАГ «пришли из поиска» по чатам (для корректного «Назад»)
 # ─────────────────────────────────────────────────────────
@@ -48,6 +54,9 @@ came_from_search_by_chat: dict[int, bool] = {}
 # Кэш последнего поиска по чату (устойчив к очистке FSM)
 # ─────────────────────────────────────────────────────────
 last_search_ctx_by_chat: dict[int, dict] = {}
+
+
+
 
 
 
@@ -529,10 +538,24 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "market_menu_back")
 async def market_menu_back(cb: CallbackQuery, state: FSMContext):
-    last_search_ctx_by_chat.pop(chat_id, None)
+    """# Барахолка: «Назад» → главное меню Барахолки"""
     chat_id = cb.message.chat.id
-    came_from_search_by_chat.pop(chat_id, None)
+    user_id = cb.from_user.id
 
+    # Логи — по канонам (вход)
+    print(
+        f"[market_view.py] {inspect.currentframe().f_code.co_name} | "
+        f"cb.data: {cb.data} | chat_id: {chat_id} | user_id: {user_id} | "
+        f"last_search_query_message: {last_search_query_message.get(chat_id)} | "
+        f"last_search_menu_message: {last_search_menu_message.get(chat_id)} | "
+        f"last_bot_messages: {last_bot_messages.get(chat_id)}"
+    )
+
+    # Сбрасываем любые «поисковые» хвосты (chat_id уже объявлен)
+    came_from_search_by_chat.pop(chat_id, None)
+    last_search_ctx_by_chat.pop(chat_id, None)
+
+    # Удаляем служебные сообщения поиска (если были)
     for mid in (last_search_menu_message.pop(chat_id, None), last_search_query_message.pop(chat_id, None)):
         if mid:
             try:
@@ -540,19 +563,25 @@ async def market_menu_back(cb: CallbackQuery, state: FSMContext):
             except Exception:
                 pass
 
+    # Канон: очистка предыдущих служебных сообщений
     await clear_bot_messages(chat_id, cb.bot)
-    await state.clear()
 
-    msg = await cb.message.answer(
-        "💸 Барахолка – выберите действие:",
-        reply_markup=await market_inline()
-    )
+    # Чистим FSM — на всякий случай
+    try:
+        await state.clear()
+    except Exception as e:
+        print(f"[market_view.py] {inspect.currentframe().f_code.co_name} | state.clear() skipped: {e}")
+
+    # Возврат в меню Барахолки
+    msg = await cb.message.answer("💸 Барахолка – выберите действие:", reply_markup=await market_inline())
     last_bot_messages[chat_id] = [msg.message_id]
-    last_search_ctx_by_chat.pop(chat_id, None)
+
     await cb.answer()
 
+    # Логи — по канонам (выход)
     print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | cb.data: {cb.data} | chat_id: {chat_id} | user_id: {cb.from_user.id} | "
+        f"[market_view.py] EXIT {inspect.currentframe().f_code.co_name} | "
+        f"cb.data: {cb.data} | chat_id: {chat_id} | user_id: {user_id} | "
         f"last_search_query_message: {last_search_query_message.get(chat_id)} | "
         f"last_search_menu_message: {last_search_menu_message.get(chat_id)} | "
         f"last_bot_messages: {last_bot_messages.get(chat_id)}"
@@ -705,13 +734,56 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
     # Фото
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
-    # ── Формирование caption
+    # Видео из flex: найдём поле с типом video в Category.fields и достанем значение
+    video_id: str | None = None
+    video_url: str | None = None
+    if listing.flex:
+        try:
+            flex_vals = json.loads(listing.flex)
+            if not isinstance(flex_vals, dict):
+                flex_vals = {}
+        except Exception:
+            flex_vals = {}
+        try:
+            async with SessionLocal() as s:
+                cat = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
+            defs = []
+            try:
+                defs = json.loads(cat.fields) if cat and cat.fields else []
+                if not isinstance(defs, list):
+                    defs = []
+            except Exception:
+                defs = []
+            for f in defs:
+                if str(f.get("type", "")).lower() == "video":
+                    key = (str(f.get("key", "")).strip().lower() or "field")
+                    val = flex_vals.get(key)
+                    if isinstance(val, str):
+                        sval = val.strip()
+                        low = sval.lower()
+                        if "http" in low or "://" in sval:
+                            video_url = sval
+                        else:
+                            video_id = sval
+                    break
+        except Exception:
+            pass
+
+    # ── Формирование caption (Название → Описание → Цена)
     caption_parts = []
 
-    # Основные поля
-    main_block = await render_main_fields(listing)
-    if main_block:
-        caption_parts.append(main_block)
+    title_line = f"<b>{listing.title}</b>"
+    descr_line = (listing.descr or "").strip()
+    price_label = (await get_text('listing_price', 'ru')) or "Price"
+    price_line = f"{price_label}: {listing.price}" if listing.price else ""
+
+    block_lines = [title_line]
+    if descr_line:
+        block_lines.append(descr_line)
+    if listing.price:
+        block_lines.append(price_line)
+
+    caption_parts.append("\n\n".join(block_lines))
 
     # Доп. сведения (flex)
     async with SessionLocal() as s:
@@ -726,7 +798,8 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
 
     caption = "\n\n".join(caption_parts)
 
-    # ── Кнопки
+
+    # ── Кнопки (основное меню «Контакты/Управление»)
     buttons: list[list[InlineKeyboardButton]] = []
 
     if listing.owner_id == cb.from_user.id:
@@ -752,9 +825,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         buttons.append([contact_btn])
 
     # ─────────────────────────────────────────────────────────
-    # КЛЮЧЕВОЕ: куда вести «Назад»
-    # Если чат помечен как «из поиска» (глобальный флаг) ИЛИ в FSM есть следы поиска,
-    # всегда ведём к прошлым результатам поиска. Иначе — прежняя ваша логика.
+    # Куда вести «Назад»
     # ─────────────────────────────────────────────────────────
     data = await state.get_data()
     fsm_has_search = bool(data.get("search_results"))
@@ -778,27 +849,148 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
                 else InlineKeyboardButton(text="⬅️ Back to listings", callback_data=f"mlist:{city_slug}:{cat_slug}")
             buttons.append([back_btn])
 
+    # Основное меню
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    # ── Отдельная разметка ТОЛЬКО для «Смотреть видео» (WebApp), если есть YouTube
+    video_only_markup = None
+    if video_url and (("youtube.com" in video_url.lower()) or ("youtu.be" in video_url.lower())) and WEBAPP_BASE:
+        try:
+            twa_url = f"{WEBAPP_BASE}/media/video_yt.html?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing.id}"
+            video_only_markup = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="|        ▶️   Смотреть  видео         |", web_app=WebAppInfo(url=twa_url))]]
+            )
+        except Exception as e:
+            print(f"[market_view.py] show_listing_details | WATCH_BTN_ERROR {e}")
 
     # ── Отправка
     sent_ids: list[int] = []
-    if photo_ids and photo_ids[0]:
-        if len(photo_ids) == 1:
-            msg = await cb.message.answer_photo(photo_ids[0], caption=caption, reply_markup=markup, parse_mode="HTML")
-            sent_ids.append(msg.message_id)
-        else:
-            media_group = [InputMediaPhoto(media=photo_ids[0], caption=caption, parse_mode="HTML")]
-            for pid in photo_ids[1:]:
-                media_group.append(InputMediaPhoto(media=pid))
-            msgs = await cb.message.answer_media_group(media=media_group)
-            msg2 = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
-            sent_ids.extend([m.message_id for m in msgs])
-            sent_ids.append(msg2.message_id)
-    else:
-        msg = await cb.message.answer(caption, reply_markup=markup, parse_mode="HTML")
-        sent_ids.append(msg.message_id)
 
-    # Если карточка открыта из поиска — не ведём учёт фото-сообщений, чтобы не засирать чат
+    if video_id:
+        # --- ВИДЕО-ФАЙЛ (file_id): видео ПЕРВЫМ, затем все фото; подпись у видео ---
+        if photo_ids and photo_ids[0]:
+            try:
+                media = [InputMediaVideo(media=video_id, caption=caption, parse_mode="HTML")]
+                for pid in photo_ids:
+                    media.append(InputMediaPhoto(media=pid))
+                msgs = await cb.message.answer_media_group(media=media)
+                sent_ids.extend([m.message_id for m in msgs])
+
+                msg2 = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
+                sent_ids.append(msg2.message_id)
+            except Exception:
+                # fallback: фото(а) + отдельным сообщением видео
+                try:
+                    if photo_ids:
+                        if len(photo_ids) == 1:
+                            pmsg = await cb.message.answer_photo(photo_ids[0], caption=caption, parse_mode="HTML")
+                            sent_ids.append(pmsg.message_id)
+                        else:
+                            media = [InputMediaPhoto(media=photo_ids[0], caption=caption, parse_mode="HTML")]
+                            for pid in photo_ids[1:]:
+                                media.append(InputMediaPhoto(media=pid))
+                            pmsgs = await cb.message.answer_media_group(media=media)
+                            sent_ids.extend([m.message_id for m in pmsgs])
+                    vmsg = await cb.message.answer_video(video_id, reply_markup=markup)
+                    sent_ids.append(vmsg.message_id)
+                except Exception:
+                    tmsg = await cb.message.answer(caption, parse_mode="HTML")
+                    sent_ids.append(tmsg.message_id)
+                    try:
+                        vmsg = await cb.message.answer_video(video_id, reply_markup=markup)
+                        sent_ids.append(vmsg.message_id)
+                    except Exception:
+                        pass
+        else:
+            # Нет фото — одно сообщение: видео с подписью и кнопками
+            try:
+                vmsg = await cb.message.answer_video(video_id, caption=caption, reply_markup=markup, parse_mode="HTML")
+                sent_ids.append(vmsg.message_id)
+            except Exception:
+                tmsg = await cb.message.answer(caption, parse_mode="HTML")
+                sent_ids.append(tmsg.message_id)
+                try:
+                    vmsg = await cb.message.answer_video(video_id, reply_markup=markup)
+                    sent_ids.append(vmsg.message_id)
+                except Exception:
+                    pass
+
+    elif video_url:
+        # --- YouTube: НЕ шлём сырую ссылку и НЕ кладём кнопку в общее меню. ---
+        # 1) Карточка (фото + caption)
+        if photo_ids and photo_ids[0]:
+            try:
+                if len(photo_ids) == 1:
+                    p = await cb.message.answer_photo(photo_ids[0], caption=caption, parse_mode="HTML")
+                    sent_ids.append(p.message_id)
+                else:
+                    media = [InputMediaPhoto(media=photo_ids[0], caption=caption, parse_mode="HTML")]
+                    for pid in photo_ids[1:]:
+                        media.append(InputMediaPhoto(media=pid))
+                    pmsgs = await cb.message.answer_media_group(media=media)
+                    sent_ids.extend([m.message_id for m in pmsgs])
+            except Exception:
+                t = await cb.message.answer(caption, parse_mode="HTML")
+                sent_ids.append(t.message_id)
+        else:
+            t = await cb.message.answer(caption, parse_mode="HTML")
+            sent_ids.append(t.message_id)
+
+        # 2) Отдельное краткое сообщение — ТОЛЬКО кнопка «Смотреть видео»
+        if video_only_markup:
+            try:
+                # Telegram требует непустой текст → используем невидимый символ U+2063
+                vid_btn_msg = await cb.message.answer("\u2063", reply_markup=video_only_markup)
+                sent_ids.append(vid_btn_msg.message_id)
+            except Exception as e:
+                print(f"[market_view.py] show_listing_details | video_only button send failed: {e}")
+
+        # 3) Контакты/Управление — отдельным сообщением
+        try:
+            kmsg = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
+            sent_ids.append(kmsg.message_id)
+        except Exception:
+            pass
+
+    else:
+        # --- Видео нет ---
+        if photo_ids and photo_ids[0]:
+            if len(photo_ids) == 1:
+                try:
+                    msg = await cb.message.answer_photo(photo_ids[0], caption=caption, reply_markup=markup, parse_mode="HTML")
+                    sent_ids.append(msg.message_id)
+                except Exception:
+                    msg = await cb.message.answer(caption, reply_markup=markup, parse_mode="HTML")
+                    sent_ids.append(msg.message_id)
+            else:
+                try:
+                    media_group = [InputMediaPhoto(media=photo_ids[0], caption=caption, parse_mode="HTML")]
+                    for pid in photo_ids[1:]:
+                        media_group.append(InputMediaPhoto(media=pid))
+                    msgs = await cb.message.answer_media_group(media=media_group)
+                    sent_ids.extend([m.message_id for m in msgs])
+                    msg2 = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
+                    sent_ids.append(msg2.message_id)
+                except Exception:
+                    for idx, pid in enumerate(photo_ids):
+                        try:
+                            if idx == 0:
+                                m = await cb.message.answer_photo(pid, caption=caption, parse_mode="HTML")
+                            else:
+                                m = await cb.message.answer_photo(pid)
+                            sent_ids.append(m.message_id)
+                        except Exception:
+                            pass
+                    try:
+                        mmsg = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
+                        sent_ids.append(mmsg.message_id)
+                    except Exception:
+                        pass
+        else:
+            msg = await cb.message.answer(caption, reply_markup=markup, parse_mode="HTML")
+            sent_ids.append(msg.message_id)
+
+    # Учёт отправленных сообщений
     if not came_from_search and not from_my and sent_ids:
         sent_photo_messages.setdefault(chat_id, []).extend(sent_ids)
     if from_my and sent_ids:
@@ -1127,12 +1319,14 @@ async def show_search_listing(cb: CallbackQuery):
 
     price_label = (await get_text('listing_price', 'ru')) or "Price"
     contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
-    caption = f"<b>{listing.title}</b>\n"
-    if listing.price:
-        caption += f"{price_label}: {listing.price}\n"
+    caption = f"<b>{listing.title}</b>"
     if listing.descr:
-        caption += f"{listing.descr}\n"
-    caption += f"{contact_label}: {listing.contact}"
+        caption += f"\n\n{listing.descr}"
+    if listing.price:
+        caption += f"\n\n{price_label}: {listing.price}"
+    caption += f"\n\n{contact_label}: {listing.contact}"
+
+
     async with SessionLocal() as s:
         flex_block = await render_flex_block(s, listing, lang="ru")
     if flex_block:
@@ -1217,12 +1411,14 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
 
     price_label = (await get_text('listing_price', 'ru')) or "Price"
     contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
-    caption = f"<b>{listing.title}</b>\n"
-    if listing.price:
-        caption += f"{price_label}: {listing.price}\n"
+    caption = f"<b>{listing.title}</b>"
     if listing.descr:
-        caption += f"{listing.descr}\n"
-    caption += f"{contact_label}: {listing.contact}"
+        caption += f"\n\n{listing.descr}"
+    if listing.price:
+        caption += f"\n\n{price_label}: {listing.price}"
+    caption += f"\n\n{contact_label}: {listing.contact}"
+
+
     async with SessionLocal() as s:
         flex_block = await render_flex_block(s, listing, lang="ru")
     if flex_block:

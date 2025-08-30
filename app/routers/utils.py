@@ -159,6 +159,18 @@ def _flex_fmt_value(val: Any) -> Optional[str]:
     if isinstance(val, list):
         s = ", ".join(str(x).strip() for x in val if str(x).strip())
         return s or None
+    # Для строк будем пытаться определить тип содержимого
+    if isinstance(val, str):
+        s = val.strip()
+        low = s.lower()
+        # Если это URL или длинная строка без пробелов (file_id) — не показываем значение
+        # URL: содержит http/://
+        if "http" in low or "://" in s:
+            return ""  # значение будет показано отдельным сообщением
+        # file_id: длинная строка без пробелов
+        if len(s) > 20 and " " not in s:
+            return ""  # прячем идентификатор
+        return s or None
     return str(val).strip() or None
 
 def _flex_parse(flex_data: Any) -> Dict[str, Any]:
@@ -203,24 +215,70 @@ async def render_flex_block(session: AsyncSession, listing: Listing, lang: str =
     <b>Label:</b> value
 
     Между логическими строками — пустая строка для читаемости.
+    Поля с типом 'video' намеренно НЕ выводим (видео показывается отдельно плеером).
     """
+    # Разбираем значения гибких полей
     flex = _flex_parse(listing.flex)
     if not flex:
+        print(f"[utils.py] render_flex_block | listing_id={listing.id} | lines=0 | reason=empty_flex")
         return ""
+
+    # Карта типов по ключам из описания полей категории
+    type_by_key: dict[str, str] = {}
+    try:
+        cat = (await session.execute(
+            select(Category).where(Category.id == listing.category_id)
+        )).scalar_one_or_none()
+
+        defs = []
+        if cat and cat.fields:
+            try:
+                defs = json.loads(cat.fields)
+                if not isinstance(defs, list):
+                    defs = []
+            except Exception:
+                defs = []
+
+        for f in defs:
+            k = str(f.get("key", "")).strip().lower()
+            t = str(f.get("type", "")).strip().lower()
+            if k:
+                type_by_key[k] = t
+    except Exception:
+        # В случае ошибки просто не будем фильтровать по типам (но ниже всё равно пропустим video, если карта заполнится)
+        type_by_key = type_by_key or {}
+
+    # Лейблы для ключей
     labels = await _flex_labels_for_category(session, listing.category_id, lang=lang)
 
+    # Собираем строки, пропуская поля типа 'video'
     lines: List[str] = []
+    skipped_video = 0
     for raw_key, raw_val in flex.items():
         key = str(raw_key).strip().lower()
-        val = _flex_fmt_value(raw_val)
-        if not key or val is None:
+        if not key:
             continue
+
+        # не отображаем видео-поля
+        if type_by_key.get(key) == "video":
+            skipped_video += 1
+            continue
+
+        val = _flex_fmt_value(raw_val)
+        if val is None:
+            continue
+
         label = labels.get(key, key)
         lines.append(f"<b>{label}:</b> {val}")
 
     if not lines:
+        print(f"[utils.py] render_flex_block | listing_id={listing.id} | lines=0 | skipped_video={skipped_video}")
         return ""
-    return "\n\n".join(lines)
+
+    result = "\n\n".join(lines)
+    print(f"[utils.py] render_flex_block | listing_id={listing.id} | lines={len(lines)} | skipped_video={skipped_video}")
+    return result
+
 
 async def render_flex_compact(session: AsyncSession, listing: Listing, indent: str = "    ", lang: str = "ru") -> str:
     """

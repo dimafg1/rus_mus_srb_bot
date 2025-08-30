@@ -370,36 +370,64 @@ async def sell_extras_done(cb: CallbackQuery, state: FSMContext):
     print(f"FUNC: sell_extras_done | chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id}")
 
 
-
 # ─────────────── шаг 3 – title ─────────────
 @router.message(Sell.title, F.text)
 async def sell_title(m: Message, state: FSMContext):
     await clear_bot_messages(m.chat.id, m.bot)
     await state.update_data(title=m.text.strip())
-    await state.set_state(Sell.price)
-    # --- Получаем текст из базы ---
-    template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
-    await send_with_nav(m, template, parse_mode="HTML")
-
-
-# ─────────────── шаг 4 – price ─────────────
-@router.message(Sell.price, F.text)
-async def sell_price(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    await state.update_data(price=m.text.strip())
     await state.set_state(Sell.descr)
-    # --- Получаем текст из базы ---
+    # сначала описание
     template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
     await send_with_nav(m, template, parse_mode="HTML")
 
 
-# ─────────────── шаг 5 – descr ─────────────
+
+
+# ─────────────── шаг 3 – title ─────────────
+# @router.message(Sell.title, F.text)
+# async def sell_title(m: Message, state: FSMContext):
+#     await clear_bot_messages(m.chat.id, m.bot)
+#     await state.update_data(title=m.text.strip())
+#     await state.set_state(Sell.price)
+#     # --- Получаем текст из базы ---
+#     template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
+#     await send_with_nav(m, template, parse_mode="HTML")
+
+# ─────────────── шаг 4 – descr ─────────────
 @router.message(Sell.descr)
 async def sell_descr(m: Message, state: FSMContext):
-    text = m.text.strip()
+    text = (m.text or "").strip()
     await state.update_data(descr=None if text == "-" else text)
+    await state.set_state(Sell.price)
+    # затем цена (обязательна для Барахолки)
+    template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
+    await send_with_nav(m, template, parse_mode="HTML")
+
+@router.message(Sell.price, F.text)
+async def sell_price(m: Message, state: FSMContext):
+    await clear_bot_messages(m.chat.id, m.bot)
+    await state.update_data(price=(m.text or "").strip())
     await state.set_state(Sell.photo)
     await send_photo_prompt(m, 0, state)
+
+# ─────────────── шаг 4 – price ─────────────
+# @router.message(Sell.price, F.text)
+# async def sell_price(m: Message, state: FSMContext):
+#     await clear_bot_messages(m.chat.id, m.bot)
+#     await state.update_data(price=m.text.strip())
+#     await state.set_state(Sell.descr)
+#     # --- Получаем текст из базы ---
+#     template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
+#     await send_with_nav(m, template, parse_mode="HTML")
+
+
+# ─────────────── шаг 5 – descr ─────────────
+# @router.message(Sell.descr)
+# async def sell_descr(m: Message, state: FSMContext):
+#     text = m.text.strip()
+#     await state.update_data(descr=None if text == "-" else text)
+#     await state.set_state(Sell.photo)
+#     await send_photo_prompt(m, 0, state)
 
 # ================== **ШАГ 6 — ФОТО** ==================
 @router.message(Sell.photo, F.photo)
@@ -634,16 +662,28 @@ async def flex_text_number_input(m: Message, state: FSMContext):
 async def preview_and_confirm(m: Message, state: FSMContext):
     data = await state.get_data()
     photos = data.get("photos", [])
-    header = (f"<b>{data['city_name']} → {data['cat_name']}</b>\n"
-              f"{data['title']} — {data['price']}\n"
-              f"{data.get('descr','') or ''}")
+    # Заголовок шапки раздела (город → категория) оставляем
+    header = f"<b>{data['city_name']} → {data['cat_name']}</b>\n"
 
-    # Добавляем собранные гибкие поля (только заполненные пользователем или обязательные)
+    # Порядок: Название → Описание → Цена
+    title_line = f"{data['title']}".strip()
+    descr_line = (data.get('descr') or "").strip()
+    price_label = (await get_text('listing_price', 'ru')) or "Price"
+    price_line = f"{price_label}: {data.get('price', '')}".strip()
+
+    parts = [title_line]
+    if descr_line:
+        parts.append(descr_line)
+    if data.get('price'):
+        parts.append(price_line)
+
+    header += "\n".join(parts)
+
+    # Добавляем собранные гибкие поля
     flex_fields = data.get("flex_fields") or []
     flex_values = data.get("flex_values") or {}
-
     if flex_fields:
-        parts = []
+        lines = []
         for f in flex_fields:
             label = f.get("label") or "Поле"
             key = f.get("key")
@@ -653,13 +693,12 @@ async def preview_and_confirm(m: Message, state: FSMContext):
                 v = flex_values[key]
                 if ftype == "checkbox":
                     v = "Да" if bool(v) else "Нет"
-                parts.append(f"{label}: {v}")
+                lines.append(f"{label}: {v}")
             else:
-                # не показываем пустые необязательные поля
                 if required:
-                    parts.append(f"{label}: —")
-        if parts:
-            header += "\n\n" + "\n".join(parts)
+                    lines.append(f"{label}: —")
+        if lines:
+            header += "\n\n" + "\n".join(lines)
 
     kb = confirm_keyboard()
     sent_ids = []
@@ -671,6 +710,7 @@ async def preview_and_confirm(m: Message, state: FSMContext):
             media = [InputMediaPhoto(media=fid) for fid in photos]
             msgs = await m.answer_media_group(media)
             sent_ids.extend([msg.message_id for msg in msgs])
+
     msg = await m.answer(header, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
     if sent_ids:
@@ -709,6 +749,7 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
                 descr=data.get("descr"),
                 contact=(f"@{cb.from_user.username}" if cb.from_user.username else "контакт не указан"),
                 created_at=datetime.utcnow(),
+                type="market",
                 photo_file_id=",".join(data.get("photos", [])) if data.get("photos") else None,
             )
 
@@ -781,112 +822,6 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
         await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
         await cb.message.answer(f"❌ Не удалось сохранить объявление.\n<code>{e}</code>", parse_mode="HTML")
         print(f"FUNC: sell_ok | ERROR {e}")
-
-# ====== Доп. поля: старт мастера (после публикации) ======
-# @router.callback_query(F.data.startswith("sell_extras_start:"))
-# async def sell_extras_start_after_pub(cb: CallbackQuery, state: FSMContext):
-#     chat_id = cb.message.chat.id
-#     await clear_bot_messages(chat_id, cb.bot)
-#     try:
-#         cat_id = int(cb.data.split(":", 1)[1])
-#     except Exception:
-#         await cb.answer("Нет данных категории.", show_alert=True)
-#         print("FUNC: sell_extras_start_after_pub | error: no cat_id")
-#         return
-#     # ЗАПУСК БЕЗ resume_data -> не будет «Продолжить»
-#     await start_extra_fields_for_category(cb, state, cat_id, resume_data="sell:extras_done_after_pub")
-#     await cb.answer()
-#     print(f"FUNC: sell_extras_start_after_pub | cat_id={cat_id} | resume='sell:extras_done_after_pub' | user_id={cb.from_user.id}")
-
-# ====== Доп. поля: завершение мастера (после публикации) ======
-# @router.callback_query(F.data == "sell:extras_done_after_pub")
-# async def sell_extras_done_after_pub(cb: CallbackQuery, state: FSMContext):
-#     """
-#     Завершение мастера дополнительных полей после публикации. На этом этапе
-#     пользователь ввёл необходимые значения, и их нужно сохранить в
-#     соответствующее объявление в колонке flex. Мы извлекаем из FSM
-#     идентификатор объявления, а также словарь значений дополнительных
-#     полей (они сохраняются в FSM под ключом VAL_KEY в модуле
-#     user_extra_fields). После обновления записи в БД отправляем
-#     пользователю сообщение о завершении и очищаем стейт.
-#     """
-#     # Готовим нижнюю навигацию: назад/главное меню
-#     back_btn = await get_common_menu_button('sell_back', 'ru')
-#     main_btn = await get_common_menu_button('main_menu', 'ru')
-#     rows = []
-#     row = []
-#     if back_btn:
-#         row.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
-#     if main_btn:
-#         row.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
-#     if row:
-#         rows.append(row)
-#     kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
-
-#     # Читаем текущие данные FSM: сюда входит listing_id, а также
-#     # ответы пользователя на дополнительные поля под ключом VAL_KEY
-#     data = await state.get_data()
-#     listing_id = data.get("listing_id")
-#     extra_values = data.get(VAL_KEY) or {}
-
-#     # Обновляем запись объявления, если id найден
-#     if listing_id:
-#         try:
-#             async with SessionLocal() as s:
-#                 l = await s.get(Listing, listing_id)
-#                 if l:
-#                     # сериализуем словарь в JSON; если словарь пустой, оставляем None
-#                     l.flex = json.dumps(extra_values, ensure_ascii=False) if extra_values else None
-#                     # добавляем запись обратно в сессию и коммитим
-#                     s.add(l)
-#                     await s.commit()
-#                 else:
-#                     # Такой записи нет; просто продолжаем
-#                     pass
-#         except Exception as e:
-#             # В случае ошибки записываем в лог. Для пользователя
-#             # выводим уведомление о том, что сохранение не удалось.
-#             await cb.message.answer(
-#                 f"❌ Не удалось сохранить доп. поля: <code>{type(e).__name__}</code>",
-#                 parse_mode="HTML"
-#             )
-
-#     # Сообщаем пользователю о завершении и очищаем FSM
-#     await cb.message.answer("Готово. Спасибо!", reply_markup=kb)
-#     await state.clear()
-#     await cb.answer()
-#     print(f"FUNC: sell_extras_done_after_pub | user_id={cb.from_user.id} | listing_id={listing_id} | extras={bool(extra_values)}")
-
-# ====== Доп. поля: «Пропустить» (после публикации) ======
-# @router.callback_query(F.data == "sell_extras_skip")
-# async def sell_extras_skip(cb: CallbackQuery, state: FSMContext):
-#     back_btn = await get_common_menu_button('sell_back', 'ru')
-#     main_btn = await get_common_menu_button('main_menu', 'ru')
-#     rows = []
-#     row = []
-#     if back_btn:
-#         row.append(InlineKeyboardButton(text=back_btn.text, callback_data=back_btn.callback_data))
-#     if main_btn:
-#         row.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
-#     if row:
-#         rows.append(row)
-#     kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
-
-#     await cb.message.answer("Ок, без дополнительных сведений.", reply_markup=kb)
-#     await state.clear()
-#     await cb.answer()
-#     print(f"FUNC: sell_extras_skip | user_id={cb.from_user.id}")
-
-# ====== Доп. поля: старт мастера ПОСЛЕ публикации (из единой кнопки) ======
-# @router.callback_query(F.data == "sell_extras_start")
-# async def sell_extras_start(cb: CallbackQuery, state: FSMContext):
-#     # помечаем режим "после публикации", чтобы финал не вёл на повторное подтверждение
-#     await state.update_data(extras_after_publish=True)
-#     # грузим поля и переходим к первому вопросу
-#     await start_flex_flow(cb.message, state)
-#     await cb.answer()
-#     print(f"FUNC: sell_extras_start | chat_id={cb.message.chat.id} | user_id={cb.from_user.id}")
-
 
 
 @router.callback_query(Sell.confirm, F.data == "sell_cancel")
@@ -989,105 +924,75 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
 
     if cur_state == Sell.city.state:
-        await clear_bot_messages(chat_id, cb.bot)
         market_text = (await get_text('market_choose_action', 'ru')) or "💸 Marketplace:\nChoose an action."
-        msg = await cb.message.answer(
-            market_text,
-            reply_markup=await market_inline()
-        )
+        msg = await cb.message.answer(market_text, reply_markup=await market_inline())
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await state.clear()
         await cb.answer()
         return
 
-
     if cur_state == Sell.cat.state:
-        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.city)
         async with SessionLocal() as s:
             cities = (await s.execute(select(City))).scalars().all()
         kb = await cities_inline(cities)
         header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
-        msg = await cb.message.answer(
-            header,
-            reply_markup=kb
-        )
+        msg = await cb.message.answer(header, reply_markup=kb)
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
 
-
     elif cur_state == Sell.title.state:
+        # назад к выбору категории
         await state.set_state(Sell.cat)
         data = await state.get_data()
         city_slug = data.get("city_slug")
         async with SessionLocal() as s:
-            cat = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
-            subcats = (await s.execute(select(Category).where(Category.parent_id == cat.id))).scalars().all()
-        kb = await equip_inline(subcats, city_slug)
-        # --- Получаем текст из базы ---
+            root = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
+            subs = (await s.execute(select(Category).where(Category.parent_id == root.id))).scalars().all()
+        kb = await equip_inline(subs, city_slug)
         template = await get_text('sell_choose_category_back', 'ru') or "City: <b>{city_name}</b>\nChoose a category:"
         text = template.format(city_name=data.get('city_name'))
         try:
-            await safe_edit_or_send(cb, 
-                text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            try:
-                await cb.message.delete()
-            except Exception:
-                pass
-            msg = await cb.message.answer(
-                text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-            last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+            await safe_edit_or_send(cb, text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            try: await cb.message.delete()
+            except Exception: pass
+            msg = await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+            last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
 
-
-
-
-
-    elif cur_state == Sell.price.state:
-        await clear_bot_messages(chat_id, cb.bot)
+    elif cur_state == Sell.descr.state:
+        # было Title → Descr → Price → Photo, значит назад из Descr → Title
         await state.set_state(Sell.title)
         template = await get_text('sell_ask_title', 'ru') or "Enter <b>listing title</b> (one line):"
         await send_with_nav(cb.message, template, parse_mode="HTML")
 
-    elif cur_state == Sell.descr.state:
-        await clear_bot_messages(chat_id, cb.bot)
-        await state.set_state(Sell.price)
-        template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
-        await send_with_nav(cb.message, template, parse_mode="HTML")
-
-    elif cur_state == Sell.photo.state:
-        await clear_bot_messages(chat_id, cb.bot)
+    elif cur_state == Sell.price.state:
+        # назад из Price → Descr
         await state.set_state(Sell.descr)
         template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
         await send_with_nav(cb.message, template, parse_mode="HTML")
 
+    elif cur_state == Sell.photo.state:
+        # назад из Photo → Price
+        await state.set_state(Sell.price)
+        template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
+        await send_with_nav(cb.message, template, parse_mode="HTML")
+
     elif cur_state == Sell.confirm.state:
-        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.photo)
         await send_photo_prompt(cb.message, 0, state)
 
     elif cur_state == Sell.flex.state:
-        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.photo)
         await send_photo_prompt(cb.message, 0, state)
 
-
     else:
-        await clear_bot_messages(chat_id, cb.bot)
         await state.set_state(Sell.city)
         async with SessionLocal() as s:
             cities = (await s.execute(select(City))).scalars().all()
         kb = await cities_inline(cities)
         template = await get_text('sell_create_start', 'ru') or "💸 Create a listing.\nFirst, choose a city:"
-        await cb.message.answer(
-            template,
-            reply_markup=kb
-        )
+        await cb.message.answer(template, reply_markup=kb)
+
     await cb.answer()
 
 

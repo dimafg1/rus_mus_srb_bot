@@ -117,9 +117,10 @@ async def admin_fields_add_start(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Текст",   callback_data="admin:field_type:text"),
-         InlineKeyboardButton(text="🔢 Число",   callback_data="admin:field_type:number")],
+        InlineKeyboardButton(text="🔢 Число",   callback_data="admin:field_type:number")],
         [InlineKeyboardButton(text="📋 Список",  callback_data="admin:field_type:select"),
-         InlineKeyboardButton(text="☑️ Чекбокс", callback_data="admin:field_type:checkbox")],
+        InlineKeyboardButton(text="☑️ Чекбокс", callback_data="admin:field_type:checkbox")],
+        [InlineKeyboardButton(text="🎬 Видео",   callback_data="admin:field_type:video")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")]
     ])
     msg = await cb.message.answer("➕ <b>Новое поле</b>\nВыберите <b>тип</b> поля:", reply_markup=kb, parse_mode="HTML")
@@ -474,7 +475,7 @@ async def admin_field_edit_options_save(message: Message, state: FSMContext):
 
 
 # ====== Админ: тип поля ======
-@router.callback_query(F.data.regexp(r"^admin:field_type:(text|number|select|checkbox)$"), AdminFieldStates.choosing_type)
+@router.callback_query(F.data.regexp(r"^admin:field_type:(text|number|select|checkbox|video)$"), AdminFieldStates.choosing_type)
 async def admin_field_pick_type(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True); return

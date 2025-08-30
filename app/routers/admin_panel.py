@@ -244,7 +244,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
 
     # Заголовок с полной цепочкой
     text = (
-        f"📂 Категории: \n\n<b>{breadcrumb}</b>\n\n"
+        f"📂 Админпанель - Категории: \n\n<b>{breadcrumb}</b>\n\n"
     )
 
     msg = await cb.message.answer(text, reply_markup=markup, parse_mode="HTML")

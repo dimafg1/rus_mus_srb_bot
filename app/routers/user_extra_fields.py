@@ -12,12 +12,22 @@ import inspect
 from app.database import SessionLocal
 from app.models import Category, Listing
 from app.routers.utils import clear_bot_messages, last_bot_messages
+from aiogram.filters import BaseFilter
+from aiogram import types
+
+# NEW: для материализации YouTube → file_id
+import os
+import asyncio
+import tempfile
+from aiogram.types import FSInputFile
 
 router = Router()
 
 # ====== Состояния FSM (только для text/number) ======
 class UserExtraFieldStates(StatesGroup):
     waiting_value = State()
+    waiting_video = State()
+
 
 # ====== Ключи для хранения в FSM (важно: VAL_KEY импортируется в market_add.py) ======
 DEF_KEY    = "extra_defs"        # list[dict] — описание полей из Category.fields
@@ -58,7 +68,17 @@ def _fmt_value_for_display(val):
         return "Да" if val else "Нет"
     if isinstance(val, list):
         return ", ".join(map(str, val))
+    # Видео (file_id/ссылка) не «озвучиваем» — плеер покажем отдельно
+    if isinstance(val, str):
+        sval = val.strip()
+        low = sval.lower()
+        if "youtube.com" in low or "youtu.be" in low:
+            return "—"
+        if len(sval) > 20 and " " not in sval:
+            return "—"
+        return sval
     return str(val)
+
 
 async def _current_value_from_listing(state: FSMContext, key: str):
     """Достаём исходное значение поля из listing.flex (если есть listing_id в стейте)."""
@@ -87,6 +107,79 @@ def _controls_row():
         [InlineKeyboardButton(text="✅ Завершить", callback_data="edit:finish")],
         [InlineKeyboardButton(text="⬅️ Назад",      callback_data="edit:back")],
     ]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW: YouTube → file_id (материализация при редактировании)
+# ──────────────────────────────────────────────────────────────────────────────
+# async def _materialize_youtube_to_file_id(bot, chat_id: int, url: str) -> str | None:
+#     """
+#     Скачивает ролик с YouTube в .mp4, отправляет в чат, получает file_id и сразу
+#     удаляет служебное сообщение. Возвращает file_id или None.
+#     """
+#     try:
+#         import yt_dlp  # требуемая зависимость
+#     except Exception as e:
+#         print(f"[user_extra_fields.py] _materialize_youtube_to_file_id | yt_dlp import error: {e}")
+#         return None
+
+#     def _download() -> str | None:
+#         try:
+#             tmpdir = tempfile.mkdtemp(prefix="yt_")
+#             ydl_opts = {
+#                 "format": "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+#                 "merge_output_format": "mp4",
+#                 "outtmpl": os.path.join(tmpdir, "%(id)s.%(ext)s"),
+#                 "quiet": True,
+#                 "no_warnings": True,
+#             }
+#             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+#                 info = ydl.extract_info(url, download=True)
+#                 path = ydl.prepare_filename(info)
+#                 base, ext = os.path.splitext(path)
+#                 mp4 = base + ".mp4"
+#                 return mp4 if os.path.exists(mp4) else (path if os.path.exists(path) else None)
+#         except Exception as e:
+#             print(f"[user_extra_fields.py] _materialize_youtube_to_file_id | download error: {e}")
+#             return None
+
+#     loop = asyncio.get_running_loop()
+#     path = await loop.run_in_executor(None, _download)
+#     if not path or not os.path.exists(path):
+#         print(f"[user_extra_fields.py] _materialize_youtube_to_file_id | no file | url={url}")
+#         return None
+
+#     file_id = None
+#     msg_id = None
+#     try:
+#         msg = await bot.send_video(chat_id, FSInputFile(path), disable_notification=True)
+#         msg_id = getattr(msg, "message_id", None)
+#         if getattr(msg, "video", None) and msg.video.file_id:
+#             file_id = msg.video.file_id
+#     except Exception as e:
+#         print(f"[user_extra_fields.py] _materialize_youtube_to_file_id | send_video error: {e}")
+#     finally:
+#         # удалить сервисное сообщение (если получилось отправить)
+#         if msg_id:
+#             try:
+#                 await bot.delete_message(chat_id, msg_id)
+#             except Exception:
+#                 pass
+#         # удалить временные файлы
+#         try:
+#             folder = os.path.dirname(path)
+#             if os.path.exists(path):
+#                 os.remove(path)
+#             try:
+#                 os.rmdir(folder)
+#             except Exception:
+#                 pass
+#         except Exception as e:
+#             print(f"[user_extra_fields.py] _materialize_youtube_to_file_id | cleanup error: {e}")
+
+#     print(f"[user_extra_fields.py] _materialize_youtube_to_file_id | result_file_id={file_id}")
+#     return file_id
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ПУБЛИЧНЫЙ ВХОД (запускает мастер доп. полей)
@@ -229,6 +322,24 @@ async def _ask_current_field(ev, state: FSMContext):
         last_bot_messages[chat_id] = [msg.message_id]
         print(f"[user_extra_fields] ask select chat={chat_id}, idx={idx}, key={key}, options={len(options)}")
         return
+    
+    # video
+    if ftype == "video":
+        rows = _controls_row()
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
+        msg = await send(
+            f"{title}\n\n{cur_line}\n\n"
+            "Отправьте <b>видео одним сообщением</b>:\n"
+            "• как «Видео» (желательно), или\n"
+            "• как «Файл» с видео-типом, или\n"
+            "• <b>ссылку на YouTube</b> — мы подготовим и встроим в карточку.\n\n"
+            "<i>Будет сохранён</i> <code>file_id</code> <i>для встраивания в карточку.</i>",
+            reply_markup=kb, parse_mode="HTML"
+        )
+        last_bot_messages[chat_id] = [msg.message_id]
+        await state.set_state(UserExtraFieldStates.waiting_video)
+        print(f"[user_extra_fields] ask video chat={chat_id}, idx={idx}, key={key}, required={required}")
+        return
 
     # неизвестный тип — просто перескочим дальше
     await _advance_index_only(state)
@@ -333,6 +444,75 @@ async def user_extra_value_message(message: Message, state: FSMContext):
         return
 
     await _advance_with_value(message, state, txt)
+
+# 4.1 Поймать «настоящее» видео
+@router.message(UserExtraFieldStates.waiting_video, F.video)
+async def user_extra_video_by_video(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    file_id = message.video.file_id
+    print(f"[user_extra_fields] got video (video) chat={chat_id}, file_id={file_id}")
+    await _advance_with_value(message, state, file_id)
+
+# 4.2 Поймать «файл» с видео mime-type
+@router.message(UserExtraFieldStates.waiting_video, F.document)
+async def user_extra_video_by_document(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    doc = message.document
+    if doc and doc.mime_type and doc.mime_type.startswith("video/"):
+        file_id = doc.file_id
+        print(f"[user_extra_fields] got video (document) chat={chat_id}, file_id={file_id}, mime={doc.mime_type}")
+        await _advance_with_value(message, state, file_id)
+        return
+
+    # Если это не видео-файл — попросим снова
+    kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
+    msg = await message.answer("Это не видео-файл. Отправьте видео (как видео или как файл с типом video/*).", reply_markup=kb)
+    last_bot_messages[chat_id] = [msg.message_id]
+    print(f"[user_extra_fields] bad document (not video) chat={chat_id}, mime={getattr(doc, 'mime_type', None)}")
+
+# 4.3 Любой другой контент — мягкая ошибка
+# 4.4 Поймать текстовую ссылку на видео (например, YouTube) → МАТЕРИАЛИЗАЦИЯ
+@router.message(UserExtraFieldStates.waiting_video, F.text)
+async def user_extra_video_by_text(message: Message, state: FSMContext):
+    """
+    YouTube: сохраняем ссылку как значение поля БЕЗ скачивания.
+    Дальше мастер полей идёт на следующий шаг.
+    """
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+
+    txt = (message.text or "").strip()
+    low = txt.lower()
+
+    if txt.startswith("http") and ("youtube.com" in low or "youtu.be" in low):
+        print(f"[user_extra_fields.py] user_extra_video_by_text | save url | chat_id={chat_id} | url={txt}")
+        # важное: сохраняем URL и двигаемся дальше
+        await _advance_with_value(message, state, txt)
+        return
+
+    # не ссылка на видео
+    kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
+    msg = await message.answer(
+        "Это не ссылка на видео. Отправьте видео-файл или ссылку на YouTube.",
+        reply_markup=kb
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    print(f"[user_extra_fields.py] user_extra_video_by_text | bad text | chat_id={chat_id} | text={txt}")
+
+
+@router.message(UserExtraFieldStates.waiting_video)
+async def user_extra_video_wrong_content(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
+    msg = await message.answer("Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
+    last_bot_messages[chat_id] = [msg.message_id]
+    print(f"[user_extra_fields] wrong content while waiting_video chat={chat_id}, content_type={message.content_type}")
+
+
+
 
 @router.callback_query(F.data.regexp(r"^extra:checkbox:(0|1)$"))
 async def user_extra_checkbox(cb: CallbackQuery, state: FSMContext):

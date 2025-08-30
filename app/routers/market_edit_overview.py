@@ -21,6 +21,10 @@ router = Router()
 class OneFieldStates(StatesGroup):
     waiting_value = State()  # для text/number; checkbox/select идут коллбэками
 
+# Дополнительные состояния для ожидания видео при редактировании одного поля
+class ExtraVideoStates(StatesGroup):
+    waiting_video = State()
+
 
 # ─────────────────────────────────────────────────────────
 # Внутренние утилиты
@@ -49,6 +53,18 @@ def _fmt(val):
         return "Да" if val else "Нет"
     if isinstance(val, list):
         return ", ".join(map(str, val))
+    # строки для видео: если это file_id, скрываем идентификатор; если ссылка — обозначаем
+    if isinstance(val, str):
+        sval = val.strip()
+        low = sval.lower()
+        # Для видео вообще не «болтаем» текст в карточке — показываем превью ниже
+        if "youtube.com" in low or "youtu.be" in low:
+            return "—"
+        if len(sval) > 20 and " " not in sval:
+            # file_id: тоже «—», реальное превью отправим отдельно
+            return "—"
+        return sval
+
     return str(val)
 
 def _controls_cancel(listing_id: int):
@@ -74,6 +90,22 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
         listing = await _get_listing(s, listing_id)
         city, cat = await _get_city_cat(s, listing)
         defs = await _load_category_fields(s, listing.category_id)
+
+    # Найдём значение видео в flex по определению полей (для последующей отправки ниже)
+    video_value: str | None = None
+    try:
+        flex_vals = json.loads(listing.flex) if listing.flex else {}
+        if not isinstance(flex_vals, dict):
+            flex_vals = {}
+    except Exception:
+        flex_vals = {}
+    for f in defs:
+        if str(f.get("type", "")).lower() == "video":
+            key = (str(f.get("key", "")).strip().lower() or "field")
+            val = flex_vals.get(key)
+            if isinstance(val, str):
+                video_value = val.strip()
+            break
 
     # flex значения
     try:
@@ -116,8 +148,31 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
     rows.append([InlineKeyboardButton(text="⬅️ Назад к объявлению", callback_data=f"listing:{listing_id}:{city.slug}:{cat.slug}:my")])
 
     text = "\n".join(lines)
+    # Сначала отправляем карточку объявления
     msg = await send(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
-    last_bot_messages[chat_id] = [msg.message_id]
+    message_ids = [msg.message_id]
+    # Затем отправляем превью видео, если оно есть (чтобы оно шло ПОСЛЕ карточки)
+    if video_value:
+        sval = str(video_value).strip()
+        low = sval.lower()
+        try:
+            if sval.startswith("http") and ("youtube.com" in low or "youtu.be" in low):
+                # Это ссылка → пусть Telegram сделает web-preview прямо в чате
+                vmsg = await bot.send_message(chat_id, sval, disable_web_page_preview=False)
+                message_ids.append(vmsg.message_id)
+            else:
+                # Похоже на file_id → нативное видео Telegram
+                vmsg = await bot.send_video(chat_id, sval)
+                message_ids.append(vmsg.message_id)
+        except Exception:
+            # Резерв: просто текстом
+            try:
+                vmsg2 = await bot.send_message(chat_id, sval)
+                message_ids.append(vmsg2.message_id)
+            except Exception:
+                pass
+
+    last_bot_messages[chat_id] = message_ids
 
     print(
         f"FUNC: {_render_overview.__name__} | chat_id={chat_id} | listing_id={listing_id} | "
@@ -305,6 +360,40 @@ async def ef_edit_extra(cb: CallbackQuery, state: FSMContext):
         msg = await cb.message.answer(f"{title}\n\n{cur_line}\n\nВыберите вариант:", reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
 
+    elif ftype == "video":
+        # Запрос на редактирование видео-поля. Покажем текущее видео (если есть) и попросим
+        # пользователя отправить новое видео или ссылку на YouTube в одном сообщении.
+        # Кнопка «Отменить» позволит вернуться к обзору.
+        kb = _controls_cancel(listing_id)
+        header = f"{title}\n\n{cur_line}\n\n"
+        header += (
+            "Отправьте одно сообщение с видео (как Видео или как файл)\n"
+            "или пришлите ссылку на YouTube."
+        )
+        # Отправляем текущее значение: если это file_id (длинная строка без пробелов), то видео;
+        # если это ссылка, просто текстом (Telegram сделает превью)
+        sent_preview = False
+        if isinstance(cur_val, str):
+            sval = cur_val.strip()
+            low = sval.lower()
+            try:
+                if (len(sval) > 20 and " " not in sval) and ("http" not in low and "://" not in sval):
+                    vmsg = await cb.message.answer_video(sval)
+                    sent_preview = True
+                    last_bot_messages.setdefault(chat_id, []).append(vmsg.message_id)
+                elif "youtube.com" in low or "youtu.be" in low or ("http" in low or "://" in sval):
+                    tmsg = await cb.message.answer(sval)
+                    sent_preview = True
+                    last_bot_messages.setdefault(chat_id, []).append(tmsg.message_id)
+            except Exception:
+                pass
+        # Теперь отправляем инструкцию
+        msg = await cb.message.answer(header, reply_markup=kb, parse_mode="HTML")
+        last_bot_messages[chat_id] = last_bot_messages.get(chat_id, []) + [msg.message_id]
+        # Устанавливаем режим ожидания видео
+        await state.update_data(ef_mode="extra_video", ef_field=key, ef_listing_id=listing_id)
+        await state.set_state(ExtraVideoStates.waiting_video)
+
     elif ftype == "select":
         buttons = [InlineKeyboardButton(text=str(opt), callback_data=f"efx:select:{i}:{key}:{listing_id}") for i, opt in enumerate(opts)]
         row_len = 3 if len(buttons) > 6 else 2
@@ -389,3 +478,129 @@ async def ef_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer()
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | cancel | listing_id={l_id}")
+
+
+# ─────────────────────────────────────────────────────────
+# Обработчики ввода видео при редактировании одного поля
+# ─────────────────────────────────────────────────────────
+
+@router.message(ExtraVideoStates.waiting_video, F.video)
+async def efx_video_by_video(message: Message, state: FSMContext):
+    """
+    Сохраняет загруженное видео (как file_id) в flex и возвращает к обзору.
+    """
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    data = await state.get_data()
+    key = data.get("ef_field")
+    l_id = data.get("ef_listing_id")
+    if not key or not l_id:
+        # потерян контекст, просто выходим
+        await state.clear()
+        return
+    file_id = message.video.file_id
+    async with SessionLocal() as s:
+        listing = await _get_listing(s, int(l_id))
+        # загрузить текущее flex
+        try:
+            flex = json.loads(listing.flex) if listing.flex else {}
+            if not isinstance(flex, dict):
+                flex = {}
+        except Exception:
+            flex = {}
+        flex[key] = file_id
+        listing.flex = json.dumps(flex, ensure_ascii=False) if flex else None
+        await s.commit()
+    # показываем обновлённый обзор
+    await _render_overview(chat_id, message.bot, message.answer, int(l_id))
+    await state.clear()
+
+@router.message(ExtraVideoStates.waiting_video, F.document)
+async def efx_video_by_document(message: Message, state: FSMContext):
+    """
+    Обрабатывает сообщение-документ. Если документ является видео (mime_type
+    начинается с video/), сохраняем file_id. Иначе просим повторить.
+    """
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    data = await state.get_data()
+    key = data.get("ef_field")
+    l_id = data.get("ef_listing_id")
+    if not key or not l_id:
+        await state.clear()
+        return
+    doc = message.document
+    if doc and doc.mime_type and doc.mime_type.startswith("video/"):
+        file_id = doc.file_id
+        async with SessionLocal() as s:
+            listing = await _get_listing(s, int(l_id))
+            try:
+                flex = json.loads(listing.flex) if listing.flex else {}
+                if not isinstance(flex, dict):
+                    flex = {}
+            except Exception:
+                flex = {}
+            flex[key] = file_id
+            listing.flex = json.dumps(flex, ensure_ascii=False) if flex else None
+            await s.commit()
+        await _render_overview(chat_id, message.bot, message.answer, int(l_id))
+        await state.clear()
+        return
+    # не видео
+    kb = _controls_cancel(int(l_id))
+    msg = await message.answer("Это не видео-файл. Отправьте видео (как видео или файл).", reply_markup=kb)
+    last_bot_messages[chat_id] = [msg.message_id]
+
+@router.message(ExtraVideoStates.waiting_video, F.text)
+async def efx_video_by_text(message: Message, state: FSMContext):
+    """
+    Обрабатывает текстовое сообщение. Если это ссылка на YouTube, сохраняем её.
+    Иначе просим отправить корректное видео.
+    """
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    data = await state.get_data()
+    key = data.get("ef_field")
+    l_id = data.get("ef_listing_id")
+    if not key or not l_id:
+        await state.clear()
+        return
+    txt = (message.text or "").strip()
+    low = txt.lower()
+    if ("youtube.com" in low or "youtu.be" in low) and txt.startswith("http"):
+        # сохраняем ссылку
+        async with SessionLocal() as s:
+            listing = await _get_listing(s, int(l_id))
+            try:
+                flex = json.loads(listing.flex) if listing.flex else {}
+                if not isinstance(flex, dict):
+                    flex = {}
+            except Exception:
+                flex = {}
+            flex[key] = txt
+            listing.flex = json.dumps(flex, ensure_ascii=False) if flex else None
+            await s.commit()
+        await _render_overview(chat_id, message.bot, message.answer, int(l_id))
+        await state.clear()
+        return
+    # не ссылка
+    kb = _controls_cancel(int(l_id))
+    msg = await message.answer(
+        "Это не ссылка на видео. Отправьте видео-файл или ссылку на YouTube.", reply_markup=kb
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+
+@router.message(ExtraVideoStates.waiting_video)
+async def efx_video_wrong_content(message: Message, state: FSMContext):
+    """
+    Обрабатывает любой другой контент в режиме ожидания видео. Просим отправить
+    корректный видео-файл или ссылку.
+    """
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    data = await state.get_data()
+    l_id = data.get("ef_listing_id")
+    # покажем стандартную клавиатуру «Отменить»
+    kb = _controls_cancel(int(l_id)) if l_id else None
+    msg = await message.answer("Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
+    last_bot_messages[chat_id] = [msg.message_id]
