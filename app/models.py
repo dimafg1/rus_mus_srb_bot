@@ -82,6 +82,17 @@ class Listing(SQLModel, table=True):
     # определённых в Category.fields, а значения — ответы пользователя.
     flex: Optional[str] = Field(default=None, sa_column=Column(Text))
 
+    extra_category_id1: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("category.id", ondelete="SET NULL"), index=True, nullable=True),
+    )
+
+    extra_category_id2: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("category.id", ondelete="SET NULL"), index=True, nullable=True),
+    )
+
+
 
 # ─────────────────────────────────────────────────────────
 # Vacancy (биржа музыкантов)

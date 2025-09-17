@@ -1,3 +1,20 @@
+# --- simple env loader (.env.ai) ---
+import os
+from pathlib import Path
+def _load_env_ai():
+    env_path = Path(__file__).resolve().parent.parent / ".env.ai"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip())
+_load_env_ai()
+# --- end env loader ---
+
+
 import asyncio
 from collections import defaultdict
 from typing import List, Dict, Optional
@@ -46,7 +63,13 @@ from app.keyboards import (
 from app.routers.market_add import router as market_add_router
 from app.routers.market_edit import router as market_edit_router   # 🔹 добавили
 
-from app.routers.vacancy import router as vacancy_router, VacancyForm
+from app.routers.services_add import router as services_add_router
+from app.routers.services_view import router as services_view_router
+from app.routers.services_edit_overview import router as services_edit_overview_router
+from app.routers.services_edit import router as services_edit_router
+
+
+
 from app.routers.utils import (
     clear_bot_messages,
     last_bot_messages,
@@ -76,7 +99,18 @@ from app.routers.user_extra_fields import router as user_extra_fields_router
 from app.routers.market_edit import router as market_edit_router
 from app.routers.market_edit_overview import router as market_edit_overview_router
 
+# импорты рядом с остальными роутерами
+from app.routers.vacancy_add import router as vacancy_add_router
+from app.routers.vacancy_view import router as vacancy_view_router
+from app.routers.vacancy_utils import vacancy_main_menu
+from app.routers.vacancy_edit import router as vacancy_edit_router
+# from app.routers.vacancy_edit_overview import router as vacancy_edit_overview_router
 
+from app.routers.codex_review import router as codex_review_router
+
+def setup_routers(dp):
+    # ... ваши остальные роутеры ...
+    dp.include_router(codex_review_router)
 
 
 
@@ -131,28 +165,35 @@ from app.routers.admin_panel import router as admin_panel_router
 dp.include_router(admin_panel_router)
 dp.include_router(admin_fields_router)
 dp.include_router(market_edit_overview_router)
+dp.include_router(services_edit_router)
+dp.include_router(vacancy_add_router)
+dp.include_router(vacancy_view_router)
+dp.include_router(vacancy_edit_router)
+dp.include_router(codex_review_router)
+print("[routers] codex_review_router included")
+# dp.include_router(vacancy_edit_overview_router)
 
-# ───────── FSM for forms ─────────
-class CatalogForm(VacancyForm):
-    category_choice: State = State()
-    name: State = State()
-    address: State = State()
-    photo: State = State()
-    description: State = State()
-    repo: State = State()
+# # ───────── FSM for forms ─────────
+# class CatalogForm(VacancyForm):
+#     category_choice: State = State()
+#     name: State = State()
+#     address: State = State()
+#     photo: State = State()
+#     description: State = State()
+#     repo: State = State()
 
-class ExtendedVacancyForm(VacancyForm):
-    text: State = State()
+# class ExtendedVacancyForm(VacancyForm):
+#     text: State = State()
 
-class EventForm(VacancyForm):
-    date: State = State()
-    details: State = State()
+# class EventForm(VacancyForm):
+#     date: State = State()
+#     details: State = State()
 
 
 
 dp.include_router(market_add_router)
 dp.include_router(market_edit_router)
-dp.include_router(vacancy_router)
+# dp.include_router(vacancy_router)
 dp.include_router(feedback.router)
 dp.include_router(user_extra_fields_router)
 
@@ -162,12 +203,17 @@ from app.routers.catalog_add import router as catalog_add_router
 dp.include_router(catalog_view_router)
 dp.include_router(catalog_add_router)
 
+dp.include_router(services_add_router)
+dp.include_router(services_view_router)
+dp.include_router(services_edit_overview_router)
+print("[routers] services_edit_overview_router included")
+
 
 @dp.callback_query(F.data == "go_isk")
 async def go_isk(cb: CallbackQuery, state: FSMContext):
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
-    markup = await vacancy_main_inline_view("vcity")
-    await safe_edit_or_send(cb, await get_text("vacancy_choose_city", "ru"), markup)
+    await state.clear()
+    kb = await vacancy_main_menu()  # новое динамическое меню «Вакансии»
+    await cb.message.edit_text("Раздел «Вакансии»", reply_markup=kb, parse_mode="HTML")
     await cb.answer()
 
 
@@ -237,12 +283,12 @@ async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
 
 
 
-# ↓↓↓ обновленный хендлер ↓↓↓
+# ↓↓↓ обновленный хендлер (замените целиком) ↓↓↓
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
 
-    # 0) Диагностика перед удалением
+    # Диагностика до очистки
     print(
         f"[BEFORE] main_menu_cb | chat_id={chat_id} | "
         f"query_cached={last_search_query_message.get(chat_id)} | "
@@ -250,32 +296,56 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
         f"bot_msgs={last_bot_messages.get(chat_id)}"
     )
 
-    # 1) Удаляем сообщение, по которому нажали
+    # 1) Удаляем сообщение, по которому нажали кнопку
     try:
         await cb.message.delete()
     except Exception:
         pass
 
-    # 2) Достаём id из кэшей поиска (и логируем)
+    # 2) Чистим «Возврат» и «Подсказку» из FSM (это и есть недостающий шаг)
+    try:
+        # хелпер из vacancy_add.py — удаляет и nav_msg_id, и prompt_id, если они есть
+        from app.routers.vacancy_add import _drop_nav_and_prompt
+        await _drop_nav_and_prompt(state, chat_id, cb.bot)
+    except Exception:
+        # Фоллбэк: ручное удаление, если импорт не удался
+        data = await state.get_data()
+        for key in ("nav_msg_id", "prompt_id"):
+            mid = data.get(key)
+            if mid:
+                try:
+                    await cb.bot.delete_message(chat_id, mid)
+                except Exception:
+                    pass
+        await state.update_data(nav_msg_id=None, prompt_id=None)
+
+    # 3) Вычищаем кэши поиска (как у вас было)
     qid = last_search_query_message.pop(chat_id, None)
     mid = last_search_menu_message.pop(chat_id, None)
     print(f"[POP] main_menu_cb | query_id={qid} | menu_id={mid}")
-
-    # 3) Удаляем эти сообщения, если есть
     for msg_id in (qid, mid):
-        if msg_id and msg_id != getattr(cb.message, "message_id", None):
+        if msg_id:
             try:
                 await cb.bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
 
-    # 4) Подчистка прочих служебных
+    # 4) Общая подчистка прочих служебных сообщений бота
     await clear_bot_messages(chat_id, cb.bot)
+
+    # 5) Сброс состояния
     await state.clear()
 
-    # 5) Рисуем главное меню
-    welcome = await get_text("welcome", "ru") or "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
+    # 6) Рисуем главное меню (без редактирования удалённого сообщения — просто answer)
+    try:
+        welcome = await get_text("welcome", "ru")
+    except Exception:
+        welcome = None
+    welcome = welcome or "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
+
     menu_markup = await build_main_menu(lang="ru")
+
+    # Добавим «Админ-панель», как у вас
     try:
         from aiogram.types import InlineKeyboardButton
         from app.routers.admin_panel import is_admin
@@ -290,11 +360,13 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
                     [InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")]
                 )
     except Exception:
-        pass    
-    await safe_edit_or_send(cb, welcome, menu_markup)
+        pass
+
+    # ВАЖНО: используем .answer, а не safe_edit_or_send — редактировать уже нечего
+    await cb.message.answer(welcome, reply_markup=menu_markup, parse_mode="HTML")
     await cb.answer()
 
-    # 6) Диагностика после
+    # Диагностика после
     print(
         f"[AFTER] main_menu_cb | chat_id={chat_id} | "
         f"query_cached={last_search_query_message.get(chat_id)} | "
@@ -381,106 +453,47 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data.startswith("vcity:"))
-async def vacancy_isk_city(cb: CallbackQuery, state: FSMContext):
-    _, city_slug = cb.data.split(":", 1)
-    city = await city_by_slug(city_slug)
-    await safe_edit_or_send(cb, f"🤝 Ищу → {city.name}\nВыберите направление для просмотра анкет:", 
-                                 reply_markup=vacancy_category_inline())
-    await cb.answer()
+# @dp.callback_query(F.data.startswith("vcity:"))
+# async def vacancy_isk_city(cb: CallbackQuery, state: FSMContext):
+#     _, city_slug = cb.data.split(":", 1)
+#     city = await city_by_slug(city_slug)
+#     await safe_edit_or_send(cb, f"🤝 Ищу → {city.name}\nВыберите направление для просмотра анкет:", 
+#                                  reply_markup=vacancy_category_inline())
+#     await cb.answer()
 
-@dp.callback_query(F.data == "vacancy:back")
-async def vacancy_back(cb: CallbackQuery):
-    await safe_edit_or_send(cb, "🤝 Ищу – выберите действие:", reply_markup=vacancy_main_inline_view("vcity"))
-    await cb.answer()
+# @dp.callback_query(F.data == "vacancy:back")
+# async def vacancy_back(cb: CallbackQuery):
+#     await safe_edit_or_send(cb, "🤝 Ищу – выберите действие:", reply_markup=vacancy_main_inline_view("vcity"))
+#     await cb.answer()
 
-@dp.callback_query(F.data.startswith("vcat:"))
-async def vacancy_category(cb: CallbackQuery, state: FSMContext):
-    data = cb.data.split(":", 1)[1]
-    if data == "musicians":
-        await safe_edit_or_send(cb, "Выберите подкатегорию для 'Музыканты':", reply_markup=musicians_sub_inline())
-    elif data == "back":
-        await safe_edit_or_send(cb, "Выберите направление:", reply_markup=vacancy_category_inline())
-    else:
-        await state.update_data(category=data)
-        await safe_edit_or_send(cb, f"Показываем анкеты по направлению <b>{data.capitalize()}</b>...", 
-                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                         [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
-                                     ]))
-    await cb.answer()
+# @dp.callback_query(F.data.startswith("vcat:"))
+# async def vacancy_category(cb: CallbackQuery, state: FSMContext):
+#     data = cb.data.split(":", 1)[1]
+#     if data == "musicians":
+#         await safe_edit_or_send(cb, "Выберите подкатегорию для 'Музыканты':", reply_markup=musicians_sub_inline())
+#     elif data == "back":
+#         await safe_edit_or_send(cb, "Выберите направление:", reply_markup=vacancy_category_inline())
+#     else:
+#         await state.update_data(category=data)
+#         await safe_edit_or_send(cb, f"Показываем анкеты по направлению <b>{data.capitalize()}</b>...", 
+#                                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+#                                          [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
+#                                      ]))
+#     await cb.answer()
 
-@dp.callback_query(F.data.startswith("vsub:"))
-async def vacancy_sub_category(cb: CallbackQuery, state: FSMContext):
-    sub = cb.data.split(":", 1)[1]
-    await state.update_data(category=sub)
-    await safe_edit_or_send(cb, f"Показываем анкеты по подкатегории <b>{sub.capitalize()}</b>...", 
-                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
-                                 ]))
-    await cb.answer()
-
-@dp.message(ExtendedVacancyForm.text)
-async def receive_vacancy_text(m: Message, state: FSMContext):
-    await m.answer("Ваше объявление отправлено на модерацию (функционал в разработке).", 
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="OK", callback_data="confirm:yes")]
-                    ]))
-    await state.clear()
+# @dp.callback_query(F.data.startswith("vsub:"))
+# async def vacancy_sub_category(cb: CallbackQuery, state: FSMContext):
+#     sub = cb.data.split(":", 1)[1]
+#     await state.update_data(category=sub)
+#     await safe_edit_or_send(cb, f"Показываем анкеты по подкатегории <b>{sub.capitalize()}</b>...", 
+#                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+#                                      [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
+#                                  ]))
+#     await cb.answer()
 
 
-@dp.callback_query(F.data.startswith("pcity:"))
-async def predl_city(cb: CallbackQuery, state: FSMContext):
-    _, city_slug = cb.data.split(":", 1)
-    city = await city_by_slug(city_slug)
-    await safe_edit_or_send(cb, f"🗣 Предлагаю → {city.name}\nВыберите направление для просмотра анкет:", 
-                                 reply_markup=vacancy_category_inline())
-    await cb.answer()
 
-@dp.callback_query(F.data == "pcity_start")
-async def predl_start_cb(cb: CallbackQuery, state: FSMContext):
-    await safe_edit_or_send(cb, "🗣 Разместить объявление – выберите город:", 
-                                 reply_markup=vacancy_main_inline_view("pcity"))
-    await state.clear()
-    await state.set_state(ExtendedVacancyForm.city)
-    await cb.answer()
 
-# -------- АФИША --------
-
-@dp.callback_query(F.data.startswith("ecity:"))
-async def events_city(cb: CallbackQuery, state: FSMContext):
-    _, city_slug = cb.data.split(":", 1)
-    city = await city_by_slug(city_slug)
-    await safe_edit_or_send(cb, f"📅 Афиша → {city.name}\nПока нет опубликованных мероприятий.\nНажмите '➕ Разместить информацию' для добавления.")
-    await cb.answer()
-
-@dp.callback_query(F.data == "event_new")
-async def event_new_cb(cb: CallbackQuery, state: FSMContext):
-    await safe_edit_or_send(cb, "➕ Разместить информацию – введите дату и время мероприятия (например, 2025-05-10 19:00):")
-    await state.set_state(EventForm.date)
-    await cb.answer()
-
-@dp.callback_query(F.data == "events:back")
-async def events_back(cb: CallbackQuery):
-    await safe_edit_or_send(cb, "📅 Афиша – выберите действие:", reply_markup=events_main_inline())
-    await cb.answer()
-
-@dp.message(EventForm.date)
-async def get_event_date(m: Message, state: FSMContext):
-    await state.update_data(date=m.text)
-    await m.answer("Введите дополнительные детали мероприятия (место, описание и т.д.):")
-    await state.set_state(EventForm.details)
-
-@dp.message(EventForm.details)
-async def get_event_details(m: Message, state: FSMContext):
-    data = await state.get_data()
-    data["details"] = m.text
-    summary = f"Дата и время: {data.get('date')}\nДетали: {data.get('details')}"
-    await m.answer(f"Проверьте информацию о мероприятии:\n\n{summary}\n\nПодтвердите размещение.", 
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="Да", callback_data="confirm:yes"),
-                         InlineKeyboardButton(text="Нет", callback_data="confirm:no")]
-                    ]))
-    await state.clear()
 
 @dp.message(Command("myid"))
 async def get_my_id(message: Message):

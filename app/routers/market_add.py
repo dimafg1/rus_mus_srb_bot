@@ -47,6 +47,8 @@ import sys; print("PYTHONPATH:", sys.path)
 from app.routers.utils import safe_edit_or_send
 import json
 
+from html import escape as _esc
+
 print("my_listing_messages:", type(my_listing_messages))
 
 
@@ -56,6 +58,39 @@ router = Router(name="market_addl")
 media_group_cache = {}
 media_group_tasks = {}
 media_group_wait_msg = {}
+
+# RU: фиксируем и чистим пользовательские медиа-сообщения (фото/видео/URL)
+_user_media_msgs = defaultdict(list)
+
+async def _remember_and_delete_user_media(msg: Message):
+    """Запомнить и удалить пользовательское медиа/текст (с URL-превью)."""
+    try:
+        _user_media_msgs[msg.chat.id].append(msg.message_id)
+    except Exception:
+        pass
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+async def _clear_user_media(chat_id: int, bot):
+    """Дочистить все запомненные пользовательские сообщения (на всякий случай)."""
+    ids = _user_media_msgs.pop(chat_id, [])
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+
+
+def _first_lines(text: str, n: int = 3) -> str:
+    """Вернуть первые n строк (если строк больше — добавить «…»)."""
+    if not text:
+        return ""
+    lines = str(text).splitlines()
+    if len(lines) <= n:
+        return "\n".join(lines)
+    return "\n".join(lines[:n]) + "\n…"
 
 # --- Универсальная клавиатура для навигации ---
 async def sell_nav_keyboard(lang="ru"):
@@ -214,6 +249,53 @@ class Sell(StatesGroup):
     confirm = State()
 
 # ─────────────────── helpers ───────────────
+# async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lang="ru"):
+    # left = 3 - photo_count
+    # if photo_count == 0:
+    #     text_main = (
+    #         await get_text('sell_photo_0_main', lang)
+    #         or "Send a <b>photo</b> (up to 3). You can send all at once or one by one.\nIf you select more than three, only the first three will be attached."
+    #     )
+    #     text_tip = (
+    #         await get_text('sell_photo_0_tip', lang)
+    #         or "To upload a photo, click the 📎 to the left of the message box\n⬇️"
+    #     )
+    # elif left == 2:
+    #     text_main = (
+    #         await get_text('sell_photo_1_main', lang)
+    #         or "Photo added (1/3).\nYou can add <b>2 more</b> photos, skip this step, or cancel posting."
+    #     )
+    #     text_tip = (
+    #         await get_text('sell_photo_1_tip', lang)
+    #         or "To add more, click the 📎 again on the left\n⬇️"
+    #     )
+    # elif left == 1:
+    #     text_main = (
+    #         await get_text('sell_photo_2_main', lang)
+    #         or "Photo added (2/3).\nYou can add <b>1 more</b> photo, skip this step, or cancel posting."
+    #     )
+    #     text_tip = (
+    #         await get_text('sell_photo_2_tip', lang)
+    #         or "To add more, click the 📎 again on the left\n⬇️"
+    #     )
+    # else:
+    #     text_main = (
+    #         await get_text('sell_photo_max_main', lang)
+    #         or "Something went wrong! Maximum is 3 photos."
+    #     )
+    #     text_tip = ""
+
+    # msg = await m.answer(text_main, reply_markup=photo_keyboard(photo_count))
+    # msg2 = None
+    # last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    # if text_tip:
+    #     msg2 = await m.answer(text_tip)
+    #     last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
+    #     await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
+    # else:
+    #     await state.update_data(photo_prompt_msgs=[msg.message_id])
+
+# RU: Запрос фотографий — СНАЧАЛА «что уже ввели», ПОТОМ инструкция по фото.
 async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lang="ru"):
     left = 3 - photo_count
     if photo_count == 0:
@@ -250,15 +332,49 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lan
         )
         text_tip = ""
 
-    msg = await m.answer(text_main, reply_markup=photo_keyboard(photo_count))
-    msg2 = None
+    # — «что уже ввели» (вверху) —
+    import html as _html
+    data   = await state.get_data()
+    _title = (data.get("title") or "").strip()
+    _descr = (data.get("descr") or "").strip()
+    _price = (data.get("price") or "").strip()
+
+    if _descr:
+        _lines = _descr.splitlines()
+        _descr_short = "\n".join(_lines[:3]) + ("\n…" if len(_lines) > 3 else "")
+    else:
+        _descr_short = ""
+
+    helper = (
+        "<b>Вы уже ввели</b>\n"
+        f"• Заголовок: <i>{_html.escape(_title) if _title else '—'}</i>\n"
+        f"• Описание: <i>{_html.escape(_descr_short) if _descr_short else '—'}</i>\n"
+        f"• Стоимость: <i>{_html.escape(_price) if _price else '—'}</i>"
+    )
+
+    # — порядок: helper → пустая строка → инструкция —
+    text_main = f"{helper}\n\n{text_main}"
+
+    msg = await m.answer(
+        text_main,
+        reply_markup=photo_keyboard(photo_count),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+
+    msg2 = None
     if text_tip:
         msg2 = await m.answer(text_tip)
         last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
         await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
     else:
         await state.update_data(photo_prompt_msgs=[msg.message_id])
+
+    print(
+        f"[market_add.py] send_photo_prompt ✓ | chat_id={m.chat.id} | user_id={m.from_user.id} | "
+        f"photo_count={photo_count} | msg_id={msg.message_id} | msg2_id={getattr(msg2, 'message_id', None)}"
+    )
 
 
 # ─────────────────── /sell start ───────────
@@ -371,63 +487,92 @@ async def sell_extras_done(cb: CallbackQuery, state: FSMContext):
 
 
 # ─────────────── шаг 3 – title ─────────────
+# RU: Шаг «Заголовок» — сохраняем, удаляем сообщение пользователя,
+#     выводим СНАЧАЛА «что уже ввели», ПОТОМ инструкцию для описания.
 @router.message(Sell.title, F.text)
 async def sell_title(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    await state.update_data(title=m.text.strip())
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    try:
+        await m.delete()
+    except Exception:
+        pass
+
+    title = (m.text or "").strip()
+    await state.update_data(title=title)
     await state.set_state(Sell.descr)
-    # сначала описание
+
     template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
-    await send_with_nav(m, template, parse_mode="HTML")
 
+    # — СНАЧАЛА «что уже ввели», затем инструкция —
+    from html import escape as _esc
+    helper = (
+        "<b>Вы уже ввели</b>\n"
+        f"• Заголовок: <i>{_esc(title) or '—'}</i>"
+    )
+    msg = await send_with_nav(m, f"{helper}\n\n{template}", parse_mode="HTML")
 
+    print(f"[market_add.py] sell_title ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=title | msg_id={getattr(msg,'message_id','-')}")
 
-
-# ─────────────── шаг 3 – title ─────────────
-# @router.message(Sell.title, F.text)
-# async def sell_title(m: Message, state: FSMContext):
-#     await clear_bot_messages(m.chat.id, m.bot)
-#     await state.update_data(title=m.text.strip())
-#     await state.set_state(Sell.price)
-#     # --- Получаем текст из базы ---
-#     template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
-#     await send_with_nav(m, template, parse_mode="HTML")
 
 # ─────────────── шаг 4 – descr ─────────────
+# RU: Шаг «Описание» — сохраняем, удаляем сообщение пользователя,
+#     ПОКАЗЫВАЕМ СНАЧАЛА «что уже ввели» (заголовок + ≤3 строки описания),
+#     ПОТОМ инструкцию для стоимости.
 @router.message(Sell.descr)
 async def sell_descr(m: Message, state: FSMContext):
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    try:
+        await m.delete()
+    except Exception:
+        pass
+
     text = (m.text or "").strip()
     await state.update_data(descr=None if text == "-" else text)
     await state.set_state(Sell.price)
-    # затем цена (обязательна для Барахолки)
-    template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
-    await send_with_nav(m, template, parse_mode="HTML")
 
+    data = await state.get_data()
+    title = data.get("title") or ""
+    descr = "" if text == "-" else (text or "")
+    # первые 3 строки описания + «…» если длиннее
+    lines = descr.splitlines() if descr else []
+    descr_short = "\n".join(lines[:3]) + ("\n…" if len(lines) > 3 else "")
+
+    template = (await get_text('sell_ask_price', 'ru')) or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
+
+    # — СНАЧАЛА «что уже ввели», затем инструкция —
+    from html import escape as _esc
+    helper = (
+        "<b>Вы уже ввели</b>\n"
+        f"• Заголовок: <i>{_esc(title) or '—'}</i>\n"
+        f"• Описание: <i>{_esc(descr_short) or '—'}</i>"
+    )
+    msg = await send_with_nav(m, f"{helper}\n\n{template}", parse_mode="HTML")
+
+    print(f"[market_add.py] sell_descr ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=descr | msg_id={getattr(msg,'message_id','-')}")
+
+# ─────────────── шаг 5 – price ─────────────
+# RU: Шаг «Стоимость» — сохраняем, удаляем сообщение, переходим к фото.
+#     (Если захотите — можно аналогично показать «Вы уже ввели» и на шаге фото.)
 @router.message(Sell.price, F.text)
 async def sell_price(m: Message, state: FSMContext):
-    await clear_bot_messages(m.chat.id, m.bot)
-    await state.update_data(price=(m.text or "").strip())
+    chat_id = m.chat.id
+    await clear_bot_messages(chat_id, m.bot)
+    try:
+        await m.delete()
+    except Exception:
+        pass
+
+    price = (m.text or "").strip()
+    await state.update_data(price=price)
     await state.set_state(Sell.photo)
-    await send_photo_prompt(m, 0, state)
 
-# ─────────────── шаг 4 – price ─────────────
-# @router.message(Sell.price, F.text)
-# async def sell_price(m: Message, state: FSMContext):
-#     await clear_bot_messages(m.chat.id, m.bot)
-#     await state.update_data(price=m.text.strip())
-#     await state.set_state(Sell.descr)
-#     # --- Получаем текст из базы ---
-#     template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
-#     await send_with_nav(m, template, parse_mode="HTML")
+    # Переход на ваш существующий промпт для фото
+    msg = await send_photo_prompt(m, 0, state)
 
+    print(f"[market_add.py] sell_price ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=price | msg_id={getattr(msg, 'message_id', '-')}")
 
-# ─────────────── шаг 5 – descr ─────────────
-# @router.message(Sell.descr)
-# async def sell_descr(m: Message, state: FSMContext):
-#     text = m.text.strip()
-#     await state.update_data(descr=None if text == "-" else text)
-#     await state.set_state(Sell.photo)
-#     await send_photo_prompt(m, 0, state)
 
 # ================== **ШАГ 6 — ФОТО** ==================
 @router.message(Sell.photo, F.photo)
@@ -437,6 +582,8 @@ async def sell_photo(m: Message, state: FSMContext):
         if group_id not in media_group_cache:
             media_group_cache[group_id] = []
         media_group_cache[group_id].append(m.photo[-1].file_id)
+        await _remember_and_delete_user_media(m)
+
         if group_id not in media_group_tasks:
             media_group_tasks[group_id] = None
             template = await get_text('sell_wait_photos', 'ru') or "⏳ Please wait — uploading photos…"
@@ -448,6 +595,8 @@ async def sell_photo(m: Message, state: FSMContext):
     photos = data.get("photos", []) or []
     if len(photos) < 3:
         photos.append(m.photo[-1].file_id)
+        await _remember_and_delete_user_media(m)
+
         photos = photos[:3]
         await state.update_data(photos=photos)
     if len(photos) >= 3:
@@ -530,6 +679,8 @@ async def delete_msg_cb(cb: CallbackQuery):
 @router.callback_query(Sell.photo, F.data == "sell_skip_photo")
 async def sell_skip_photo(cb: CallbackQuery, state: FSMContext):
     await delete_photo_prompts(cb.message, state)
+    await _clear_user_media(cb.message.chat.id, cb.bot)
+
     # await start_flex_flow(cb.message, state)
     await preview_and_confirm(cb.message, state)
     await state.set_state(Sell.confirm)
@@ -539,6 +690,8 @@ async def sell_skip_photo(cb: CallbackQuery, state: FSMContext):
 async def sell_cancel_photo(cb: CallbackQuery, state: FSMContext):
     await delete_photo_prompts(cb.message, state)
     await clear_bot_messages(cb.message.chat.id, cb.bot)
+    await _clear_user_media(cb.message.chat.id, cb.bot)
+
     
     # Сообщение об отмене (русский из БД, иначе английский дефолт)
     cancel_text = await get_text('sell_cancelled', lang="ru") or "❌ Listing creation cancelled."
@@ -770,12 +923,14 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
 
         # Убираем служебные сообщения
         await clear_bot_messages(chat_id, cb.bot)
+        await _clear_user_media(chat_id, cb.bot)
+
 
         # Экран «опубликовано» + предложение про доп. поля
         text_pub   = (await get_text('sell_published', 'ru')) or "✅ Объявление опубликовано! -db"
         text_extra = (await get_text('sell_extras_offer', 'ru')) or "При желании укажите дополнительные сведения для этой категории:"
         if isinstance(text_extra, str) and text_extra.strip().startswith("[Text not found"):
-            text_extra = "При желании укажите дополнительные сведения для этой категории:"
+            text_extra = "При желании укажите дополнительные сведения для этого объявления:"
 
         # Верхние действия
         # Получаем слаги для кнопки «К объявлению»

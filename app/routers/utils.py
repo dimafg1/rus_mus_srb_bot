@@ -12,6 +12,9 @@ from app.texts import get_text
 from PIL import Image, ImageDraw, ImageFont
 import tempfile
 import os
+from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+
 
 
 
@@ -50,15 +53,20 @@ async def clear_bot_messages(chat_id, bot):
     my_listing_messages[chat_id] = []
 
 # --- Функция для удаления подсказок о фото, если были ---
-async def delete_photo_prompts(message, state):
+async def delete_photo_prompts(message: Message, state: FSMContext):
     data = await state.get_data()
-    prompt_msgs = data.get("photo_prompt_msgs", [])
-    for msg_id in prompt_msgs:
+    ids = data.get("photo_prompt_msgs") or []
+    if isinstance(ids, int):
+        ids = [ids]
+    # удалим дубликаты, если вдруг были
+    for msg_id in set(ids):
         try:
             await message.bot.delete_message(message.chat.id, msg_id)
         except Exception:
             pass
     await state.update_data(photo_prompt_msgs=[])
+    print(f"[services_add.py] delete_photo_prompts ✓ | chat_id={message.chat.id} | ids={ids}")
+
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select

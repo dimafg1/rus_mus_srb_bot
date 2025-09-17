@@ -107,6 +107,10 @@ async def _go_flex_wizard(ev, state: FSMContext, listing: Listing, city_slug: st
 
 @router.callback_query(F.data.startswith("edit_listing:"))
 async def edit_listing_menu(cb: CallbackQuery, state: FSMContext):
+    try:
+        await m.delete()  # RU: удаляем ввод пользователя, чтобы не висел справа
+    except Exception:
+        pass
     listing_id = int(cb.data.split(":")[1])
     async with SessionLocal() as s:
         listing = await _get_listing(s, listing_id)
@@ -242,6 +246,10 @@ async def edit_back(cb: CallbackQuery, state: FSMContext):
 
 @router.message(EditListing.waiting_title)
 async def edit_title_apply(m: Message, state: FSMContext):
+    try:
+        await m.delete()  # RU: удаляем ввод пользователя, чтобы не висел справа
+    except Exception:
+        pass
     new_title = (m.text or "").strip()
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
@@ -267,6 +275,10 @@ async def edit_title_apply(m: Message, state: FSMContext):
 
 @router.message(EditListing.waiting_price)
 async def edit_price_apply(m: Message, state: FSMContext):
+    try:
+        await m.delete()  # RU: удаляем ввод пользователя, чтобы не висел справа
+    except Exception:
+        pass
     new_price = (m.text or "").strip()
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
@@ -292,6 +304,10 @@ async def edit_price_apply(m: Message, state: FSMContext):
 
 @router.message(EditListing.waiting_descr)
 async def edit_descr_apply(m: Message, state: FSMContext):
+    try:
+        await m.delete()  # RU: удаляем ввод пользователя, чтобы не висел справа
+    except Exception:
+        pass
     new_descr = (m.text or "").strip()
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")

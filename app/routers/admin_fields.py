@@ -12,6 +12,47 @@ from app.routers.utils import clear_bot_messages, last_bot_messages
 # берём проверку админа из admin_panel (важно: admin_panel НЕ должен импортировать этот файл)
 from app.routers.admin_panel import is_admin
 
+
+# # >>> BEGIN: extra categories helpers
+# def _get_allow_extra_flag_from_fields_raw(raw: str) -> bool:
+#     """Читаем флаг разрешения доп. категорий из Category.fields (мета-запись)."""
+#     try:
+#         data = json.loads((raw or "").strip() or "[]")
+#         if isinstance(data, list):
+#             for f in data:
+#                 if isinstance(f, dict) and f.get("type") == "__meta" and f.get("key") == "allow_extra_categories":
+#                     return bool(f.get("value"))
+#         return False
+#     except Exception:
+#         return False
+
+# async def _set_allow_extra_flag(session, cat_id: int, value: bool) -> None:
+#     """Ставим/снимаем флаг allow_extra_categories в Category.fields как мета-запись."""
+#     cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+#     try:
+#         data = json.loads((cat.fields or "").strip() or "[]")
+#     except Exception:
+#         data = []
+#     if not isinstance(data, list):
+#         data = []
+
+#     idx = None
+#     for i, f in enumerate(data):
+#         if isinstance(f, dict) and f.get("type") == "__meta" and f.get("key") == "allow_extra_categories":
+#             idx = i
+#             break
+
+#     if idx is None:
+#         data.insert(0, {"type": "__meta", "key": "allow_extra_categories", "value": bool(value)})
+#     else:
+#         data[idx]["value"] = bool(value)
+
+#     cat.fields = json.dumps(data, ensure_ascii=False)
+#     session.add(cat)
+#     await session.commit()
+# # <<< END: extra categories helpers
+
+
 router = Router()
 
 ROOT_CATEGORY_IDS = {30, 80}
@@ -32,6 +73,56 @@ async def save_category_fields(session, cat_id: int, fields: list[dict]) -> None
     session.add(cat)
     await session.commit()
 
+# >>> BEGIN: extras helpers for allow_extra_categories flag
+def _get_allow_extra_flag_from_fields_raw(raw: str) -> bool:
+    """RU: Читаем флаг разрешения доп. категорий из Category.fields.
+    Поддерживаем 2 формата:
+    1) список полей с мета-записью {"type":"__meta","key":"allow_extra_categories","value": true}
+    2) короткая форма {"allow_extra_categories": true}
+    """
+    try:
+        text = (raw or "").strip()
+        if not text:
+            return False
+        data = json.loads(text)
+        if isinstance(data, list):
+            for f in data:
+                if isinstance(f, dict) and f.get("type") == "__meta" and f.get("key") == "allow_extra_categories":
+                    return bool(f.get("value"))
+            return False
+        if isinstance(data, dict):
+            return bool(data.get("allow_extra_categories"))
+        return False
+    except Exception:
+        return False
+
+async def _set_allow_extra_flag(session, cat_id: int, value: bool) -> None:
+    """RU: Сохраняем флаг в формате «мета-записи» (список). Короткую форму не используем на запись."""
+    cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+    try:
+        data = json.loads((cat.fields or "").strip() or "[]")
+    except Exception:
+        data = []
+    if not isinstance(data, list):
+        data = []
+
+    idx = None
+    for i, f in enumerate(data):
+        if isinstance(f, dict) and f.get("type") == "__meta" and f.get("key") == "allow_extra_categories":
+            idx = i
+            break
+    if idx is None:
+        data.insert(0, {"type": "__meta", "key": "allow_extra_categories", "value": bool(value)})
+    else:
+        data[idx]["value"] = bool(value)
+
+    cat.fields = json.dumps(data, ensure_ascii=False)
+    session.add(cat)
+    await session.commit()
+# <<< END: extras helpers
+
+
+
 # УНИКАЛЬНОСТЬ КЛЮЧА В КАТЕГОРИИ
 async def field_key_exists(session, cat_id: int, key: str) -> bool:
     key_l = (key or "").strip().lower()
@@ -41,15 +132,19 @@ async def field_key_exists(session, cat_id: int, key: str) -> bool:
 
 # ====== Админ: Поля категории — меню (стрелки справа) ======
 @router.callback_query(F.data.regexp(r"^admin:fields:(\d+)$"))
-async def admin_fields_menu(cb: CallbackQuery, state: FSMContext):
+async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | None = None):
+    # RU: Меню «Доп. поля категории». Поддерживает прямой вызов с cat_id,
+    #     чтобы перерисовывать экран без "фейкового" CallbackQuery.
     if not is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
-    try:
-        cat_id = int(re.match(r"^admin:fields:(\d+)$", cb.data).group(1))
-    except Exception:
-        await cb.answer("Неверные данные", show_alert=True); return
+    if cat_id is None:
+        try:
+            cat_id = int(re.match(r"^admin:fields:(\d+)$", (cb.data or "")).group(1))
+        except Exception:
+            await cb.answer("Неверные данные", show_alert=True); return
+
 
     # подчистка
     try:
@@ -62,32 +157,63 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext):
         category = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
         fields = await load_category_fields(s, cat_id)
 
-    rows: list[list[InlineKeyboardButton]] = []
+    # Статус + явное действие в одной строке
+    allow_flag = _get_allow_extra_flag_from_fields_raw(category.fields)
+    rows: list[list[InlineKeyboardButton]] = [[
+        InlineKeyboardButton(
+            text=f"Доп.категории: {'включены' if allow_flag else 'выключены'}",
+            callback_data="noop"  # это просто индикатор статуса
+        ),
+        InlineKeyboardButton(
+            text=("❌ Выключить" if allow_flag else "✅ Включить"),
+            callback_data=f"admin:fields:toggle_extra:{cat_id}:{0 if allow_flag else 1}"
+        ),
+    ]]
+    # разделитель
+    rows.append([InlineKeyboardButton(text="———————————————", callback_data="noop")])
 
+
+
+    # rows: list[list[InlineKeyboardButton]] = []
+
+    # RU: строим список ТОЛЬКО по видимым полям (без мета),
+    #     но в callback передаем РЕАЛЬНЫЕ индексы исходного массива.
     if fields:
-        n = len(fields)
-        for idx, fld in enumerate(fields):
-            if isinstance(fld, dict):
-                ftype = (fld.get("type") or "text")
-                required_star = "★ " if fld.get("required") else ""   # <-- звёздочка в НАЧАЛЕ
-                label = (fld.get("label") or fld.get("name") or f"Поле {idx+1}")
-            else:
-                ftype, required_star, label = "text", "", f"Поле {idx+1}"
+        # реальные индексы видимых полей
+        visible_idxs: list[int] = []
+        for i, f in enumerate(fields):
+            if isinstance(f, dict) and str((f.get("type") or "text")).startswith("__"):
+                continue
+            visible_idxs.append(i)
 
-            # без «• », звёздочка стоит перед номером
-            title = f"{required_star}{idx+1}. {label} ({ftype})"
+        if not visible_idxs:
+            rows.append([InlineKeyboardButton(text="— Полей пока нет —", callback_data="noop")])
+        else:
+            for pos, idx in enumerate(visible_idxs):
+                fld = fields[idx]
+                if isinstance(fld, dict):
+                    ftype = (fld.get("type") or "text")
+                    required_star = "★ " if fld.get("required") else ""
+                    label = (fld.get("label") or fld.get("name") or f"Поле {pos+1}")
+                else:
+                    ftype, required_star, label = "text", "", f"Поле {pos+1}"
 
-            line: list[InlineKeyboardButton] = [
-                InlineKeyboardButton(text=title, callback_data=f"admin:field_edit:{cat_id}:{idx}")
-            ]
-            if idx > 0:
-                line.append(InlineKeyboardButton(text="⬆️", callback_data=f"admin:field_move:{cat_id}:{idx}:up"))
-            if idx < n - 1:
-                line.append(InlineKeyboardButton(text="⬇️", callback_data=f"admin:field_move:{cat_id}:{idx}:down"))
+                title = f"{required_star}{pos+1}. {label} ({ftype})"
 
-            rows.append(line)
+                line: list[InlineKeyboardButton] = [
+                    InlineKeyboardButton(text=title, callback_data=f"admin:field_edit:{cat_id}:{idx}")
+                ]
+                # стрелки только если есть сосед среди ВИДИМЫХ
+                if pos > 0:
+                    line.append(InlineKeyboardButton(text="⬆️", callback_data=f"admin:field_move:{cat_id}:{idx}:up"))
+                if pos < len(visible_idxs) - 1:
+                    line.append(InlineKeyboardButton(text="⬇️", callback_data=f"admin:field_move:{cat_id}:{idx}:down"))
+
+                rows.append(line)
     else:
         rows.append([InlineKeyboardButton(text="— Полей пока нет —", callback_data="noop")])
+
+
 
     rows.append([InlineKeyboardButton(text="✚ Добавить поле", callback_data=f"admin:fields:add:{cat_id}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")])
@@ -852,3 +978,40 @@ async def admin_field_move(cb: CallbackQuery, state: FSMContext):
         f"chat_id: {chat_id} | user_id: {cb.from_user.id} | cat_id: {cat_id} | "
         f"idx: {idx} -> {new_idx} | dir: {direction}"
     )
+
+# ─────────────────────────────────────────────────────────
+# RU: Тумблер «Доп. категории: Вкл/Выкл» в админке полей категории.
+#     Чистим прошлое меню, сохраняем флаг и перерисовываем этот же экран
+#     через ПРЯМОЙ вызов admin_fields_menu(..., cat_id=...).
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.regexp(r"^admin:fields:toggle_extra:(\d+):(0|1)$"))
+async def admin_fields_toggle_extra(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    # зачистка предыдущих сообщений/меню
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True); return
+
+    m = re.match(r"^admin:fields:toggle_extra:(\d+):(0|1)$", (cb.data or ""))
+    if not m:
+        await cb.answer("Неверные данные", show_alert=True)
+        print(f"[admin_fields.py] handler=admin_fields_toggle_extra ERROR parse chat_id={chat_id} data={cb.data!r}")
+        return
+
+    cat_id = int(m.group(1))
+    new_val = bool(int(m.group(2)))
+
+    async with SessionLocal() as s:
+        await _set_allow_extra_flag(s, cat_id, new_val)
+
+    await cb.answer("Сохранено")
+    # перерисовываем без "фейкового" CallbackQuery
+    await admin_fields_menu(cb, state, cat_id=cat_id)
+
+    print(f"[admin_fields.py] handler=admin_fields_toggle_extra OK cat_id={cat_id} new_val={new_val} chat_id={chat_id}")

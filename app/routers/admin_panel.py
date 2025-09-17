@@ -156,7 +156,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
         await cb.answer("Неверные данные", show_alert=True)
         return
 
-    ROOT_CATEGORY_IDS = {30, 80}
+    ROOT_CATEGORY_IDS = {30, 80, 90}
 
     async with SessionLocal() as session:
         # Текущая категория
@@ -240,6 +240,13 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
         )
     ])
 
+    keyboard.append([
+        InlineKeyboardButton(
+            text="🛠 Админ-панель",
+            callback_data=f"admin"
+        )
+    ])
+
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     # Заголовок с полной цепочкой
@@ -275,7 +282,7 @@ async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{parent_id}"),
-            InlineKeyboardButton(text="☰ Главное меню", callback_data="admin"),
+            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
         ]
     ])
     menu_msg = await cb.message.answer(
@@ -327,7 +334,7 @@ async def admin_add_category_name(message: Message, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{parent_id}"),
-            InlineKeyboardButton(text="☰ Главное меню", callback_data="admin"),
+            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
         ]
     ])
     menu_msg = await message.answer("Возврат", reply_markup=menu)
@@ -459,7 +466,7 @@ async def admin_rename_category_start(cb: CallbackQuery, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{category.parent_id}"),
-            InlineKeyboardButton(text="☰ Главное меню", callback_data="admin"),
+            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
         ]
     ])
     menu_msg = await cb.message.answer("Возврат", reply_markup=menu)
@@ -517,7 +524,7 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}"),
-            InlineKeyboardButton(text="☰ Главное меню", callback_data="admin"),
+            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
         ]
     ])
     menu_msg = await message.answer("Возврат", reply_markup=menu)
@@ -591,7 +598,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
         menu = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}"),
-                InlineKeyboardButton(text="☰ Главное меню", callback_data="admin")
+                InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")
             ],
             [
                 InlineKeyboardButton(text=f"⬇️ Оставить прежний slug: {old_slug}",
@@ -634,7 +641,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
             menu = InlineKeyboardMarkup(inline_keyboard=[
                 [
                     InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}"),
-                    InlineKeyboardButton(text="☰ Главное меню", callback_data="admin")
+                    InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")
                 ],
                 [
                     InlineKeyboardButton(text=f"⬇️ Оставить прежний slug: {old_slug}",

@@ -171,11 +171,33 @@ async def market_list(cb: CallbackQuery):
                     callback_data=f"mlist:{city_slug}:{child.slug}"
                 )
             ])
-        listings = await fetch_listings(city.id, cat.id)
+        async with SessionLocal() as s:
+            listings = (await s.execute(
+                select(Listing)
+                .where(
+                    Listing.city_id == city.id,
+                    (Listing.category_id == cat.id) |
+                    (Listing.extra_category_id1 == cat.id) |
+                    (Listing.extra_category_id2 == cat.id),
+                )
+                .order_by(Listing.created_at.desc())
+            )).scalars().all()
         if listings:
             keyboard.append([InlineKeyboardButton(text="— Объявления —", callback_data="stub")])
     else:
-        listings = await fetch_listings(city.id, cat.id)
+        # RU: Подтянуть объявления по базовой И доп. категориям (слоты 1/2)
+        async with SessionLocal() as s:
+            listings = (await s.execute(
+                select(Listing)
+                .where(
+                    Listing.city_id == city.id,
+                    (Listing.category_id == cat.id) |
+                    (Listing.extra_category_id1 == cat.id) |
+                    (Listing.extra_category_id2 == cat.id),
+                )
+                .order_by(Listing.created_at.desc())
+            )).scalars().all()
+
 
     # 2) Объявления
     if listings:
@@ -191,8 +213,8 @@ async def market_list(cb: CallbackQuery):
     if cat.parent_id:
         async with SessionLocal() as s:
             parent_cat = (await s.execute(select(Category).where(Category.id == cat.parent_id))).scalar_one()
-        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mlist:{city_slug}:{parent_cat.slug}")])
-    else:
+    #     keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mlist:{city_slug}:{parent_cat.slug}")])
+    # else:
         keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mcity:{city_slug}")])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -606,7 +628,7 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listings = (await s.execute(
             select(Listing)
-            .where(Listing.owner_id == user_id)
+            .where(Listing.owner_id == user_id, Listing.type == "market")
             .order_by(Listing.created_at.desc())
             .limit(10)
         )).scalars().all()
@@ -668,7 +690,7 @@ async def my_listings_back_handler(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listings = (await s.execute(
             select(Listing)
-            .where(Listing.owner_id == user_id)
+            .where(Listing.owner_id == user_id, Listing.type == "market")
             .order_by(Listing.created_at.desc())
             .limit(10)
         )).scalars().all()
@@ -790,6 +812,9 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         flex_block = await render_flex_block(s, listing, lang="ru")
     if flex_block:
         caption_parts.append(flex_block)
+
+    if video_url:
+        caption_parts.append(f"Видео: {video_url}")
 
     # Контакты (всегда в конце)
     contact_block = await render_contact(listing, lang="ru")

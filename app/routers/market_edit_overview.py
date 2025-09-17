@@ -7,12 +7,76 @@ from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
 import json
 import inspect
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 
 from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.routers.utils import clear_bot_messages, last_bot_messages
 
+# RU: Хранилище id пользовательских сообщений и утилиты зачистки
+from collections import defaultdict
+from aiogram.types import Message
+import re
+
+
+_user_input_msgs = defaultdict(list)
+
+async def _remember_and_delete_user_message(msg: Message):
+    """RU: Запомнить и удалить пользовательское сообщение (текст/фото/видео/док)."""
+    try:
+        _user_input_msgs[msg.chat.id].append(msg.message_id)
+    except Exception:
+        pass
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+async def _clear_user_inputs(chat_id: int, bot):
+    """RU: На всякий случай дочистить все запомненные пользовательские сообщения."""
+    ids = _user_input_msgs.pop(chat_id, [])
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+
+# >>> BEGIN: extras helpers
+def _allow_extra_for_category(cat: Category) -> bool:
+    """RU: Разрешены ли доп. категории для этой категории (читаем из Category.fields)."""
+    try:
+        raw = (cat.fields or "").strip()
+        if not raw:
+            return False
+        data = json.loads(raw)
+        if isinstance(data, list):
+            for f in data:
+                if isinstance(f, dict) and f.get("type") == "__meta" and f.get("key") == "allow_extra_categories":
+                    return bool(f.get("value"))
+            return False
+        if isinstance(data, dict):
+            return bool(data.get("allow_extra_categories"))
+        return False
+    except Exception:
+        return False
+
+def _extra_used(lst: Listing) -> int:
+    """RU: Сколько слотов доп. категорий занято у объявления (0..2)."""
+    return int(bool(lst.extra_category_id1)) + int(bool(lst.extra_category_id2))
+# <<< END: extras helpers
+
+
+
 router = Router()
+
+# # >>> BEGIN: extras callback stub
+# @router.callback_query(F.data.startswith("extra:open:"))
+# async def _open_extra_categories_menu(c: CallbackQuery):
+#     # Пока просто подтверждаем клик. Меню добавим на следующем шаге.
+#     await c.answer("Меню доп. категорий покажем на следующем шаге.", show_alert=True)
+# # <<< END: extras callback stub
+
 
 
 # ─────────────────────────────────────────────────────────
@@ -78,42 +142,52 @@ def _ctx(ev):
         return ev.message.chat.id, ev.message.bot, ev.message.answer
     else:
         return ev.chat.id, ev.bot, ev.answer
+    
+# def _allow_extra_for_category(cat: Category) -> bool:
+#     """Читаем из category.fields флаг allow_extra_categories (opt-in)."""
+#     try:
+#         data = json.loads(cat.fields or "{}")
+#         return bool(data.get("allow_extra_categories"))
+#     except Exception:
+#         return False
+
+# def _extra_used(lst: Listing) -> int:
+#     """Сколько слотов доп. категорий занято у объявления (0..2)."""
+#     return int(bool(lst.extra_category_id1)) + int(bool(lst.extra_category_id2))
 
 
-# ─────────────────────────────────────────────────────────
-# Рендер единого обзора всех полей
+
+## ─────────────────────────────────────────────────────────
+# Рендер единого обзора всех полей (Барахолка)
+# RU: YouTube/URL оставляем в карточке (web-preview включён),
+#     отдельное сообщение ниже шлём ТОЛЬКО для file_id.
 # ─────────────────────────────────────────────────────────
 async def _render_overview(chat_id: int, bot, send, listing_id: int):
     await clear_bot_messages(chat_id, bot)
+    await _clear_user_inputs(chat_id, bot)
 
     async with SessionLocal() as s:
         listing = await _get_listing(s, listing_id)
         city, cat = await _get_city_cat(s, listing)
         defs = await _load_category_fields(s, listing.category_id)
 
-    # Найдём значение видео в flex по определению полей (для последующей отправки ниже)
-    video_value: str | None = None
+    # flex значения + поиск видео-поля
     try:
         flex_vals = json.loads(listing.flex) if listing.flex else {}
         if not isinstance(flex_vals, dict):
             flex_vals = {}
     except Exception:
         flex_vals = {}
+
+    video_value: str | None = None
+    video_key: str | None = None
     for f in defs:
-        if str(f.get("type", "")).lower() == "video":
-            key = (str(f.get("key", "")).strip().lower() or "field")
-            val = flex_vals.get(key)
-            if isinstance(val, str):
+        if str(f.get("type", "")).strip().lower() == "video":
+            video_key = (str(f.get("key", "")).strip().lower() or "field")
+            val = flex_vals.get(video_key)
+            if isinstance(val, str) and val.strip():
                 video_value = val.strip()
             break
-
-    # flex значения
-    try:
-        flex_vals = json.loads(listing.flex) if listing.flex else {}
-        if not isinstance(flex_vals, dict):
-            flex_vals = {}
-    except Exception:
-        flex_vals = {}
 
     # единый ровный список — БЕЗ заголовков «Основные/Дополнительные»
     lines = [
@@ -137,40 +211,67 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
 
     # добавить все доп-поля той же лентой
     for f in defs:
+        ftype = str((f.get("type") or "")).strip().lower()
+        if ftype.startswith("__"):  continue
         key   = (str(f.get("key","")).strip().lower() or "field")
         label = f.get("label") or f.get("name") or key
         val   = flex_vals.get(key)
+
         lines.append("")
-        lines.append(f"<b>{label}:</b> <i>{_fmt(val)}</i>")
+        if str(f.get("type","")).strip().lower() == "video":
+            # URL показываем прямо в карточке (без <i>, чтобы Telegram сделал превью)
+            if isinstance(val, str) and val.strip():
+                sval = val.strip()
+                low  = sval.lower()
+                if sval.startswith("http") and ("youtube.com" in low or "youtu.be" in low):
+                    lines.append(f"<b>{label}:</b> {sval}")
+                else:
+                    # file_id не раскрываем
+                    lines.append(f"<b>{label}:</b> <i>добавлено</i>")
+            else:
+                lines.append(f"<b>{label}:</b> <i>—</i>")
+        else:
+            lines.append(f"<b>{label}:</b> <i>{_fmt(val)}</i>")
+
         rows.append([InlineKeyboardButton(text=f"✏️ Править: {label}", callback_data=f"ef:extra:{key}:{listing_id}")])
 
+    # RU: Кнопка «Доп. категории (used/2)» — показываем только если разрешено админкой
+    if _allow_extra_for_category(cat):
+        used = _extra_used(listing)
+        rows.append([InlineKeyboardButton(text=f"➕ Доп. категории ({used}/2)",
+                                        callback_data=f"extra:open:{listing_id}")])
+
+    
     # навигация в самый низ
-    rows.append([InlineKeyboardButton(text="⬅️ Назад к объявлению", callback_data=f"listing:{listing_id}:{city.slug}:{cat.slug}:my")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к объявлению",
+                                      callback_data=f"listing:{listing_id}:{city.slug}:{cat.slug}:my")])
 
     text = "\n".join(lines)
-    # Сначала отправляем карточку объявления
-    msg = await send(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+    # 1) отправляем карточку — ВКЛЮЧЕНО web-preview, чтобы YouTube отрисовался здесь
+    msg = await send(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML",
+        disable_web_page_preview=False,   # ← важно
+    )
     message_ids = [msg.message_id]
-    # Затем отправляем превью видео, если оно есть (чтобы оно шло ПОСЛЕ карточки)
+
+    # 2) отдельное сообщение ПОСЛЕ карточки — ТОЛЬКО для file_id
     if video_value:
-        sval = str(video_value).strip()
-        low = sval.lower()
-        try:
-            if sval.startswith("http") and ("youtube.com" in low or "youtu.be" in low):
-                # Это ссылка → пусть Telegram сделает web-preview прямо в чате
-                vmsg = await bot.send_message(chat_id, sval, disable_web_page_preview=False)
-                message_ids.append(vmsg.message_id)
-            else:
-                # Похоже на file_id → нативное видео Telegram
-                vmsg = await bot.send_video(chat_id, sval)
-                message_ids.append(vmsg.message_id)
-        except Exception:
-            # Резерв: просто текстом
+        sval = video_value
+        low  = sval.lower()
+        is_youtube_url = sval.startswith("http") and ("youtube.com" in low or "youtu.be" in low)
+        if not is_youtube_url:
             try:
-                vmsg2 = await bot.send_message(chat_id, sval)
-                message_ids.append(vmsg2.message_id)
+                vmsg = await bot.send_video(chat_id, sval)  # file_id → нативное видео
+                message_ids.append(vmsg.message_id)
             except Exception:
-                pass
+                try:
+                    vmsg2 = await bot.send_message(chat_id, sval)
+                    message_ids.append(vmsg2.message_id)
+                except Exception:
+                    pass
 
     last_bot_messages[chat_id] = message_ids
 
@@ -250,6 +351,7 @@ async def ef_apply_main_or_extra_textnum(m: Message, state: FSMContext):
     """Применение значения для text/number (как у основного, так и у extra с типом text/number)."""
     chat_id = m.chat.id
     await clear_bot_messages(chat_id, m.bot)
+    await _remember_and_delete_user_message(m)
 
     data = await state.get_data()
     mode   = data.get("ef_mode")          # "main" или "extra"
@@ -491,6 +593,8 @@ async def efx_video_by_video(message: Message, state: FSMContext):
     """
     chat_id = message.chat.id
     await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_message(message)
+
     data = await state.get_data()
     key = data.get("ef_field")
     l_id = data.get("ef_listing_id")
@@ -523,6 +627,8 @@ async def efx_video_by_document(message: Message, state: FSMContext):
     """
     chat_id = message.chat.id
     await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_message(message)
+
     data = await state.get_data()
     key = data.get("ef_field")
     l_id = data.get("ef_listing_id")
@@ -559,6 +665,8 @@ async def efx_video_by_text(message: Message, state: FSMContext):
     """
     chat_id = message.chat.id
     await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_message(message)
+
     data = await state.get_data()
     key = data.get("ef_field")
     l_id = data.get("ef_listing_id")
@@ -598,9 +706,543 @@ async def efx_video_wrong_content(message: Message, state: FSMContext):
     """
     chat_id = message.chat.id
     await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_message(message)
+
     data = await state.get_data()
     l_id = data.get("ef_listing_id")
     # покажем стандартную клавиатуру «Отменить»
     kb = _controls_cancel(int(l_id)) if l_id else None
     msg = await message.answer("Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
+
+# ─────────────────────────────────────────────────────────
+# RU: Открыть мини-меню управления «Доп. категории» для объявления.
+#     Зачищаем меню, проверяем разрешение, показываем слоты и кнопки.
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("extra:open:"))
+async def extra_open_market(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    # РАННИЙ ФИЛЬТР ВЕТКИ: если объявление не из Барахолки (корень != 30) — выходим,
+    # чтобы не перехватывать «Услуги». Зачистку выполнит профильный хендлер.
+    try:
+        _, _, _raw_id = (cb.data or "").split(":")
+        _lid = int(_raw_id)
+    except Exception:
+        return
+    async with SessionLocal() as _s:
+        _lst = (await _s.execute(select(Listing).where(Listing.id == _lid))).scalar_one_or_none()
+        if not _lst:
+            return
+        _cat = (await _s.execute(select(Category).where(Category.id == _lst.category_id))).scalar_one_or_none()
+        if not _cat:
+            return
+        _root = _cat
+        while _root.parent_id is not None:
+            _root = (await _s.execute(select(Category).where(Category.id == _root.parent_id))).scalar_one_or_none()
+            if not _root:
+                return
+        if _root.id != 30:
+            return
+
+    # 1) Зачистка предыдущих меню/сообщений
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    # 2) listing_id из callback_data
+    try:
+        _, _, raw_id = cb.data.split(":")
+        listing_id = int(raw_id)
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        print(f"[market_edit_overview.py] handler=extra_open_market ERROR parse chat_id={chat_id} data={cb.data!r}")
+        return
+
+    # 3) Загрузить объявление и категорию, проверить разрешение
+    async with SessionLocal() as s:
+        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Объявление не найдено.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=extra_open_market ERROR no_listing listing_id={listing_id} chat_id={chat_id}")
+            return
+        category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
+        if not _allow_extra_for_category(category):
+            await cb.answer("Для этой категории доп. категории выключены.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=extra_open_market DENY listing_id={listing_id} cat_id={category.id} chat_id={chat_id}")
+            return
+
+        used = _extra_used(listing)
+        cat1 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id1))).scalar_one_or_none() if listing.extra_category_id1 else None
+        cat2 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id2))).scalar_one_or_none() if listing.extra_category_id2 else None
+
+    # 4) Собрать клавиатуру мини-меню
+    kb_rows = []
+    if used < 2:
+        kb_rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data=f"mextra:add:{listing_id}")])
+    if cat1:
+        kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
+    if cat2:
+        kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+
+
+    msg = await cb.message.answer(
+        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="HTML"
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+
+    await cb.answer()
+    print(f"[market_edit_overview.py] handler=extra_open_market OK listing_id={listing_id} used={used} chat_id={chat_id} msg_id={msg.message_id}")
+
+# ─────────────────────────────────────────────────────────
+# RU: «⬅️ Назад» из мини-меню «Доп. категории» (Барахолка).
+#     Удаляем текущее меню/сообщения и возвращаемся в обзор объявления.
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.regexp(r"^mextra:back:(\d+)$"))
+async def mextra_back_market(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    # зачистка
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    try:
+        await clear_bot_messages(chat_id, cb.message.bot)
+    except Exception:
+        pass
+
+    # парсим id объявления
+    m = re.match(r"^mextra:back:(\d+)$", cb.data or "")
+    listing_id = int(m.group(1)) if m else 0
+
+    # возврат в обзор редактирования
+    await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
+
+    await cb.answer()
+    print(f"[market_edit_overview.py] handler=mextra_back_market OK chat_id={chat_id} listing_id={listing_id}")
+
+# ─────────────────────────────────────────────────────────
+# RU: Удалить доп. категорию (слот 1 или 2) в Барахолке.
+#     После удаления остаёмся в мини-меню «Доп. категории».
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.regexp(r"^mextra:del:(\d+):(1|2)$"))
+async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    # Зачистка текущего сообщения и истории бота/пользователя
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    try:
+        await clear_bot_messages(chat_id, cb.message.bot)
+    except Exception:
+        pass
+    try:
+        await _clear_user_inputs(chat_id, cb.message.bot)
+    except Exception:
+        pass
+
+    # Разбор параметров из callback_data
+    m = re.match(r"^mextra:del:(\d+):(1|2)$", cb.data or "")
+    if not m:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        print(f"[market_edit_overview.py] handler=mextra_del_market ERROR parse chat_id={chat_id} data={cb.data!r}")
+        return
+    listing_id = int(m.group(1))
+    slot       = int(m.group(2))
+
+    # Сброс выбранного слота и перерисовка мини-меню
+    async with SessionLocal() as s:
+        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Объявление не найдено.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=mextra_del_market ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
+            return
+
+        # Обнулить слот
+        if slot == 1:
+            listing.extra_category_id1 = None
+        else:
+            listing.extra_category_id2 = None
+        await s.commit()
+
+        # Данные для перерисовки меню
+        category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
+
+        cat1 = None
+        if listing.extra_category_id1:
+            cat1 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id1))).scalar_one_or_none()
+        cat2 = None
+        if listing.extra_category_id2:
+            cat2 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id2))).scalar_one_or_none()
+
+        used = int(bool(listing.extra_category_id1)) + int(bool(listing.extra_category_id2))
+
+        # Соберём клавиатуру мини-меню
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        if used < 2 and _allow_extra_for_category(category):
+            kb_rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data=f"mextra:add:{listing_id}")])
+        if cat1:
+            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
+        if cat2:
+            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
+        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+
+    # Показ обновлённого мини-меню (остаёмся на месте)
+    msg = await cb.message.answer(
+        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="HTML",
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await cb.answer("Доп. категория удалена")
+    print(f"[market_edit_overview.py] handler=mextra_del_market OK chat_id={chat_id} listing_id={listing_id} slot={slot} msg_id={msg.message_id}")
+
+
+# ─────────────────────────────────────────────────────────
+# RU: Удалить доп. категорию (слот 1 или 2) в Услугах.
+#     После удаления остаёмся в мини-меню «Доп. категории».
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.regexp(r"^sextra:del:(\d+):(1|2)$"))
+async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    # Зачистка текущего сообщения и истории бота/пользователя
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    try:
+        await clear_bot_messages(chat_id, cb.message.bot)
+    except Exception:
+        pass
+    try:
+        await _clear_user_inputs(chat_id, cb.message.bot)
+    except Exception:
+        pass
+
+    # Разбор параметров из callback_data
+    m = re.match(r"^sextra:del:(\d+):(1|2)$", cb.data or "")
+    if not m:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        print(f"[services_edit_overview.py] handler=sextra_del_services ERROR parse chat_id={chat_id} data={cb.data!r}")
+        return
+    listing_id = int(m.group(1))
+    slot       = int(m.group(2))
+
+    # Сброс выбранного слота и перерисовка мини-меню
+    async with SessionLocal() as s:
+        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Объявление не найдено.", show_alert=True)
+            print(f"[services_edit_overview.py] handler=sextra_del_services ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
+            return
+
+        if slot == 1:
+            listing.extra_category_id1 = None
+        else:
+            listing.extra_category_id2 = None
+        await s.commit()
+
+        category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
+
+        cat1 = None
+        if listing.extra_category_id1:
+            cat1 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id1))).scalar_one_or_none()
+        cat2 = None
+        if listing.extra_category_id2:
+            cat2 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id2))).scalar_one_or_none()
+
+        used = int(bool(listing.extra_category_id1)) + int(bool(listing.extra_category_id2))
+
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        if used < 2 and _allow_extra_for_category(category):
+            kb_rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data=f"sextra:add:{listing_id}")])
+        if cat1:
+            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"sextra:del:{listing_id}:1")])
+        if cat2:
+            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"sextra:del:{listing_id}:2")])
+        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
+
+    msg = await cb.message.answer(
+        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="HTML",
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await cb.answer("Доп. категория удалена")
+    print(f"[services_edit_overview.py] handler=sextra_del_services OK chat_id={chat_id} listing_id={listing_id} slot={slot} msg_id={msg.message_id}")
+
+# ─────────────────────────────────────────────────────────
+# RU: Вспомогательная функция: проверить ветку Барахолки (корень id=30).
+# ─────────────────────────────────────────────────────────
+async def _is_market_branch(s, cat_id: int) -> bool:
+    try:
+        cur = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one_or_none()
+        if not cur:
+            return False
+        while cur.parent_id is not None:
+            cur = (await s.execute(select(Category).where(Category.id == cur.parent_id))).scalar_one_or_none()
+            if not cur:
+                return False
+        return cur.id == 30
+    except Exception:
+        return False
+
+
+# ─────────────────────────────────────────────────────────
+# RU: Открыть выбор доп. категории (верхний уровень — дети корня 30).
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("mextra:add:"))
+async def mextra_add_market(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    # Зачистка
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    try:
+        await clear_bot_messages(chat_id, cb.message.bot)
+    except Exception:
+        pass
+    try:
+        await _clear_user_inputs(chat_id, cb.message.bot)
+    except Exception:
+        pass
+
+    try:
+        _, _, raw_id = (cb.data or "").split(":")
+        listing_id = int(raw_id)
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        print(f"[market_edit_overview.py] handler=mextra_add_market ERROR parse chat_id={chat_id} data={cb.data!r}")
+        return
+
+    async with SessionLocal() as s:
+        cats = (await s.execute(select(Category).where(Category.parent_id == 30))).scalars().all()
+        rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in cats]
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+
+    msg = await cb.message.answer(
+        "Выберите категорию (Барахолка):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML",
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await cb.answer()
+    print(f"[market_edit_overview.py] handler=mextra_add_market OK chat_id={chat_id} listing_id={listing_id} msg_id={msg.message_id}")
+
+
+# ─────────────────────────────────────────────────────────
+# RU: Клик по категории при выборе доп. категории:
+#     • есть дети — углубляемся
+#     • лист — записываем в первый свободный слот, с проверками
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("mextra:pick:"))
+async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    # Зачистка
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    try:
+        await clear_bot_messages(chat_id, cb.message.bot)
+    except Exception:
+        pass
+    try:
+        await _clear_user_inputs(chat_id, cb.message.bot)
+    except Exception:
+        pass
+
+    try:
+        _, _, raw_lid, raw_cid = (cb.data or "").split(":")
+        listing_id = int(raw_lid)
+        cat_id     = int(raw_cid)
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        print(f"[market_edit_overview.py] handler=mextra_pick_market ERROR parse chat_id={chat_id} data={cb.data!r}")
+        return
+
+    async with SessionLocal() as s:
+        cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one_or_none()
+        if not cat:
+            await cb.answer("Категория не найдена.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=mextra_pick_market ERROR no_cat chat_id={chat_id} cat_id={cat_id}")
+            return
+
+        children = (await s.execute(select(Category).where(Category.parent_id == cat_id))).scalars().all()
+        if children:
+            rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in children]
+            if cat.parent_id and cat.parent_id != 30:
+                rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:up:{listing_id}:{cat.parent_id}")])
+            else:
+                rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")])
+
+            msg = await cb.message.answer(
+                f"Категория: <b>{cat.name}</b>\nВыберите подкатегорию:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                parse_mode="HTML",
+            )
+            last_bot_messages[chat_id] = [msg.message_id]
+            await cb.answer()
+            print(f"[market_edit_overview.py] handler=mextra_pick_market NAV chat_id={chat_id} listing_id={listing_id} cat_id={cat_id} msg_id={msg.message_id}")
+            return
+
+        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Объявление не найдено.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=mextra_pick_market ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
+            return
+
+        if not await _is_market_branch(s, cat_id):
+            await cb.answer("Можно выбирать только категории Барахолки.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT branch chat_id={chat_id} cat_id={cat_id}")
+            back_cb = f"mextra:up:{listing_id}:{cat.parent_id}" if (cat.parent_id and cat.parent_id != 30) else f"mextra:add:{listing_id}"
+            back_msg = await cb.message.answer("Выберите категорию (Барахолка):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)]
+            ]))
+            last_bot_messages[chat_id] = [back_msg.message_id]
+            await cb.answer()
+            return
+
+        if cat_id == listing.category_id:
+            await cb.answer("Нельзя выбирать основную категорию объявления.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT base chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
+            back_msg = await cb.message.answer("Выберите другую категорию (Барахолка):",
+                                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                                   [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")]
+                                               ]),
+                                               parse_mode="HTML")
+            last_bot_messages[chat_id] = [back_msg.message_id]
+            await cb.answer()
+            return
+
+        if listing.extra_category_id1 == cat_id or listing.extra_category_id2 == cat_id:
+            await cb.answer("Такая доп. категория уже выбрана.", show_alert=True)
+            print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT dup chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
+            back_msg = await cb.message.answer("Выберите другую категорию (Барахолка):",
+                                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                                   [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")]
+                                               ]),
+                                               parse_mode="HTML")
+            last_bot_messages[chat_id] = [back_msg.message_id]
+            await cb.answer()
+            return
+
+        slots_used = int(bool(listing.extra_category_id1)) + int(bool(listing.extra_category_id2))
+        if slots_used >= 2:
+            category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
+            cat1 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id1))).scalar_one_or_none() if listing.extra_category_id1 else None
+            cat2 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id2))).scalar_one_or_none() if listing.extra_category_id2 else None
+            kb_rows: list[list[InlineKeyboardButton]] = []
+            if cat1:
+                kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
+            if cat2:
+                kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
+            kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+            msg = await cb.message.answer(
+                f"Доп. категории для «{listing.title}»\nЗанято слотов: 2/2",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                parse_mode="HTML",
+            )
+            last_bot_messages[chat_id] = [msg.message_id]
+            await cb.answer()
+            print(f"[market_edit_overview.py] handler=mextra_pick_market FULL chat_id={chat_id} listing_id={listing_id} msg_id={msg.message_id}")
+            return
+
+        # Записываем в 1-й свободный слот
+        if listing.extra_category_id1 is None:
+            listing.extra_category_id1 = cat_id
+        else:
+            listing.extra_category_id2 = cat_id
+        await s.commit()
+
+        category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
+        cat1 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id1))).scalar_one_or_none() if listing.extra_category_id1 else None
+        cat2 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id2))).scalar_one_or_none() if listing.extra_category_id2 else None
+        used = int(bool(listing.extra_category_id1)) + int(bool(listing.extra_category_id2))
+
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        if used < 2 and _allow_extra_for_category(category):
+            kb_rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data=f"mextra:add:{listing_id}")])
+        if cat1:
+            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
+        if cat2:
+            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
+        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+
+    msg = await cb.message.answer(
+        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="HTML",
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await cb.answer("Доп. категория добавлена")
+    print(f"[market_edit_overview.py] handler=mextra_pick_market OK chat_id={chat_id} listing_id={listing_id} cat_id={cat_id} used={used} msg_id={msg.message_id}")
+
+
+# ─────────────────────────────────────────────────────────
+# RU: Подняться на уровень выше при выборе доп. категории.
+# ─────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("mextra:up:"))
+async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    # Зачистка
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    try:
+        await clear_bot_messages(chat_id, cb.message.bot)
+    except Exception:
+        pass
+    try:
+        await _clear_user_inputs(chat_id, cb.message.bot)
+    except Exception:
+        pass
+
+    try:
+        _, _, raw_lid, raw_pid = (cb.data or "").split(":")
+        listing_id = int(raw_lid)
+        parent_id  = int(raw_pid)
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        print(f"[market_edit_overview.py] handler=mextra_up_market ERROR parse chat_id={chat_id} data={cb.data!r}")
+        return
+
+    async with SessionLocal() as s:
+        parent = (await s.execute(select(Category).where(Category.id == parent_id))).scalar_one_or_none()
+        if not parent or parent.id == 30:
+            cats = (await s.execute(select(Category).where(Category.parent_id == 30))).scalars().all()
+            rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in cats]
+            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+            msg = await cb.message.answer(
+                "Выберите категорию (Барахолка):",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                parse_mode="HTML",
+            )
+            last_bot_messages[chat_id] = [msg.message_id]
+            await cb.answer()
+            print(f"[market_edit_overview.py] handler=mextra_up_market ROOT chat_id={chat_id} listing_id={listing_id} msg_id={msg.message_id}")
+            return
+
+        children = (await s.execute(select(Category).where(Category.parent_id == parent.id))).scalars().all()
+        rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in children]
+        if parent.parent_id and parent.parent_id != 30:
+            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:up:{listing_id}:{parent.parent_id}")])
+        else:
+            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")])
+
+    msg = await cb.message.answer(
+        f"Категория: <b>{parent.name}</b>\nВыберите подкатегорию:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML",
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await cb.answer()
+    print(f"[market_edit_overview.py] handler=mextra_up_market OK chat_id={chat_id} listing_id={listing_id} parent_id={parent_id} msg_id={msg.message_id}")

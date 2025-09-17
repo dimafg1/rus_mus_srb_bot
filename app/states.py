@@ -6,6 +6,18 @@ class MarketSearch(StatesGroup):
     waiting_for_query = State()
     waiting_for_detail = State()
 
+# -----------------------------------------------------------------------------
+# ServiceSearch
+# -----------------------------------------------------------------------------
+# Аналог состояния поиска для раздела «Услуги». Используется в services_view.py.
+class ServiceSearch(StatesGroup):
+    """
+    FSM states for searching services. Works similarly to MarketSearch but scoped
+    to the services section. See services_view.py for handlers.
+    """
+    waiting_for_query = State()   # awaiting user search query input
+    waiting_for_detail = State()  # awaiting user selection of a search result
+
 class AdminCategoryStates(StatesGroup):
     waiting_for_new_category_name = State()
     waiting_for_new_category_slug = State()
