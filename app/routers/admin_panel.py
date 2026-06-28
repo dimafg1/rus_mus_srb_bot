@@ -1243,14 +1243,14 @@ async def admin_users_list(cb: CallbackQuery):
         await cb.answer("Список пользователей пуст.", show_alert=True)
         return
 
-    lines = [f"<b>👥 Пользователи бота</b> (всего: {total})\n"]
+    lines = [f"<b>👥 Пользователи бота</b> (всего: {total})"]
     for u in users:
         nick = f"@{u.username}" if u.username else (u.full_name or "—")
         dt_belgrade = u.last_seen.replace(tzinfo=pytz.utc).astimezone(SERBIA_TZ)
         dt_str = dt_belgrade.strftime("%d.%m.%Y %H:%M")
-        lines.append(f"• {nick} | <code>{u.user_id}</code> | {dt_str}")
+        lines.append(f"• {nick}  <code>{u.user_id}</code>  {dt_str}")
 
-    text = "\n".join(lines)
+    text = "\n\n".join(lines)
 
     nav_buttons = []
     if offset > 0:

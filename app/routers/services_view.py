@@ -33,7 +33,6 @@ from app.routers.utils import (
 )
 
 from app.search.fuzzy import search_items
-from app.routers.contact import make_contact_btn
 
 from app.texts import get_text
 from app.states import ServiceSearch
@@ -605,10 +604,13 @@ async def sv_item(cb: CallbackQuery):
                 text="🔄 Продлить на 30 дней",
                 callback_data=f"service_extend:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
             )])
-    elif listing.contact:
-        btn = make_contact_btn(listing.id, listing.contact, "services")
-        if btn:
-            buttons.append([btn])
+    elif listing.contact and listing.contact.startswith("@"):
+        username = listing.contact.lstrip("@")
+        contact_btn = await get_common_menu_button("btn_contact_provider", "ru")
+        buttons.append([InlineKeyboardButton(
+            text=(contact_btn.text if contact_btn else "💬 Связаться"),
+            url=f"https://t.me/{username}"
+        )])
 
     # Кнопки навигации — в конец
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])

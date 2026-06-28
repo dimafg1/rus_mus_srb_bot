@@ -398,10 +398,6 @@ async def admin_analytics_menu(cb: CallbackQuery) -> None:
         search_count = (await s.execute(sql("SELECT COUNT(*) FROM search_log"))).scalar_one() or 0
         no_result_count = (await s.execute(sql("SELECT COUNT(*) FROM search_log WHERE results_count = 0"))).scalar_one() or 0
         open_count = (await s.execute(sql("SELECT COUNT(*) FROM listing_views WHERE action = 'open'"))).scalar_one() or 0
-        try:
-            contact_count = (await s.execute(sql("SELECT COUNT(*) FROM ContactView"))).scalar_one() or 0
-        except Exception:
-            contact_count = 0
 
         # Объявления
         total_listings = (await s.execute(sql("SELECT COUNT(*) FROM listing"))).scalar_one() or 0
@@ -453,8 +449,7 @@ async def admin_analytics_menu(cb: CallbackQuery) -> None:
         f"  За неделю: {_week_trend(new_listings_week, new_listings_prev)}\n\n"
         f"🔎 <b>Поиск:</b> {search_count} запросов\n"
         f"  Пустых: {no_result_count} ({_pct(no_result_count, search_count)}){search_warn}\n"
-        f"  Открытий карточек: {open_count}\n"
-        f"  Нажатий «Написать»: {contact_count} ({_pct(contact_count, open_count)} от открытий)\n\n"
+        f"  Открытий карточек: {open_count}\n\n"
         "Выберите раздел:"
     )
 
