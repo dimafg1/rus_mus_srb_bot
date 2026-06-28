@@ -5,7 +5,7 @@ from pydantic import ConfigDict
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlalchemy import event
+from sqlalchemy import event, text
 
 # --------------------------------------------------------------------------- #
 # Настройки из .env (DATABASE_URL=sqlite+aiosqlite:///./dev.db)
@@ -52,3 +52,9 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
+        # Миграция: добавляем first_seen если таблица создавалась до этой колонки
+        try:
+            await conn.execute(text("ALTER TABLE BotUser ADD COLUMN first_seen DATETIME"))
+            await conn.execute(text("UPDATE BotUser SET first_seen = last_seen WHERE first_seen IS NULL"))
+        except Exception:
+            pass  # колонка уже есть — нормально
