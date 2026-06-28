@@ -17,7 +17,7 @@ from app.database import SessionLocal
 from app.models import City, Category, Listing
 from aiogram.types.input_file import FSInputFile
 
-from app.routers.utils import clear_bot_messages, last_bot_messages, sent_photo_messages, my_listing_messages, delete_photo_prompts, get_text
+from app.routers.utils import clear_bot_messages, last_bot_messages, sent_photo_messages, my_listing_messages, delete_photo_prompts, get_text, register_bot_messages
 # --- Доп. поля категории (универсальный опрос) ---
 # Импортируем функцию запуска мастера доп. полей и константу VAL_KEY
 from app.routers.user_extra_fields import start_extra_fields_for_category, VAL_KEY
@@ -48,6 +48,12 @@ from app.routers.utils import safe_edit_or_send
 import json
 
 from html import escape as _esc
+
+from app.routers.utils_category_title import format_category_title
+
+from app.routers.utils_kb import grid3
+
+
 
 print("my_listing_messages:", type(my_listing_messages))
 
@@ -111,8 +117,10 @@ async def send_with_nav(m, text, parse_mode=None):
     nav_text = await get_text('return_to_menu', 'ru') or "Return"
     nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
     last_bot_messages.setdefault(m.chat.id, []).append(nav_msg.message_id)
+    await register_bot_messages(m.chat.id, [nav_msg.message_id])
     msg = await m.answer(text, parse_mode=parse_mode)
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await register_bot_messages(m.chat.id, [msg.message_id])
     return nav_msg, msg
 
 # --- Чтение JSON-полей категории (как в админке) ---
@@ -157,6 +165,7 @@ async def start_flex_flow(m_or_cbmsg, state: FSMContext):
             nav_kb = await sell_nav_keyboard()
             msg = await m_or_cbmsg.answer("Готово. Спасибо!", reply_markup=nav_kb)
             last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+            await register_bot_messages(chat_id, [msg.message_id])
             await state.clear()
             return
         # иначе ведём в обычный превью/подтверждение
@@ -185,6 +194,7 @@ async def ask_current_flex_field(m_or_cbmsg, state: FSMContext):
             nav_kb = await sell_nav_keyboard()
             msg = await m_or_cbmsg.answer("Готово. Спасибо!", reply_markup=nav_kb)
             last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+            await register_bot_messages(chat_id, [msg.message_id])
             await state.clear()
             print(f"FUNC: ask_current_flex_field | done(after_pub) | chat_id: {chat_id}")
             return
@@ -231,6 +241,7 @@ async def ask_current_flex_field(m_or_cbmsg, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await m_or_cbmsg.answer(prompt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await state.set_state(Sell.flex)
     print(f"FUNC: ask_current_flex_field | ask | chat_id: {chat_id} | idx: {idx} | type: {ftype} | msg_id: {msg.message_id}")
@@ -362,11 +373,13 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lan
         disable_web_page_preview=True,
     )
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await register_bot_messages(m.chat.id, [msg.message_id])
 
     msg2 = None
     if text_tip:
         msg2 = await m.answer(text_tip)
         last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
+        await register_bot_messages(m.chat.id, [msg2.message_id])
         await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
     else:
         await state.update_data(photo_prompt_msgs=[msg.message_id])
@@ -390,6 +403,7 @@ async def cmd_sell(m: Message, state: FSMContext):
         reply_markup=kb
     )
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await register_bot_messages(m.chat.id, [msg.message_id])
     await state.set_state(Sell.city)
 
 @router.callback_query(F.data == "sell_start")
@@ -409,12 +423,17 @@ async def sell_start_button(cb: CallbackQuery, state: FSMContext):
         reply_markup=await cities_inline(cities)
     )
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(Sell.city)
     await cb.answer()
 
 # ─────────────── шаг 1 – город ─────────────
 @router.callback_query(F.data.startswith("sell_city:"), Sell.city)
 async def sell_city(cb: CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     city_slug = cb.data.split(":")[1]
     async with SessionLocal() as s:
@@ -424,7 +443,11 @@ async def sell_city(cb: CallbackQuery, state: FSMContext):
             select(Category).where(Category.parent_id == equip_root.id)
         )).scalars().all()
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city_slug)
-    kb = await equip_inline(subcats, city_slug)
+    fmt = []
+    for sc in subcats:
+        title = await format_category_title(sc.id, (sc.name or "").strip(), SessionLocal)
+        fmt.append(type("Proxy", (), {"id": sc.id, "name": title, "slug": sc.slug}))
+    kb = await equip_inline(fmt, city_slug)
 
     # --- ВЫНОСИМ ТЕКСТ В БД ---
     template = await get_text('sell_choose_category', 'ru') or "City: <b>{city_name}</b>\nChoose a category:"
@@ -435,6 +458,7 @@ async def sell_city(cb: CallbackQuery, state: FSMContext):
         reply_markup=kb
     )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(Sell.cat)
     await cb.answer()
 
@@ -442,6 +466,10 @@ async def sell_city(cb: CallbackQuery, state: FSMContext):
 # ─────────────── шаг 2 – категория ─────────
 @router.callback_query(F.data.startswith("sell_cat:"), Sell.cat)
 async def sell_cat(cb: CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     _, city_slug, cat_id = cb.data.split(":")
     cat_id = int(cat_id)
@@ -449,7 +477,11 @@ async def sell_cat(cb: CallbackQuery, state: FSMContext):
         cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
         subcats = (await s.execute(select(Category).where(Category.parent_id == cat_id))).scalars().all()
     if subcats:
-        kb = await equip_inline(subcats, city_slug)
+        fmt = []
+        for sc in subcats:
+            title = await format_category_title(sc.id, (sc.name or "").strip(), SessionLocal)
+            fmt.append(type("Proxy", (), {"id": sc.id, "name": title, "slug": sc.slug}))
+        kb = await equip_inline(fmt, city_slug)
         # --- Получаем текст из базы ---
         template = await get_text('sell_choose_subcategory', 'ru') or "Category: <b>{cat_name}</b>\nChoose a subcategory:"
         text = template.format(cat_name=cat.name)
@@ -458,6 +490,7 @@ async def sell_cat(cb: CallbackQuery, state: FSMContext):
             reply_markup=kb,
         )
         last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+        await register_bot_messages(cb.message.chat.id, [msg.message_id])
         await state.update_data(cat_id=cat.id, cat_name=cat.name)
         await state.set_state(Sell.cat)
     else:
@@ -698,6 +731,7 @@ async def sell_cancel_photo(cb: CallbackQuery, state: FSMContext):
 
     msg1 = await cb.message.answer(cancel_text)
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg1.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg1.message_id])
     
     # Формируем клавиатуру, где уже есть кнопка "Главное меню"
     nav_kb = await sell_nav_keyboard()
@@ -707,6 +741,7 @@ async def sell_cancel_photo(cb: CallbackQuery, state: FSMContext):
     )
 
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg2.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg2.message_id])
 
     await state.clear()
     await cb.answer()
@@ -866,6 +901,7 @@ async def preview_and_confirm(m: Message, state: FSMContext):
 
     msg = await m.answer(header, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await register_bot_messages(m.chat.id, [msg.message_id])
     if sent_ids:
         sent_photo_messages.setdefault(m.chat.id, []).extend(sent_ids)
 
@@ -968,6 +1004,7 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         msg = await cb.message.answer(f"{text_pub}\n\n{text_extra}", reply_markup=kb)
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
 
         # Стейт не чистим — нужен для доп. полей
         await cb.answer()
@@ -1008,6 +1045,7 @@ async def mark_sold(cb: CallbackQuery, state: FSMContext):
         reply_markup=kb
     )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
 
 
@@ -1040,11 +1078,13 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
     deleted_text = (await get_text('sell_deleted', 'ru')) or "Listing deleted."
     msg = await cb.message.answer(deleted_text)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
 
     nav_kb = await sell_nav_keyboard()
     menu_text = (await get_text('return_to_menu', 'ru')) or "Return"
     msg2 = await cb.message.answer(menu_text, reply_markup=nav_kb)
     last_bot_messages.setdefault(chat_id, []).append(msg2.message_id)
+    await register_bot_messages(chat_id, [msg2.message_id])
 
     await cb.answer()
 
@@ -1076,12 +1116,17 @@ async def sell_delete_no(cb: CallbackQuery, state: FSMContext):
 async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
     cur_state = await state.get_state()
     chat_id = cb.message.chat.id
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await clear_bot_messages(chat_id, cb.bot)
 
     if cur_state == Sell.city.state:
         market_text = (await get_text('market_choose_action', 'ru')) or "💸 Marketplace:\nChoose an action."
         msg = await cb.message.answer(market_text, reply_markup=await market_inline())
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
         await state.clear()
         await cb.answer()
         return
@@ -1094,6 +1139,7 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
         header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
         msg = await cb.message.answer(header, reply_markup=kb)
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
 
     elif cur_state == Sell.title.state:
         # назад к выбору категории
@@ -1103,7 +1149,11 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
         async with SessionLocal() as s:
             root = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
             subs = (await s.execute(select(Category).where(Category.parent_id == root.id))).scalars().all()
-        kb = await equip_inline(subs, city_slug)
+        fmt = []
+        for sc in subs:
+            title = await format_category_title(sc.id, (sc.name or "").strip(), SessionLocal)
+            fmt.append(type("Proxy", (), {"id": sc.id, "name": title, "slug": sc.slug}))
+        kb = await equip_inline(fmt, city_slug)
         template = await get_text('sell_choose_category_back', 'ru') or "City: <b>{city_name}</b>\nChoose a category:"
         text = template.format(city_name=data.get('city_name'))
         try:
@@ -1113,6 +1163,7 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
             except Exception: pass
             msg = await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
             last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+            await register_bot_messages(chat_id, [msg.message_id])
 
     elif cur_state == Sell.descr.state:
         # было Title → Descr → Price → Photo, значит назад из Descr → Title
@@ -1146,7 +1197,9 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
             cities = (await s.execute(select(City))).scalars().all()
         kb = await cities_inline(cities)
         template = await get_text('sell_create_start', 'ru') or "💸 Create a listing.\nFirst, choose a city:"
-        await cb.message.answer(template, reply_markup=kb)
+        msg = await cb.message.answer(template, reply_markup=kb)
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
 
     await cb.answer()
 
@@ -1154,6 +1207,10 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "sell_city_back")
 async def sell_city_back(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await clear_bot_messages(chat_id, cb.bot)
     await state.clear()
 

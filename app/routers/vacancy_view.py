@@ -22,7 +22,7 @@ from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.keyboards import get_common_menu_button
 from app.texts import get_text
-from app.routers.utils import clear_bot_messages, safe_edit_or_send, render_flex_block
+from app.routers.utils import clear_bot_messages, safe_edit_or_send, register_bot_messages, render_flex_block, render_category_path
 from app.routers.utils import (
     clear_bot_messages,
     last_search_menu_message,
@@ -37,8 +37,20 @@ from app.routers.vacancy_utils import (
 )
 from aiogram.filters import StateFilter
 
+from app.routers.utils_category_title import format_category_title
+
+from app.routers.utils_kb import grid3
+
+from app.search.fuzzy import search_items
+
+from app.analytics.search_log import log_search
+from app.analytics.listing_views import log_listing_view
+from app.lifecycle import days_left_text, should_show_extend_button, extend_listing
+
 
 VACANCY_ROOT_ID = 90
+
+VACANCY_SEARCH_PAGE_SIZE = 10
 
 async def _category_chain_by_db(cat: Category | None) -> str:
     if not cat:
@@ -88,6 +100,28 @@ async def _category_children(cat_id: int) -> List[Category]:
     async with SessionLocal() as s:
         res = await s.execute(select(Category).where(Category.parent_id == cat_id))
         return res.scalars().all()
+    
+async def _vacancy_categories_kb(city_slug: str | None, parent_id: int | None) -> InlineKeyboardMarkup:
+    """Локальная клавиатура категорий для Вакансий с авто «🔽»."""
+    pid = parent_id if parent_id is not None else VACANCY_ROOT_ID
+    async with SessionLocal() as s:
+        cats = (await s.execute(
+            select(Category).where(Category.parent_id == pid).order_by(Category.name)
+        )).scalars().all()
+
+    rows = []
+    for c in cats:
+        title = await format_category_title(c.id, (c.name or "").strip(), SessionLocal)
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"vlist:{city_slug}:{c.id}")])
+
+    # ↓↓↓ вернуть навигацию как просили ↓↓↓
+    rows.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+    main_btn = await get_common_menu_button('main_menu')
+    if main_btn:
+        rows.append([main_btn])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +136,7 @@ async def vacancy_view_city(cb: CallbackQuery):
 
     # vcity:<slug>
     city_slug = cb.data.split(":", 1)[1] if ":" in cb.data else None
-    kb = await vacancy_categories_inline(city_slug, parent_id=None)
+    kb = await _vacancy_categories_kb(city_slug, parent_id=None)
 
     await safe_edit_or_send(
         cb,
@@ -127,7 +161,7 @@ async def vacancy_list(cb: CallbackQuery):
     # Если есть подкатегории — углубляемся
     children = await _category_children(cat_id)
     if children:
-        kb = await vacancy_categories_inline(city_slug, parent_id=cat_id)
+        kb = await _vacancy_categories_kb(city_slug, parent_id=cat_id)
         await safe_edit_or_send(
             cb,
             "Выберите подкатегорию:",
@@ -196,6 +230,17 @@ async def vac_my_listings(cb: CallbackQuery):
         )
         listings = (await s.execute(q)).scalars().all()
 
+    if not listings:
+        rows = [[InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")]]
+        main_btn = await get_common_menu_button("main_menu")
+        if main_btn:
+            rows.append([main_btn])
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
+        await safe_edit_or_send(cb, "У вас пока нет вакансий.", reply_markup=kb, parse_mode="HTML")
+        await cb.answer()
+        _dbg("vac_my_listings.empty", user_id=cb.from_user.id, count=0)
+        return
+
     kb = await my_vacancies_inline(listings)
     await safe_edit_or_send(cb, "Ваши вакансии:", reply_markup=kb, parse_mode="HTML")
     await cb.answer()
@@ -208,44 +253,51 @@ async def vac_my_listings(cb: CallbackQuery):
 
 # RU: Карточка вакансии – выводим Город и Категорию сразу под заголовком (сверху).
 @router.callback_query(F.data.startswith("vac_view:"))
-async def vacancy_view_detail(cb: CallbackQuery):
+async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.bot)
 
-    # format: vac_view:<id>:<city_slug>:<cat_id>[:my]
+    # format:
+    #   vac_view:<id>:<city_slug>:<cat_id>[:my]
+    #   vac_view:<id>:search
     parts = cb.data.split(":")
     listing_id = int(parts[1])
-    city_slug = parts[2] if len(parts) > 2 else None
-    cat_id = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
-    is_my_suffix = (len(parts) > 4 and parts[4] == "my")
+
+    from_search = (len(parts) > 2 and parts[2] == "search")
+    city_slug = None
+    cat_id = None
+    is_my_suffix = False
+
+    if not from_search:
+        city_slug = parts[2] if len(parts) > 2 else None
+        cat_id = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
+        is_my_suffix = (len(parts) > 4 and parts[4] == "my")
 
     async with SessionLocal() as s:
         listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
         city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one()
         cat = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
-        # если раньше не добавляли — убедитесь, что импортировали render_flex_block из utils
         flex_block = await render_flex_block(s, listing, lang="ru")
 
-        # --- ново: собираем путь категории "Родитель › Дочерняя", пропуская корень id=90 ---
-        VACANCY_ROOT_ID = 90
-        names = []
-        cur = cat
-        guard = 0
-        while cur and guard < 20:
-            guard += 1
-            if getattr(cur, "id", None) == VACANCY_ROOT_ID:
-                break
-            nm = (getattr(cur, "name", None) or "").strip()
-            if nm:
-                names.append(nm)
-            pid = getattr(cur, "parent_id", None)
-            if not pid or pid == getattr(cur, "id", None):
-                break
-            # поднимаемся к родителю
-            cur = await s.get(Category, pid)
-        names.reverse()
-        cat_path = " › ".join(names) if names else (cat.name or "")
-        # --- конец новго блока ---
+        current_category_id = cat_id or listing.category_id
+        cat_path = await render_category_path(s, current_category_id, root_id=VACANCY_ROOT_ID)
+
+    # ЛОГ ОТКРЫТИЯ КАРТОЧКИ
+    if from_search:
+        source = "search"
+    elif is_my_suffix:
+        source = "my"
+    else:
+        source = "catalog"
+
+    await log_listing_view(
+        listing_id=listing.id,
+        user_id=cb.from_user.id,
+        section="vacancy",
+        action="open",
+        source=source,
+    )
+
 
     is_owner = (listing.owner_id == cb.from_user.id) or is_my_suffix
 
@@ -254,38 +306,59 @@ async def vacancy_view_detail(cb: CallbackQuery):
 
     # Сразу под заголовком — город и категория
     lines.append(f"Город: <b>{_esc(city.name)}</b>")
-    lines.append(f"Категория: <b>{_esc(cat_path)}</b>")
-    lines.append("")  # визуальный отступ
+    lines.append(f"Категория: <b>Вакансии → {cat_path}</b>" if cat_path else "Категория: <b>Вакансии</b>")
+    lines.append("")
 
     # Заголовок
     lines.append(f"<b>{_esc(listing.title or '(без заголовка)')}</b>")
 
-    lines.append("")  # визуальный отступ
+    lines.append("")
     if listing.descr:
         lines.append(f"{_esc(listing.descr)}")
 
-    lines.append("")  # визуальный отступ
-    # Далее — зарплата
+    lines.append("")
     if listing.price:
         lines.append(f"Оплата: <b>{_esc(str(listing.price))}</b>")
 
-    # Доп. поля (с человекочитаемыми лейблами из Category.fields)
     if flex_block:
-        lines.append("")          # отступ для читаемости
+        lines.append("")
         lines.append(flex_block)
 
     contact = listing.contact or ""
 
+    if is_owner:
+        left_line = days_left_text(listing)
+        if left_line:
+            lines.append("")
+            lines.append("Контакты/Управление:")
+            lines.append(left_line)
+
     # Кнопки
     buttons: List[List[InlineKeyboardButton]] = []
+
     if is_owner:
         buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
         buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
+
+        if should_show_extend_button(listing):
+            if from_search:
+                extend_source = "search"
+            elif is_my_suffix:
+                extend_source = "my"
+            else:
+                extend_source = "catalog"
+            buttons.append([InlineKeyboardButton(
+                text="🔄 Продлить на 30 дней",
+                callback_data=f"vac_extend:{listing.id}:{extend_source}:{city_slug or '-'}:{cat_id or 0}"
+            )])
     else:
         if contact and contact.startswith("@"):
             buttons.append([InlineKeyboardButton(text="💬 Связаться", url=f"https://t.me/{contact.lstrip('@')}")])
 
-    if city_slug and cat_id:
+    # Назад — строго по источнику открытия карточки
+    if from_search:
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_search_results")])
+    elif city_slug and cat_id:
         buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{cat_id}")])
     else:
         buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
@@ -297,7 +370,105 @@ async def vacancy_view_detail(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await safe_edit_or_send(cb, "\n".join(lines), reply_markup=kb, parse_mode="HTML")
     await cb.answer()
-    print(f"[vacancy_view.py] handler=vacancy_view_detail listing_id={listing_id} is_owner={is_owner} city_slug={city_slug} cat_id={cat_id}")
+
+    print(
+        f"[vacancy_view.py] handler=vacancy_view_detail | "
+        f"listing_id={listing_id} | is_owner={is_owner} | "
+        f"from_search={from_search} | city_slug={city_slug} | cat_id={cat_id}"
+    )
+
+
+   
+
+
+
+
+# RU: Продление вакансии на 30 дней — только автор. Редактируем текущую карточку без создания дублей.
+@router.callback_query(F.data.startswith("vac_extend:"))
+async def vac_extend_listing(cb: CallbackQuery):
+    parts = cb.data.split(":", 4)
+    if len(parts) < 5:
+        await cb.answer("Ошибка данных продления.", show_alert=True)
+        return
+
+    try:
+        listing_id = int(parts[1])
+    except ValueError:
+        await cb.answer("Неверный идентификатор вакансии.", show_alert=True)
+        return
+
+    source = parts[2]
+    city_slug = None if parts[3] == "-" else parts[3]
+    try:
+        cat_id = int(parts[4]) if parts[4] and parts[4] != "0" else None
+    except ValueError:
+        cat_id = None
+
+    async with SessionLocal() as s:
+        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Вакансия не найдена.", show_alert=True)
+            return
+        if listing.owner_id != cb.from_user.id:
+            await cb.answer("Продлить может только автор вакансии.", show_alert=True)
+            return
+
+        extend_listing(listing)
+        await s.commit()
+        await s.refresh(listing)
+
+    # Обновляем нижний блок управления в уже открытой карточке.
+    base_text = cb.message.html_text or cb.message.text or ""
+    raw_lines = base_text.splitlines()
+    cleaned = []
+    skip_management_label = False
+    for line in raw_lines:
+        stripped = line.strip()
+        if stripped == "Контакты/Управление:":
+            skip_management_label = True
+            continue
+        if stripped.startswith("⏳ До архивации:"):
+            continue
+        cleaned.append(line)
+
+    # Убираем лишние пустые строки в конце перед новым блоком.
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+
+    left_line = days_left_text(listing)
+    if left_line:
+        cleaned.extend(["", "Контакты/Управление:", left_line])
+
+    buttons: List[List[InlineKeyboardButton]] = []
+    buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
+    buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
+
+    if should_show_extend_button(listing):
+        buttons.append([InlineKeyboardButton(
+            text="🔄 Продлить на 30 дней",
+            callback_data=f"vac_extend:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
+        )])
+
+    if source == "search":
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_search_results")])
+    elif source == "catalog" and city_slug and cat_id:
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{cat_id}")])
+    else:
+        buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+
+    main_btn = await get_common_menu_button('main_menu')
+    if main_btn:
+        buttons.append([main_btn])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await safe_edit_or_send(cb, "\n".join(cleaned), reply_markup=kb, parse_mode="HTML")
+    await cb.answer("Вакансия продлена на 30 дней.")
+    print(
+        f"[vacancy_view.py] handler=vac_extend_listing | "
+        f"listing_id={listing.id} source={source} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
+    )
+
 
 # RU: Подтверждение удаления объявления (редактируем текущее сообщение, чтобы ничего не плодить).
 @router.callback_query(F.data.startswith("vac_delete_confirm:"))
@@ -361,7 +532,8 @@ async def vac_delete_yes(cb: CallbackQuery):
         rows.append([main_btn])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    await cb.message.answer("✅ Объявление удалено.", reply_markup=kb, parse_mode="HTML")
+    msg = await cb.message.answer("✅ Объявление удалено.", reply_markup=kb, parse_mode="HTML")
+    await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer("Удалено.")
     print(f"[vacancy_view.py] handler=vac_delete_yes listing_id={lid} status=ok user_id={cb.from_user.id}")
 
@@ -432,30 +604,6 @@ class VacSearch(StatesGroup):
     waiting_query = State()
 
 
-async def _search_vacancies(session, q: str):
-    """
-    Поиск вакансий по заголовку и описанию (только открытые), без учёта регистра.
-    Делается Python-фильтром через Unicode casefold(), чтобы кириллица искалась корректно.
-    """
-    q_cf = (q or "").casefold()
-
-    stmt = (
-        select(Listing)
-        .where(
-            Listing.type == "vacancy",
-            Listing.is_sold == False,  # noqa: E712
-        )
-        .order_by(Listing.created_at.desc())
-        .limit(1000)
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-
-    def hit(it: Listing) -> bool:
-        t = (it.title or "").casefold()
-        d = (it.descr or "").casefold()
-        return (q_cf in t) or (q_cf in d)
-
-    return [it for it in rows if hit(it)]
 
 
 # RU: старт поиска — просим ввести строку + плашка «Назад/Главное»
@@ -504,6 +652,10 @@ async def vac_search_start(cb: CallbackQuery, state: FSMContext):
         "🔎 Введите запрос для поиска (например: «курьер», «дизайнер»). Ищем по заголовку и описанию.",
         parse_mode="HTML",
     )
+    ids_to_register = [msg.message_id]
+    if nav_msg:
+        ids_to_register.append(nav_msg.message_id)
+    await register_bot_messages(chat_id, ids_to_register)
 
     # Сохраняем id, чтобы «Главное меню» и _drop_nav_and_prompt смогли всё удалить
     try:
@@ -543,7 +695,6 @@ async def vac_search_do(m: Message, state: FSMContext):
     # Удалить подсказку бота и плашку «Возврат», показанные в vac_search_start
     try:
         data = await state.get_data()
-        # Сначала — по FSM ключам
         for key in ("nav_msg_id", "prompt_id", "search_prompt_msg_id"):
             mid = data.get(key)
             if mid:
@@ -551,16 +702,17 @@ async def vac_search_do(m: Message, state: FSMContext):
                     await m.bot.delete_message(chat_id, mid)
                 except Exception:
                     pass
-        # Обнулить ключи в FSM
         await state.update_data(nav_msg_id=None, prompt_id=None, search_prompt_msg_id=None)
     except Exception:
         pass
 
-    # Дополнительно — подчистить из общих кэшей (если они вели эти id)
+    # Дополнительно — подчистить из общих кэшей
     try:
         from app.routers.utils import last_search_menu_message, last_search_query_message
-        for mid in (last_search_menu_message.pop(chat_id, None),
-                    last_search_query_message.pop(chat_id, None)):
+        for mid in (
+            last_search_menu_message.pop(chat_id, None),
+            last_search_query_message.pop(chat_id, None),
+        ):
             if mid:
                 try:
                     await m.bot.delete_message(chat_id, mid)
@@ -579,37 +731,254 @@ async def vac_search_do(m: Message, state: FSMContext):
 
     # Сам поиск
     q = (m.text or "").strip()
+
     if len(q) < 2:
-        await m.answer("Минимум 2 символа. Введите запрос ещё раз:", parse_mode="HTML")
-        _dbg("vac_search_do.short", chat_id=chat_id, q=q)
+        buttons: List[List[InlineKeyboardButton]] = [
+            [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")],
+            [InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")],
+        ]
+        main_btn = await get_common_menu_button("main_menu")
+        if main_btn:
+            buttons.append([main_btn])
+
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        msg = await m.answer(
+            "Минимум 2 символа. Введите запрос ещё раз:",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+
+        try:
+            from app.routers.utils import last_search_menu_message, last_search_query_message
+            last_search_menu_message[chat_id] = msg.message_id
+            last_search_query_message[chat_id] = msg.message_id
+        except Exception:
+            pass
+        await register_bot_messages(chat_id, [msg.message_id])
+
+        await state.set_state(VacSearch.waiting_query)
+        _dbg("vacancy_view.vac_search_do.short", chat_id=chat_id, q=q)
         return
 
     async with SessionLocal() as s:
-        rows = await _search_vacancies(s, q)
+        db_rows = (await s.execute(
+            select(Listing)
+            .where(
+                Listing.type == "vacancy",
+                Listing.is_sold == False,  # noqa: E712
+            )
+            .order_by(Listing.created_at.desc())
+            .limit(1000)
+        )).scalars().all()
+
+    search_outcome = search_items(
+        db_rows,
+        q,
+        lambda it: [
+            it.title or "",
+            it.descr or "",
+        ],
+    )
+
+    rows = search_outcome.results
+    search_query_raw = search_outcome.query_raw
+    search_query_normalized = search_outcome.query_normalized
+    search_query_effective = search_outcome.query_effective
+    search_match_mode = search_outcome.match_mode
+
+    total_count = len(rows)
+    pages = max(1, (total_count + VACANCY_SEARCH_PAGE_SIZE - 1) // VACANCY_SEARCH_PAGE_SIZE)
+    page = 1
+    rows_page = rows[:VACANCY_SEARCH_PAGE_SIZE]
+
+    # ЛОГИРОВАНИЕ ПОИСКА
+    await log_search(
+        user_id=m.from_user.id,
+        section="vacancy",
+        query_raw=search_query_raw,
+        query_normalized=search_query_normalized,
+        query_effective=search_query_effective,
+        match_mode=search_match_mode,
+        results_count=total_count,
+    )
+
+    # Сохраняем контекст поиска для кнопки «Назад» из карточки
+    await state.update_data(
+        vac_search_query=q,
+        vac_search_query_raw=search_query_raw,
+        vac_search_query_normalized=search_query_normalized,
+        vac_search_query_effective=search_query_effective,
+        vac_search_match_mode=search_match_mode,
+        vac_search_result_ids=[l.id for l in rows],
+        vac_search_offset=0,
+    )
 
     # Сборка клавиатуры результатов
     buttons: List[List[InlineKeyboardButton]] = []
+
+    for l in rows_page:
+        title = (l.title or "(без заголовка)").strip()
+        price = f" — {l.price}" if getattr(l, "price", None) else ""
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{title}{price}",
+                callback_data=f"vac_view:{l.id}:search",
+            )
+        ])
+
+    if pages > 1:
+        pager = [
+            InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"),
+            InlineKeyboardButton(
+                text="»",
+                callback_data=f"vac_search_page:{VACANCY_SEARCH_PAGE_SIZE}"
+            )
+        ]
+        buttons.append(pager)
+
+    buttons.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")])
+    buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+
+    main_btn = await get_common_menu_button("main_menu")
+    if main_btn:
+        buttons.append([main_btn])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    correction_note = ""
+    if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
+        correction_note = (
+            f"🧠 Показаны результаты по запросу: "
+            f"<b>{search_query_effective}</b> "
+            f"(учтена возможная опечатка).\n\n"
+        )
+
+    msg = await m.answer(
+        f"{correction_note}Результаты по запросу: <b>{q}</b>\nНайдено: {total_count}",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+    try:
+        from app.routers.utils import last_search_menu_message, last_search_query_message
+        last_search_menu_message[chat_id] = msg.message_id
+        last_search_query_message[chat_id] = msg.message_id
+    except Exception:
+        pass
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    await state.set_state(VacSearch.waiting_query)
+
+    _dbg(
+        "vacancy_view.vac_search_do",
+        chat_id=chat_id,
+        user_id=m.from_user.id,
+        q=q,
+        found=total_count,
+        match_mode=search_match_mode,
+        effective=search_query_effective,
+    )
+    
+
+@router.callback_query(F.data == "vac_search_results")
+async def vac_search_results(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    data = await state.get_data()
+    q = (data.get("vac_search_query") or "").strip()
+    ids = data.get("vac_search_result_ids") or []
+    
+    offset = data.get("vac_search_offset") or 0
+
+    if not ids:
+        buttons: List[List[InlineKeyboardButton]] = [
+            [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")],
+            [InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")],
+        ]
+        main_btn = await get_common_menu_button('main_menu')
+        if main_btn:
+            buttons.append([main_btn])
+
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        msg = await cb.bot.send_message(
+            chat_id,
+            "Результаты поиска недоступны.",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+
+        try:
+            from app.routers.utils import last_search_menu_message, last_search_query_message
+            last_search_menu_message[chat_id] = msg.message_id
+            last_search_query_message[chat_id] = msg.message_id
+        except Exception:
+            pass
+        await register_bot_messages(chat_id, [msg.message_id])
+
+        await cb.answer()
+        _dbg("vacancy_view.vac_search_results.empty_ctx", chat_id=chat_id)
+        return
+
+    page_ids = ids[offset:offset + VACANCY_SEARCH_PAGE_SIZE]
+
+    async with SessionLocal() as s:
+        db_rows = (await s.execute(
+            select(Listing).where(Listing.id.in_(page_ids))
+        )).scalars().all()
+
+
+    by_id = {x.id: x for x in db_rows}
+    rows = [by_id[i] for i in page_ids if i in by_id]
+
+    buttons: List[List[InlineKeyboardButton]] = []
+
     for l in rows:
         title = (l.title or "(без заголовка)").strip()
         price = f" — {l.price}" if getattr(l, "price", None) else ""
-        buttons.append([InlineKeyboardButton(text=f"{title}{price}", callback_data=f"vac_view:{l.id}")])
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{title}{price}",
+                callback_data=f"vac_view:{l.id}:search"
+            )
+        ])
 
-    if not rows:
-        buttons.append([InlineKeyboardButton(text="Ничего не найдено", callback_data="go_isk")])
-
+    buttons.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")])
     buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
         buttons.append([main_btn])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await m.answer(
+
+    msg = await cb.bot.send_message(
+        chat_id,
         f"Результаты по запросу: <b>{q}</b>\nНайдено: {len(rows)}",
         reply_markup=kb,
         parse_mode="HTML",
     )
-    await state.clear()
-    _dbg("vac_search_do", chat_id=chat_id, user_id=m.from_user.id, q=q, found=len(rows))
+
+    try:
+        from app.routers.utils import last_search_menu_message, last_search_query_message
+        last_search_menu_message[chat_id] = msg.message_id
+        last_search_query_message[chat_id] = msg.message_id
+    except Exception:
+        pass
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    await cb.answer()
+    _dbg("vacancy_view.vac_search_results", chat_id=chat_id, q=q, found=len(rows))
+
+
+
+
 
 # -*- coding: utf-8 -*-
 # RU: Возврат в главное меню раздела «Вакансии».
@@ -669,7 +1038,123 @@ async def vacancy_main_menu_cb(cb: CallbackQuery, state: FSMContext):
     title = await get_text("vacancy_main_title", "ru") or "Раздел «Вакансии»"
 
     # отправляем НОВОЕ сообщение с меню (мы предыдущие удалили)
-    await cb.bot.send_message(chat_id, title, reply_markup=kb, parse_mode="HTML")
+    msg = await cb.bot.send_message(chat_id, title, reply_markup=kb, parse_mode="HTML")
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await cb.answer()
     print("OK: vacancy_main_menu_cb done")
+
+
+@router.callback_query(F.data.startswith("vac_search_page:"))
+async def vac_search_page(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    await clear_bot_messages(chat_id, cb.bot)
+
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    offset = int(cb.data.split(":")[1])
+
+    await state.update_data(vac_search_offset=offset)
+
+    data = await state.get_data()
+
+    q = data.get("vac_search_query") or ""
+    search_query_normalized = data.get("vac_search_query_normalized") or ""
+    search_query_effective = data.get("vac_search_query_effective") or ""
+    search_match_mode = data.get("vac_search_match_mode") or "none"
+    ids = data.get("vac_search_result_ids") or []
+
+    page_ids = ids[offset:offset + VACANCY_SEARCH_PAGE_SIZE]
+
+    async with SessionLocal() as s:
+        db_rows = (await s.execute(
+            select(Listing).where(Listing.id.in_(page_ids))
+        )).scalars().all()
+
+    by_id = {x.id: x for x in db_rows}
+    rows = [by_id[i] for i in page_ids if i in by_id]
+
+    total_count = len(ids)
+    page = (offset // VACANCY_SEARCH_PAGE_SIZE) + 1
+    pages = max(1, (total_count + VACANCY_SEARCH_PAGE_SIZE - 1) // VACANCY_SEARCH_PAGE_SIZE)
+
+    buttons: List[List[InlineKeyboardButton]] = []
+
+    for l in rows:
+        title = (l.title or "(без заголовка)").strip()
+        price = f" — {l.price}" if getattr(l, "price", None) else ""
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{title}{price}",
+                callback_data=f"vac_view:{l.id}:search"
+            )
+        ])
+
+    if pages > 1:
+        pager = []
+
+        if page > 1:
+            pager.append(
+                InlineKeyboardButton(
+                    text="«",
+                    callback_data=f"vac_search_page:{offset - VACANCY_SEARCH_PAGE_SIZE}"
+                )
+            )
+
+        pager.append(
+            InlineKeyboardButton(
+                text=f"{page}/{pages}",
+                callback_data="stub"
+            )
+        )
+
+        if page < pages:
+            pager.append(
+                InlineKeyboardButton(
+                    text="»",
+                    callback_data=f"vac_search_page:{offset + VACANCY_SEARCH_PAGE_SIZE}"
+                )
+            )
+
+        buttons.append(pager)
+
+    buttons.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")])
+    buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+
+    main_btn = await get_common_menu_button("main_menu")
+    if main_btn:
+        buttons.append([main_btn])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    correction_note = ""
+    if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
+        correction_note = (
+            f"🧠 Показаны результаты по запросу: "
+            f"<b>{search_query_effective}</b> "
+            f"(учтена возможная опечатка).\n\n"
+        )
+
+    msg = await cb.bot.send_message(
+        chat_id,
+        f"{correction_note}Результаты по запросу: <b>{q}</b>\nНайдено: {total_count}",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+    from app.routers.utils import last_search_menu_message, last_search_query_message
+    last_search_menu_message[chat_id] = msg.message_id
+    last_search_query_message[chat_id] = msg.message_id
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    await cb.answer()
+
+    print(
+        f"[vacancy_view.py] vac_search_page | "
+        f"chat_id={chat_id} page={page}/{pages} "
+        f"match_mode={search_match_mode} effective={search_query_effective!r}"
+    )

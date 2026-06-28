@@ -1,8 +1,8 @@
 # utils.py
 from collections import defaultdict
-from app.models import City, Category, Listing
+from app.models import City, Category, Listing, BotMessage
 from app.database import SessionLocal
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from typing import Dict, Any, Optional, List
 from app.models import Category, Menu  # или Menu, если категории хранятся там
 from app.database import SessionLocal
@@ -14,7 +14,8 @@ import tempfile
 import os
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
-
+import inspect
+import time
 
 
 
@@ -27,7 +28,105 @@ sent_photo_messages = defaultdict(list)
 listing_message_ids = {}
 expanded_listing_by_chat = {}
 
+def log(msg: str):
+    """
+    Печать в лог в формате:
+    [файл.py] <handler_or_function> | HH:MM:SS | msg
+    Автоматически извлекает имя файла и имя функции из стека вызовов.
+    """
+    try:
+        # уровень 1 — наш непосредственный вызов; 2 — его вызов, если нужно
+        frm = inspect.stack()[1]
+        filename = os.path.basename(frm.filename)
+        func = frm.function
+        ts = time.strftime("%H:%M:%S")
+        print(f"[{filename}] {func} | {ts} | {msg}")
+    except Exception:
+        # на всякий случай fallback
+        print(f"[LOG] {msg}")
+
+
+async def register_bot_message(chat_id: int, message_id: int) -> None:
+    """Сохраняет сообщение бота в БД для очистки после рестарта."""
+    if not chat_id or not message_id:
+        return
+    try:
+        async with SessionLocal() as session:
+            exists = (await session.execute(
+                select(BotMessage).where(
+                    BotMessage.chat_id == int(chat_id),
+                    BotMessage.message_id == int(message_id),
+                )
+            )).scalar_one_or_none()
+            if exists:
+                return
+            session.add(BotMessage(chat_id=int(chat_id), message_id=int(message_id)))
+            await session.commit()
+    except Exception as e:
+        print(f"[utils.py] register_bot_message failed | chat_id={chat_id} msg_id={message_id} | {e}")
+
+
+async def register_bot_messages(chat_id: int, message_ids: list[int]) -> None:
+    """Сохраняет несколько сообщений бота в БД для очистки после рестарта."""
+    if not chat_id or not message_ids:
+        return
+    unique_ids = []
+    seen = set()
+    for mid in message_ids:
+        try:
+            mid_int = int(mid)
+        except Exception:
+            continue
+        if mid_int and mid_int not in seen:
+            seen.add(mid_int)
+            unique_ids.append(mid_int)
+    if not unique_ids:
+        return
+    try:
+        async with SessionLocal() as session:
+            existing = (await session.execute(
+                select(BotMessage.message_id).where(
+                    BotMessage.chat_id == int(chat_id),
+                    BotMessage.message_id.in_(unique_ids),
+                )
+            )).scalars().all()
+            existing_set = set(existing)
+            for mid in unique_ids:
+                if mid not in existing_set:
+                    session.add(BotMessage(chat_id=int(chat_id), message_id=mid))
+            await session.commit()
+    except Exception as e:
+        print(f"[utils.py] register_bot_messages failed | chat_id={chat_id} ids={unique_ids} | {e}")
+
+
+async def clear_bot_messages_db(chat_id: int, bot) -> None:
+    """Удаляет сохранённые в БД сообщения бота и очищает записи."""
+    if not chat_id:
+        return
+    try:
+        async with SessionLocal() as session:
+            rows = (await session.execute(
+                select(BotMessage).where(BotMessage.chat_id == int(chat_id))
+            )).scalars().all()
+
+            for row in rows:
+                try:
+                    await bot.delete_message(int(chat_id), int(row.message_id))
+                except Exception:
+                    pass
+
+            if rows:
+                await session.execute(
+                    delete(BotMessage).where(BotMessage.chat_id == int(chat_id))
+                )
+                await session.commit()
+    except Exception as e:
+        print(f"[utils.py] clear_bot_messages_db failed | chat_id={chat_id} | {e}")
+
 async def clear_bot_messages(chat_id, bot):
+    # Сначала чистим БД-слой: он переживает рестарт бота.
+    await clear_bot_messages_db(chat_id, bot)
+
     # Удаляем сообщения с фото (в том числе объявления, медиагруппы и пр.)
     for msg_id in sent_photo_messages.get(chat_id, []):
         try:
@@ -120,6 +219,7 @@ async def safe_edit_or_send(cb, text: str, reply_markup=None, parse_mode="HTML")
 
     # Добавляем сообщение в кеш для последующего удаления
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_message(chat_id, msg.message_id)
 
 async def city_by_slug(slug: str) -> City:
     async with SessionLocal() as s:
@@ -217,6 +317,46 @@ async def _flex_labels_for_category(session: AsyncSession, category_id: int, lan
         pass
     return labels
 
+
+async def render_category_path(
+    session: AsyncSession,
+    category_id: int | None,
+    *,
+    root_id: int | None = None,
+    separator: str = " → ",
+) -> str:
+    """
+    Человекочитаемый путь категории без технических корней.
+    Например: "Инструменты → Гитары → Электрогитары".
+    """
+    if not category_id:
+        return ""
+
+    names: List[str] = []
+    cur_id = category_id
+    guard = 0
+
+    while cur_id and guard < 20:
+        guard += 1
+        cat = await session.get(Category, cur_id)
+        if not cat:
+            break
+
+        if root_id is not None and cat.id == root_id:
+            break
+
+        name = (getattr(cat, "name", None) or "").strip()
+        if name:
+            names.append(_flex_html(name))
+
+        parent_id = getattr(cat, "parent_id", None)
+        if not parent_id or parent_id == cur_id:
+            break
+        cur_id = parent_id
+
+    names.reverse()
+    return separator.join(names)
+
 async def render_flex_block(session: AsyncSession, listing: Listing, lang: str = "ru") -> str:
     """
     Без заголовка. Формат строк:
@@ -224,12 +364,11 @@ async def render_flex_block(session: AsyncSession, listing: Listing, lang: str =
 
     Между логическими строками — пустая строка для читаемости.
     Поля с типом 'video' намеренно НЕ выводим (видео показывается отдельно плеером).
+    Служебные поля доп. категорий не показываем как flex; вместо этого выводим
+    человекочитаемый блок с названиями дополнительных категорий.
     """
     # Разбираем значения гибких полей
     flex = _flex_parse(listing.flex)
-    if not flex:
-        print(f"[utils.py] render_flex_block | listing_id={listing.id} | lines=0 | reason=empty_flex")
-        return ""
 
     # Карта типов по ключам из описания полей категории
     type_by_key: dict[str, str] = {}
@@ -259,12 +398,28 @@ async def render_flex_block(session: AsyncSession, listing: Listing, lang: str =
     # Лейблы для ключей
     labels = await _flex_labels_for_category(session, listing.category_id, lang=lang)
 
-    # Собираем строки, пропуская поля типа 'video'
+    # Служебные flex-ключи, которые не должны попадать в карточку пользователя.
+    # Дополнительные категории ниже выводятся отдельным русским блоком по Listing.extra_category_id*.
+    hidden_service_keys = {
+        "allow_extra_categories",
+        "extra_category_id1",
+        "extra_category_id2",
+        "extra_category_1",
+        "extra_category_2",
+    }
+
+    # Собираем строки, пропуская поля типа 'video' и служебные поля
     lines: List[str] = []
     skipped_video = 0
+    skipped_service = 0
     for raw_key, raw_val in flex.items():
         key = str(raw_key).strip().lower()
         if not key:
+            continue
+
+        # не отображаем служебные поля
+        if key in hidden_service_keys:
+            skipped_service += 1
             continue
 
         # не отображаем видео-поля
@@ -279,12 +434,21 @@ async def render_flex_block(session: AsyncSession, listing: Listing, lang: str =
         label = labels.get(key, key)
         lines.append(f"<b>{label}:</b> {val}")
 
+    # Дополнительные категории здесь намеренно НЕ выводим.
+    # Текущая категория/подкатегория показывается в заголовке карточки раздела.
+
     if not lines:
-        print(f"[utils.py] render_flex_block | listing_id={listing.id} | lines=0 | skipped_video={skipped_video}")
+        print(
+            f"[utils.py] render_flex_block | listing_id={listing.id} | "
+            f"lines=0 | skipped_video={skipped_video} | skipped_service={skipped_service}"
+        )
         return ""
 
     result = "\n\n".join(lines)
-    print(f"[utils.py] render_flex_block | listing_id={listing.id} | lines={len(lines)} | skipped_video={skipped_video}")
+    print(
+        f"[utils.py] render_flex_block | listing_id={listing.id} | "
+        f"lines={len(lines)} | skipped_video={skipped_video} | skipped_service={skipped_service}"
+    )
     return result
 
 

@@ -12,7 +12,7 @@ import json
 from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.keyboards import get_common_menu_button
-from app.routers.utils import clear_bot_messages, last_bot_messages, safe_edit_or_send
+from app.routers.utils import clear_bot_messages, last_bot_messages, safe_edit_or_send, register_bot_messages
 from app.models import Category
 
 router = Router(name="vacancy_edit_overview")
@@ -199,6 +199,7 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
     if not l:
         msg = await send("Объявление не найдено.", parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         _pp("_render_overview", chat_id=chat_id, listing_id=listing_id, err="not_found")
         return
     cat_path = await _category_chain_by_db(cat) if cat else None
@@ -207,6 +208,7 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
     kb = await _build_overview_kb(l.id, defs)
     msg = await send(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     _pp("_render_overview", chat_id=chat_id, listing_id=listing_id, msg_id=msg.message_id)
 
 
@@ -284,6 +286,7 @@ async def vef_main_title_start(cb: CallbackQuery, state: FSMContext):
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await cb.answer()
     _pp("vef_main_title_start", chat_id=chat_id, listing_id=listing_id)
@@ -336,6 +339,7 @@ async def vef_main_descr_start(cb: CallbackQuery, state: FSMContext):
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await cb.answer()
     _pp("vef_main_descr_start", chat_id=chat_id, listing_id=listing_id)
@@ -389,6 +393,7 @@ async def vef_main_price_start(cb: CallbackQuery, state: FSMContext):
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await cb.answer()
     _pp("vef_main_price_start", chat_id=chat_id, listing_id=listing_id)
@@ -465,6 +470,7 @@ async def vef_extra_start(cb: CallbackQuery, state: FSMContext):
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
     _pp("vef_extra_start", chat_id=chat_id, listing_id=listing_id, key=key, msg_id=msg.message_id)
 

@@ -17,7 +17,7 @@ _load_env_ai()
 
 import asyncio
 from collections import defaultdict
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Callable, Awaitable
 from datetime import datetime
 import logging
 
@@ -30,6 +30,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     InputMediaPhoto,
     KeyboardButton,
+    Update,
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart, Command
@@ -42,9 +43,9 @@ from sqlalchemy.exc import NoResultFound
 
 # --- Приложение/Бот ---
 from app.database import init_db, SessionLocal
-from app.models import City, Category, Item, Listing
+from app.models import City, Category, Item, Listing, BotUser
 from app.keyboards import (
-    main_inline_menu,
+    # main_inline_menu,
     market_inline,
     photo_keyboard,
     confirm_keyboard,
@@ -62,16 +63,19 @@ from app.keyboards import (
 )
 from app.routers.market_add import router as market_add_router
 from app.routers.market_edit import router as market_edit_router   # 🔹 добавили
+from app.routers.market_edit_photos import router as market_edit_photos_router
 
 from app.routers.services_add import router as services_add_router
 from app.routers.services_view import router as services_view_router
 from app.routers.services_edit_overview import router as services_edit_overview_router
 from app.routers.services_edit import router as services_edit_router
+from app.routers.services_edit_photos import router as services_edit_photos_router
 
 
 
 from app.routers.utils import (
     clear_bot_messages,
+    register_bot_messages,
     last_bot_messages,
     sent_photo_messages,
     my_listing_messages,
@@ -99,6 +103,12 @@ from app.routers.user_extra_fields import router as user_extra_fields_router
 from app.routers.market_edit import router as market_edit_router
 from app.routers.market_edit_overview import router as market_edit_overview_router
 
+from app.routers.events_view import router as events_view_router
+from app.routers.events_add import router as events_add_router
+from app.routers.events_admin import router as events_admin_router
+
+
+
 # импорты рядом с остальными роутерами
 from app.routers.vacancy_add import router as vacancy_add_router
 from app.routers.vacancy_view import router as vacancy_view_router
@@ -107,6 +117,9 @@ from app.routers.vacancy_edit import router as vacancy_edit_router
 # from app.routers.vacancy_edit_overview import router as vacancy_edit_overview_router
 
 from app.routers.codex_review import router as codex_review_router
+
+from app.routers.utils import log
+
 
 def setup_routers(dp):
     # ... ваши остальные роутеры ...
@@ -128,6 +141,7 @@ async def safe_edit_or_send(cb: CallbackQuery, text: str, reply_markup=None, par
     try:
         msg = await cb.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
     except Exception:
         try:
             await cb.message.delete()
@@ -135,6 +149,7 @@ async def safe_edit_or_send(cb: CallbackQuery, text: str, reply_markup=None, par
             pass
         msg = await cb.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
 
 
 
@@ -146,7 +161,100 @@ expanded_listing_by_chat: Dict[int, int] = {}
 # Новый словарь для хранения id сообщений с фото
 
 # Set up logging to see debug output.
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
+# ───────── logging (quiet by default) ─────────
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+)
+
+# Приглушаем болтливые библиотеки
+logging.getLogger("aiogram").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+# ───────────────────────────────────────────────
+
+
+# ─────────────────────── Middleware: сброс накопившихся нажатий ──────────────
+class DropStaleCallbackMiddleware:
+    """Отбрасывает callback_query с update_id <= порогового, накопившиеся пока бот не работал."""
+
+    def __init__(self, last_update_id: int) -> None:
+        self._threshold = last_update_id
+        self._log = logging.getLogger("app.middleware")
+        self._log.info("Stale callback threshold: update_id <= %s", self._threshold)
+
+    async def __call__(
+        self,
+        handler: Callable[[Update, Dict[str, Any]], Awaitable[Any]],
+        event: Update,
+        data: Dict[str, Any],
+    ) -> Any:
+        if event.callback_query and event.update_id <= self._threshold:
+            self._log.warning(
+                "Dropped stale callback_query data=%r update_id=%s",
+                event.callback_query.data,
+                event.update_id,
+            )
+            try:
+                await event.callback_query.answer()
+            except Exception:
+                pass
+            return
+        return await handler(event, data)
+
+
+class TrackUserMiddleware:
+    """Обновляет BotUser.last_seen при каждом входящем обновлении от пользователя."""
+
+    async def __call__(
+        self,
+        handler: Callable[[Update, Dict[str, Any]], Awaitable[Any]],
+        event: Update,
+        data: Dict[str, Any],
+    ) -> Any:
+        user = None
+        if event.message and event.message.from_user:
+            user = event.message.from_user
+        elif event.callback_query and event.callback_query.from_user:
+            user = event.callback_query.from_user
+
+        if user and not user.is_bot:
+            try:
+                async with SessionLocal() as s:
+                    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                    now = datetime.utcnow()
+                    username = user.username or None
+                    full_name = (f"{user.first_name or ''} {user.last_name or ''}").strip() or None
+                    stmt = sqlite_insert(BotUser).values(
+                        user_id=user.id,
+                        username=username,
+                        full_name=full_name,
+                        last_seen=now,
+                    ).on_conflict_do_update(
+                        index_elements=["user_id"],
+                        set_={"username": username, "full_name": full_name, "last_seen": now},
+                    )
+                    await s.execute(stmt)
+                    await s.commit()
+            except Exception:
+                pass
+
+        return await handler(event, data)
+
+
+async def get_last_update_id(bot: Bot) -> int:
+    """Получить максимальный update_id из очереди ДО старта polling."""
+    try:
+        updates = await bot.get_updates(limit=100, timeout=0)
+        if updates:
+            return max(u.update_id for u in updates)
+    except Exception as e:
+        logging.getLogger("app.main").warning("get_updates failed: %s", e)
+    return 0
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ───────────────────────── Settings ────────────────────────── #
@@ -161,15 +269,59 @@ bot = Bot(
 )
 dp = Dispatcher()
 
+print("=== rus_mus_srb_bot started (DEV) ===")
+
+# ── CLEANUP ROUTER: удаляет любые лишние сообщения в ЛС ─────────────────────
+from aiogram import Router
+cleanup_router = Router(name="cleanup_router")
+
+WHITELIST_CMDS = {}
+ALLOWED_STATE_PREFIXES = ("Sell", "ServicesAdd", "VacancyAdd")  # ваши мастера
+
+def _is_allowed_state(state_name: str | None) -> bool:
+    if not state_name:
+        return False
+    return state_name.split(":", 1)[0] in ALLOWED_STATE_PREFIXES
+
+@cleanup_router.message()   # ловит всё, что не перехватили другие хендлеры
+async def delete_stray_messages(message: Message, state: FSMContext):
+    # работаем только в личке
+    if getattr(message.chat, "type", None) != "private":
+        return
+
+    txt = (message.text or "").strip()
+
+    # whitelisted-команды не трогаем — их обрабатывают свои хендлеры
+    if txt.startswith("/") and txt.split()[0] in WHITELIST_CMDS:
+        return
+
+    # если пользователь сейчас в мастере публикации — не трогаем
+    if _is_allowed_state(await state.get_state()):
+        return
+
+    try:
+        await message.bot.delete_message(message.chat.id, message.message_id)
+    except Exception as e:
+        print(f"[cleanup_router] delete failed: {e}")
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 from app.routers.admin_panel import router as admin_panel_router
+from app.routers.admin_analytics import router as admin_analytics_router
 dp.include_router(admin_panel_router)
+dp.include_router(admin_analytics_router)
 dp.include_router(admin_fields_router)
 dp.include_router(market_edit_overview_router)
 dp.include_router(services_edit_router)
+dp.include_router(market_edit_photos_router)
 dp.include_router(vacancy_add_router)
 dp.include_router(vacancy_view_router)
 dp.include_router(vacancy_edit_router)
 dp.include_router(codex_review_router)
+dp.include_router(events_view_router)
+dp.include_router(events_add_router)
+dp.include_router(events_admin_router)
+
 print("[routers] codex_review_router included")
 # dp.include_router(vacancy_edit_overview_router)
 
@@ -198,23 +350,31 @@ dp.include_router(feedback.router)
 dp.include_router(user_extra_fields_router)
 
 
-from app.routers.catalog_view import router as catalog_view_router
-from app.routers.catalog_add import router as catalog_add_router
-dp.include_router(catalog_view_router)
-dp.include_router(catalog_add_router)
+# from app.routers.catalog_view import router as catalog_view_router
+# from app.routers.catalog_add import router as catalog_add_router
+# dp.include_router(catalog_view_router)
+# dp.include_router(catalog_add_router)
 
 dp.include_router(services_add_router)
 dp.include_router(services_view_router)
 dp.include_router(services_edit_overview_router)
+dp.include_router(services_edit_photos_router)
 print("[routers] services_edit_overview_router included")
+
 
 
 @dp.callback_query(F.data == "go_isk")
 async def go_isk(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    kb = await vacancy_main_menu()  # новое динамическое меню «Вакансии»
-    await cb.message.edit_text("Раздел «Вакансии»", reply_markup=kb, parse_mode="HTML")
-    await cb.answer()
+    await cb.answer()                 # 1) сразу закрываем "часики" Telegram
+    await state.clear()               # 2) дальше уже любая логика
+    kb = await vacancy_main_menu()
+    await cb.message.edit_text(
+        "Раздел «Вакансии»",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(cb.message.message_id)
+    await register_bot_messages(cb.message.chat.id, [cb.message.message_id])
 
 
 
@@ -224,6 +384,7 @@ async def go_events(cb: CallbackQuery, state: FSMContext):
     markup = await events_main_inline()
     await safe_edit_or_send(cb, await get_text("events_choose_city", "ru"), markup)
     await cb.answer()
+    print(f"[main.py] go_events ✓ ")
 
 
 
@@ -288,7 +449,7 @@ async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
 async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
 
-    # Диагностика до очистки
+    # ─── Диагностика до очистки ───────────────────────────────────────────────
     print(
         f"[BEFORE] main_menu_cb | chat_id={chat_id} | "
         f"query_cached={last_search_query_message.get(chat_id)} | "
@@ -299,53 +460,63 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
     # 1) Удаляем сообщение, по которому нажали кнопку
     try:
         await cb.message.delete()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] main_menu_cb delete clicked msg: {e}")
 
-    # 2) Чистим «Возврат» и «Подсказку» из FSM (это и есть недостающий шаг)
+    # 2) Чистим «Возврат» и «Подсказку» из FSM
     try:
-        # хелпер из vacancy_add.py — удаляет и nav_msg_id, и prompt_id, если они есть
         from app.routers.vacancy_add import _drop_nav_and_prompt
         await _drop_nav_and_prompt(state, chat_id, cb.bot)
-    except Exception:
-        # Фоллбэк: ручное удаление, если импорт не удался
+    except Exception as e:
+        print(f"[WARN] main_menu_cb _drop_nav_and_prompt failed: {e}")
         data = await state.get_data()
         for key in ("nav_msg_id", "prompt_id"):
             mid = data.get(key)
             if mid:
                 try:
                     await cb.bot.delete_message(chat_id, mid)
-                except Exception:
-                    pass
+                except Exception as e2:
+                    print(f"[WARN] main_menu_cb delete {key}={mid}: {e2}")
         await state.update_data(nav_msg_id=None, prompt_id=None)
 
-    # 3) Вычищаем кэши поиска (как у вас было)
+    # 3) Вычищаем кэши поиска
     qid = last_search_query_message.pop(chat_id, None)
     mid = last_search_menu_message.pop(chat_id, None)
     print(f"[POP] main_menu_cb | query_id={qid} | menu_id={mid}")
-    for msg_id in (qid, mid):
-        if msg_id:
+    for _mid in (qid, mid):
+        if _mid:
             try:
-                await cb.bot.delete_message(chat_id, msg_id)
-            except Exception:
-                pass
+                await cb.bot.delete_message(chat_id, _mid)
+            except Exception as e:
+                print(f"[WARN] main_menu_cb delete cached search msg_id={_mid}: {e}")
 
     # 4) Общая подчистка прочих служебных сообщений бота
     await clear_bot_messages(chat_id, cb.bot)
 
-    # 5) Сброс состояния
-    await state.clear()
+    # 4.1) Удаляем черновик Афиши (если пользователь был в мастере)
+    try:
+        from app.routers.events_add import _delete_draft
+        await _delete_draft(cb.bot, chat_id, state)
+    except Exception:
+        pass
 
-    # 6) Рисуем главное меню (без редактирования удалённого сообщения — просто answer)
+    # 5) Сброс состояния
+    try:
+        await state.clear()
+    except Exception as e:
+        print(f"[WARN] main_menu_cb state.clear(): {e}")
+
+    # 6) Рисуем главное меню
     try:
         welcome = await get_text("welcome", "ru")
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] main_menu_cb get_text('welcome'): {e}")
         welcome = None
     welcome = welcome or "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
 
     menu_markup = await build_main_menu(lang="ru")
 
-    # Добавим «Админ-панель», как у вас
+    # 6.1) Добавим «Админ-панель», если нужно
     try:
         from aiogram.types import InlineKeyboardButton
         from app.routers.admin_panel import is_admin
@@ -359,14 +530,33 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
                 menu_markup.inline_keyboard.append(
                     [InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")]
                 )
+    except Exception as e:
+        print(f"[WARN] main_menu_cb add admin button: {e}")
+
+    # Важно: отправляем новое сообщение и кладём его в кэш
+    msg = None
+    try:
+        # можно через bot.send_message, чтобы не зависеть от удалённого cb.message
+        msg = await cb.bot.send_message(
+            chat_id, welcome, reply_markup=menu_markup, parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"[ERROR] main_menu_cb send_message: {e}")
+
+    try:
+        await cb.answer()
     except Exception:
         pass
 
-    # ВАЖНО: используем .answer, а не safe_edit_or_send — редактировать уже нечего
-    await cb.message.answer(welcome, reply_markup=menu_markup, parse_mode="HTML")
-    await cb.answer()
+    # Кладём в кэш только если реально есть отправленное сообщение
+    if msg:
+        lst = last_bot_messages.get(chat_id) or []
+        lst.append(msg.message_id)
+        last_bot_messages[chat_id] = lst
+        await register_bot_messages(chat_id, [msg.message_id])
+        print(f"[CACHE] main_menu_cb store msg_id={msg.message_id}")
 
-    # Диагностика после
+    # ─── Диагностика после ───────────────────────────────────────────────────
     print(
         f"[AFTER] main_menu_cb | chat_id={chat_id} | "
         f"query_cached={last_search_query_message.get(chat_id)} | "
@@ -420,30 +610,68 @@ async def cancel_handler(m: Message, state: FSMContext):
 
 # ───────────── MARKET (Барахолка) Handlers ───────────── #
 
+import asyncio
+import re
+from aiogram.types import Message
+
+async def delete_user_command_with_delay(message: Message, delay: float = 2.0):
+    if not message.text:
+        return
+
+    text = message.text.strip()
+    if not text.startswith("/"):
+        return
+
+    try:
+        # для /start — задержка, для остальных можно тоже оставить ту же
+        await asyncio.sleep(delay)
+        await message.delete()
+    except Exception as e:
+        print(f"[delete_user_command_with_delay] can't delete user cmd: {e}")
+
+
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     chat_id = message.chat.id
+
+    # # 0) Сначала пытаемся удалить исходное сообщение пользователя (/start)
+    # try:
+    #     await message.bot.delete_message(chat_id=chat_id, message_id=message.message_id)
+    # except Exception as e:
+    #     # не критично (например, нет прав в группе или сообщение слишком старое)
+    #     print(f"[cmd_start] can't delete /start: {e}")
+
+    # 1) чистим предыдущие сообщения бота (как и было)
     await clear_bot_messages(chat_id, message.bot)
+
+    # 2) сбрасываем состояние (как и было)
     await state.clear()
 
+    # 3) текст приветствия
     welcome = await get_text("welcome", "ru")
     if not welcome:
-        welcome = "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
+        welcome = "👋 Привет!\n<b>Главное меню</b>\nВыберите раздел:"
 
-    # базовое меню
+    # 4) базовое меню
     markup = await build_main_menu()
 
-    # добавляем кнопку Админка ТОЛЬКО админу и без дублей
+    # 5) добавляем «Админ-панель» админу (без дублей) — как и было
     if is_admin(message.from_user.id):
-        if not any(getattr(btn, "callback_data", None) == "admin"
-                   for row in (markup.inline_keyboard or []) for btn in row):
+        if not any(
+            getattr(btn, "callback_data", None) == "admin"
+            for row in (markup.inline_keyboard or []) for btn in row
+        ):
             markup.inline_keyboard.append(
                 [InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")]
             )
 
+    # 6) отправляем главное меню
     msg = await message.answer(welcome, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[chat_id].append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    # await delete_user_command_with_delay(message, delay=2.0)
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -451,6 +679,7 @@ async def cmd_start(message: Message, state: FSMContext):
         f"user_id: {getattr(message.from_user, 'id', None)} | "
         f"msg_id: {getattr(message, 'message_id', None)}"
     )
+
 
 
 # @dp.callback_query(F.data.startswith("vcity:"))
@@ -497,7 +726,9 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @dp.message(Command("myid"))
 async def get_my_id(message: Message):
-    await message.answer(f"Ваш Telegram ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
+    msg = await message.answer(f"Ваш Telegram ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
+    last_bot_messages[message.chat.id].append(msg.message_id)
+    await register_bot_messages(message.chat.id, [msg.message_id])
 
 
 
@@ -506,12 +737,20 @@ async def get_my_id(message: Message):
 async def main():
     await init_db()
 
+    # Получаем порог СТАРЫХ обновлений до регистрации роутеров и старта polling
+    last_update_id = await get_last_update_id(bot)
+
+    # Middleware регистрируется ПЕРВЫМ — до всех роутеров
+    dp.update.outer_middleware(DropStaleCallbackMiddleware(last_update_id))
+    dp.update.outer_middleware(TrackUserMiddleware())
+
     # Подключаем роутеры
     dp.include_router(market_view_router)  # 👈 как у вас было
-
+    dp.include_router(cleanup_router)
     # Тихая и корректная остановка по Ctrl+C / SIGTERM
     try:
-        await dp.start_polling(bot)
+
+        await dp.start_polling(bot, drop_pending_updates=True)
     except asyncio.CancelledError:
         # Опрос отменён — штатная ситуация при остановке
         pass
@@ -532,3 +771,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # Гасим traceback на Windows при Ctrl+C
         print("Interrupted by user.")
+

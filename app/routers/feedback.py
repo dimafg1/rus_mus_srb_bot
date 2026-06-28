@@ -3,15 +3,13 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
 from app.states import FeedbackStates
-from app.routers.utils import clear_bot_messages, last_bot_messages, get_text
+from app.routers.utils import clear_bot_messages, last_bot_messages, get_text, register_bot_messages
 from sqlalchemy import text
 from app.database import SessionLocal
 import inspect
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.keyboards import get_common_menu_button
-
-
 
 router = Router()
 
@@ -59,6 +57,7 @@ async def feedback_start(cb: CallbackQuery, state: FSMContext):
 
     # Оба сообщения в кеш, чтобы потом удалить
     last_bot_messages.setdefault(chat_id, []).extend([nav_msg.message_id, msg.message_id])
+    await register_bot_messages(chat_id, [nav_msg.message_id, msg.message_id])
 
     print(
         f"FUNC: feedback_start | chat_id: {chat_id} | user_id: {cb.from_user.id} | cb.data: {cb.data}"
@@ -72,7 +71,7 @@ async def feedback_receive(message: Message, state: FSMContext):
     """
     from sqlalchemy import text  # обязательно!
     from app.keyboards import get_common_menu_button
-    from app.routers.utils import clear_bot_messages, last_bot_messages
+    from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
     from app.database import SessionLocal
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -80,6 +79,13 @@ async def feedback_receive(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
     text_msg = message.text
+
+    # >>> ВАЖНО: удаляем пользовательское сообщение с текстом
+    try:
+        await message.delete()
+        print(f"[DEL] feedback_receive | deleted user msg | chat_id={chat_id} user_id={user_id}")
+    except Exception as e:
+        print(f"[WARN] feedback_receive | cannot delete user msg: {e}")
 
     # Сохраняем в БД
     async with SessionLocal() as session:
@@ -107,6 +113,7 @@ async def feedback_receive(message: Message, state: FSMContext):
 
     # Сохраняем id сообщений для последующего удаления
     last_bot_messages.setdefault(chat_id, []).extend([msg.message_id])
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await state.clear()
     print(

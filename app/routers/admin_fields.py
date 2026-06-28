@@ -7,7 +7,7 @@ import json, inspect, re
 from app.database import SessionLocal
 from app.models import Category
 from app.states import AdminFieldStates
-from app.routers.utils import clear_bot_messages, last_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 
 # берём проверку админа из admin_panel (важно: admin_panel НЕ должен импортировать этот файл)
 from app.routers.admin_panel import is_admin
@@ -224,6 +224,7 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
         reply_markup=markup, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -251,6 +252,7 @@ async def admin_fields_add_start(cb: CallbackQuery, state: FSMContext):
     ])
     msg = await cb.message.answer("➕ <b>Новое поле</b>\nВыберите <b>тип</b> поля:", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.choosing_type)
 
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | cat_id: {cat_id} | chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id} | msg_id: {msg.message_id}")
@@ -311,6 +313,7 @@ async def admin_field_edit_menu(cb: CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.message.answer(text, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     import inspect
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | user_id: {cb.from_user.id} | cat_id: {cat_id} | idx: {idx} | msg_id: {msg.message_id}")
@@ -365,6 +368,7 @@ async def admin_field_delete_confirm(cb: CallbackQuery):
     ])
     msg = await cb.message.answer("Удалить это поле безвозвратно?", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     import inspect
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | cat_id: {cat_id} | idx: {idx} | msg_id: {msg.message_id}")
@@ -396,6 +400,7 @@ async def admin_field_delete_yes(cb: CallbackQuery):
     ])
     msg = await cb.message.answer("🗑️ Поле удалено." if removed else "Поле не найдено.", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     import inspect
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | user_id: {cb.from_user.id} | cat_id: {cat_id} | idx: {idx} | removed: {bool(removed)} | msg_id: {msg.message_id}")
@@ -432,6 +437,7 @@ async def admin_field_edit_label_start(cb: CallbackQuery, state: FSMContext):
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | "
         f"cat_id: {cat_id} | idx: {idx} | old_label: {old_label} | msg_id: {msg.message_id}"
@@ -458,6 +464,7 @@ async def admin_field_edit_label_save(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
     msg = await message.answer("✅ Заголовок обновлён.", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
+    await register_bot_messages(message.chat.id, [msg.message_id])
 
     import inspect
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {message.chat.id} | cat_id: {cat_id} | idx: {idx} | msg_id: {msg.message_id}")
@@ -494,6 +501,7 @@ async def admin_field_edit_key_start(cb: CallbackQuery, state: FSMContext):
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | "
         f"cat_id: {cat_id} | idx: {idx} | old_key: {old_key} | msg_id: {msg.message_id}"
@@ -511,6 +519,7 @@ async def admin_field_edit_key_save(message: Message, state: FSMContext):
     if not re.fullmatch(r'[a-z0-9_]+', key):
         msg = await message.answer("❗️Только латиница/цифры/нижнее подчёркивание. Введите снова.")
         last_bot_messages[message.chat.id] = [msg.message_id]
+        await register_bot_messages(message.chat.id, [msg.message_id])
         print(
             f"FUNC: {inspect.currentframe().f_code.co_name} | step: bad_key | "
             f"chat_id: {message.chat.id} | key: {key} | msg_id: {msg.message_id}"
@@ -530,6 +539,7 @@ async def admin_field_edit_key_save(message: Message, state: FSMContext):
         if duplicate:
             msg = await message.answer("❗️Ключ уже используется в этой категории. Введите другой.")
             last_bot_messages[message.chat.id] = [msg.message_id]
+            await register_bot_messages(message.chat.id, [msg.message_id])
             print(
                 f"FUNC: {inspect.currentframe().f_code.co_name} | step: key_duplicate | "
                 f"chat_id: {message.chat.id} | cat_id: {cat_id} | key: {key} | msg_id: {msg.message_id}"
@@ -544,6 +554,7 @@ async def admin_field_edit_key_save(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
     msg = await message.answer("✅ Ключ обновлён.", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
+    await register_bot_messages(message.chat.id, [msg.message_id])
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {message.chat.id} | "
@@ -568,6 +579,7 @@ async def admin_field_edit_options_start(cb: CallbackQuery, state: FSMContext):
     ])
     msg = await cb.message.answer("Введите варианты через запятую:\n<code>Опция 1, Опция 2, ...</code>", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(AdminFieldStates.editing_options)
 
     import inspect
@@ -594,6 +606,7 @@ async def admin_field_edit_options_save(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
     msg = await message.answer("✅ Варианты обновлены.", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
+    await register_bot_messages(message.chat.id, [msg.message_id])
 
     import inspect
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {message.chat.id} | cat_id: {cat_id} | idx: {idx} | msg_id: {msg.message_id}")
@@ -616,6 +629,7 @@ async def admin_field_pick_type(cb: CallbackQuery, state: FSMContext):
     ])
     msg = await cb.message.answer("Введите <b>заголовок</b> поля (например: <i>Модель</i>)", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_label)
 
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | type: {ftype} | chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id} | msg_id: {msg.message_id}")
@@ -636,6 +650,7 @@ async def admin_field_label(message: Message, state: FSMContext):
     ])
     msg = await message.answer("Введите <b>ключ</b> (латиница/цифры/_)\nили нажмите кнопку ниже.", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[message.chat.id] = [msg.message_id]
+    await register_bot_messages(message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_key)
 
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | label: {label} | key_suggest: {key_suggest} | chat_id: {message.chat.id} | user_id: {message.from_user.id} | msg_id: {msg.message_id}")
@@ -656,6 +671,7 @@ async def admin_field_keep_key(cb: CallbackQuery, state: FSMContext):
         if await field_key_exists(s, cat_id, key):
             msg = await cb.message.answer("❗️Ключ уже используется в этой категории. Введите другой.")
             last_bot_messages[cb.message.chat.id] = [msg.message_id]
+            await register_bot_messages(cb.message.chat.id, [msg.message_id])
             # остаёмся в состоянии waiting_key
             import inspect
             print(
@@ -673,6 +689,7 @@ async def admin_field_keep_key(cb: CallbackQuery, state: FSMContext):
     ])
     msg = await cb.message.answer("Поле обязательное?", reply_markup=kb)
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_required)
 
     import inspect
@@ -695,6 +712,7 @@ async def admin_field_key(message: Message, state: FSMContext):
     if not re.fullmatch(r'[a-z0-9_]+', key):
         msg = await message.answer("❗️Ключ: только латиница/цифры/нижнее подчёркивание. Введите снова.")
         last_bot_messages[message.chat.id] = [msg.message_id]
+        await register_bot_messages(message.chat.id, [msg.message_id])
         import inspect
         print(
             f"FUNC: {inspect.currentframe().f_code.co_name} | step: bad_key | "
@@ -710,6 +728,7 @@ async def admin_field_key(message: Message, state: FSMContext):
         if await field_key_exists(s, cat_id, key):
             msg = await message.answer("❗️Ключ уже используется в этой категории. Введите другой ключ.")
             last_bot_messages[message.chat.id] = [msg.message_id]
+            await register_bot_messages(message.chat.id, [msg.message_id])
             import inspect
             print(
                 f"FUNC: {inspect.currentframe().f_code.co_name} | step: key_duplicate | "
@@ -726,6 +745,7 @@ async def admin_field_key(message: Message, state: FSMContext):
     ])
     msg = await message.answer("Поле обязательное?", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
+    await register_bot_messages(message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_required)
 
     import inspect
@@ -749,6 +769,7 @@ async def admin_field_required(cb: CallbackQuery, state: FSMContext):
     if data.get("field_type") == "select":
         msg = await cb.message.answer("Укажите варианты через запятую:\n<code>Sony, Yamaha, AKG</code>", parse_mode="HTML")
         last_bot_messages[cb.message.chat.id] = [msg.message_id]
+        await register_bot_messages(cb.message.chat.id, [msg.message_id])
         await state.set_state(AdminFieldStates.waiting_options)
     else:
         await persist_field_and_back(cb, state)
@@ -799,6 +820,7 @@ async def persist_field_and_back(cb_or_msg, state: FSMContext):
             ])
             msg = await send("❗️Ключ уже используется в этой категории.\nВведите другой ключ (латиница/цифры/_):", reply_markup=kb)
             last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
             await state.set_state(AdminFieldStates.waiting_key)
             print(
                 f"FUNC: {inspect.currentframe().f_code.co_name} | step: key_duplicate | "
@@ -816,6 +838,7 @@ async def persist_field_and_back(cb_or_msg, state: FSMContext):
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     print(f"FUNC: {inspect.currentframe().f_code.co_name} | saved_field: {field} | cat_id: {cat_id} | chat_id: {chat_id} | user_id: {user_id} | msg_id: {msg.message_id}")
 
@@ -890,6 +913,7 @@ async def admin_field_view(cb: CallbackQuery, state: FSMContext):
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     import inspect
     print(

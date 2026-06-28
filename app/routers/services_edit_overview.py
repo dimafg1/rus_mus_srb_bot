@@ -7,7 +7,7 @@
 # -----------------------------------------------------------------------------
 
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
@@ -16,7 +16,7 @@ import re
 
 from app.database import SessionLocal
 from app.models import Listing, City, Category
-from app.routers.utils import clear_bot_messages, last_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 
 from collections import defaultdict
 from aiogram.types import Message
@@ -313,6 +313,7 @@ def _extract_video_value(defs: list[dict], flex_vals: dict):
 async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
     """Очистить чат, показать обзор; при URL — превью остаётся в карточке,
     при file_id — видео отправляется отдельным сообщением под меню.
+    Фото услуги показываются НАД карточкой редактирования.
     Всё добавляем в last_bot_messages для последующей зачистки."""
     # 1) зачистка интерфейса
     await clear_bot_messages(chat_id, bot)
@@ -320,6 +321,14 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
 
     # 2) загрузка сущностей и текущих значений
     listing, city, cat, defs, flex_vals = await _load_listing_bundle(listing_id)
+
+    # 2.1) фото услуги
+    photo_ids = []
+    if listing.photo_file_id:
+        try:
+            photo_ids = [x.strip() for x in listing.photo_file_id.split(",") if x.strip()]
+        except Exception:
+            photo_ids = []
 
     # 3) найти значение видео по первому полю type="video"
     video_value: str | None = None
@@ -341,6 +350,7 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
 
     # 5) кнопки «Править …»
     rows = [
+        [InlineKeyboardButton(text="🖼 Править фото",       callback_data=f"sphoto:open:{listing_id}")],
         [InlineKeyboardButton(text="✏️ Править заголовок", callback_data=f"sef:main:title:{listing_id}")],
         [InlineKeyboardButton(text="✏️ Править описание",  callback_data=f"sef:main:descr:{listing_id}")],
         [InlineKeyboardButton(text="✏️ Править стоимость", callback_data=f"sef:main:price:{listing_id}")],
@@ -348,23 +358,29 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
     for f in defs:
         key   = (str(f.get("key","")).strip().lower() or "field")
         ftype = (str(f.get("type","")).strip().lower() or "text")
-        if ftype.startswith("__"):  continue 
+        if ftype.startswith("__"):
+            continue
         label = f.get("label") or f.get("name") or key
         if ftype == "video":
-            rows.append([InlineKeyboardButton(text=f"✏️ Править: {label}", callback_data=f"sefx:video:start:{listing_id}:{key}")])
+            rows.append([InlineKeyboardButton(
+                text=f"✏️ Править: {label}",
+                callback_data=f"sefx:video:start:{listing_id}:{key}"
+            )])
         else:
-            rows.append([InlineKeyboardButton(text=f"✏️ Править: {label}", callback_data=f"sef:extra:{key}:{listing_id}")])
-
-    # if _allow_extra_for_category(cat):
-    #     used = _extra_used(listing)
-    #     rows.append([InlineKeyboardButton(text=f"➕ Доп. категории ({used}/2)",
-    #                                     callback_data=f"extra:s_open:{listing_id}")])
+            rows.append([InlineKeyboardButton(
+                text=f"✏️ Править: {label}",
+                callback_data=f"sef:extra:{key}:{listing_id}"
+            )])
 
     # RU: Показать «Доп. категории», только если включены у этой категории
     allow_extra = False
     for _f in (defs or []):
-        if isinstance(_f, dict) and str((_f.get("type") or "")).strip().lower().startswith("__") \
-        and _f.get("key") == "allow_extra_categories" and bool(_f.get("value")):
+        if (
+            isinstance(_f, dict)
+            and str((_f.get("type") or "")).strip().lower().startswith("__")
+            and _f.get("key") == "allow_extra_categories"
+            and bool(_f.get("value"))
+        ):
             allow_extra = True
             break
 
@@ -375,22 +391,34 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
             callback_data=f"extra:s_open:{listing_id}"
         )])
 
-    
-    
     rows.append([InlineKeyboardButton(
         text="⬅️ Назад к объявлению",
         callback_data=f"sv:item:{listing_id}:{listing.city_id}:{listing.category_id}"
     )])
 
-    # 6) отправляем карточку (ВКЛЮЧЕНО web-preview, чтобы YouTube отрисовался здесь)
+    # 6) сначала показываем фото, потом карточку редактирования
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    message_ids = []
+
+    if photo_ids:
+        try:
+            if len(photo_ids) == 1:
+                pmsg = await bot.send_photo(chat_id, photo_ids[0])
+                message_ids.append(pmsg.message_id)
+            else:
+                media = [InputMediaPhoto(media=pid) for pid in photo_ids]
+                pmsgs = await bot.send_media_group(chat_id, media=media)
+                message_ids.extend([m.message_id for m in pmsgs])
+        except Exception:
+            pass
+
     msg = await answer_method(
         text,
         reply_markup=kb,
         parse_mode="HTML",
         disable_web_page_preview=False,  # ← сохраняем превью YouTube в самой карточке
     )
-    message_ids = [msg.message_id]
+    message_ids.append(msg.message_id)
 
     # 7) дополнительное сообщение ПОД карточкой — ТОЛЬКО для file_id
     if video_value:
@@ -411,10 +439,15 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
 
     # 8) регистрируем для последующей зачистки
     last_bot_messages[chat_id] = message_ids
+    await register_bot_messages(chat_id, message_ids)
 
-    print(f"[services_edit_overview.py] _render_overview ✓ | chat_id={chat_id} | "
-          f"listing_id={listing_id} | flex_fields={len(defs)} | msg_id={msg.message_id}")
-    
+    print(
+        f"[services_edit_overview.py] _render_overview | "
+        f"chat_id={chat_id} | listing_id={listing_id} | "
+        f"photos={len(photo_ids)} | flex_fields={len(defs)} | msg_id={msg.message_id}"
+    )
+
+
 def _allow_extra_for_category(cat: Category) -> bool:
     """Читаем из category.fields флаг allow_extra_categories (opt-in)."""
     try:
@@ -501,6 +534,7 @@ async def _ask_main_value(message: Message, listing_id: int, field: str, prompt:
     )
     msg = await message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     _pp("services_edit_overview.py", "_ask_main_value", chat_id=chat_id, listing_id=listing_id, field=field, msg_id=msg.message_id)
 
 # Короткое RU-пояснение: начать ввод заголовка.
@@ -641,6 +675,7 @@ async def sefx_start(cb: CallbackQuery, state: FSMContext):
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await cb.answer()
     _pp("services_edit_overview.py", "sefx_start", chat_id=chat_id, user_id=cb.from_user.id, listing_id=listing_id, field=key, msg_id=msg.message_id)
@@ -718,6 +753,7 @@ async def sefx_video_start(cb: CallbackQuery, state: FSMContext):
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     await state.set_state(_VideoState.waiting)
     await state.update_data(sef_listing_id=listing_id, sef_key=key)
@@ -804,6 +840,7 @@ async def sefx_video_wrong(message: Message, state: FSMContext):
     ])
     msg = await message.answer("Нужно отправить видеофайл или ссылку. Попробуйте ещё раз.", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     print(f"[services_edit_overview.py] sefx_video_wrong ✗ wrong_content | listing_id={l_id} | msg_id={message.message_id}")
 
 # -----------------------------------------------------------------------------
@@ -889,6 +926,7 @@ async def extra_open_services(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
         )
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()
 
         print(f"[services_edit_overview.py] handler=extra_open_services OK | chat_id={chat_id} listing_id={listing_id} used={used} msg_id={msg.message_id}")
@@ -1043,6 +1081,7 @@ async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer("Доп. категория удалена")
     print(f"[services_edit_overview.py] handler=sextra_del_services OK chat_id={chat_id} listing_id={listing_id} slot={slot} msg_id={msg.message_id}")
 
@@ -1103,6 +1142,7 @@ async def sextra_add_services(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
     print(f"[services_edit_overview.py] handler=sextra_add_services OK chat_id={chat_id} listing_id={listing_id} msg_id={msg.message_id}")
 
@@ -1159,6 +1199,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML",
             )
             last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
             await cb.answer()
             print(f"[services_edit_overview.py] handler=sextra_pick_services NAV chat_id={chat_id} listing_id={listing_id} cat_id={cat_id} msg_id={msg.message_id}")
             return
@@ -1177,6 +1218,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)]
             ]))
             last_bot_messages[chat_id] = [back_msg.message_id]
+            await register_bot_messages(chat_id, [back_msg.message_id])
             await cb.answer()
             return
 
@@ -1186,6 +1228,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
             rows = [[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")]]
             back_msg = await cb.message.answer("Выберите другую категорию (Услуги):", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
             last_bot_messages[chat_id] = [back_msg.message_id]
+            await register_bot_messages(chat_id, [back_msg.message_id])
             await cb.answer()
             return
 
@@ -1195,6 +1238,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
             rows = [[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")]]
             back_msg = await cb.message.answer("Выберите другую категорию (Услуги):", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
             last_bot_messages[chat_id] = [back_msg.message_id]
+            await register_bot_messages(chat_id, [back_msg.message_id])
             await cb.answer()
             return
 
@@ -1215,6 +1259,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML",
             )
             last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
             await cb.answer()
             print(f"[services_edit_overview.py] handler=sextra_pick_services FULL chat_id={chat_id} listing_id={listing_id} msg_id={msg.message_id}")
             return
@@ -1246,6 +1291,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer("Доп. категория добавлена")
     print(f"[services_edit_overview.py] handler=sextra_pick_services OK chat_id={chat_id} listing_id={listing_id} cat_id={cat_id} used={used} msg_id={msg.message_id}")
 
@@ -1291,6 +1337,7 @@ async def sextra_up_services(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML",
             )
             last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
             await cb.answer()
             print(f"[services_edit_overview.py] handler=sextra_up_services ROOT chat_id={chat_id} listing_id={listing_id} msg_id={msg.message_id}")
             return
@@ -1308,5 +1355,6 @@ async def sextra_up_services(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
     print(f"[services_edit_overview.py] handler=sextra_up_services OK chat_id={chat_id} listing_id={listing_id} parent_id={parent_id} msg_id={msg.message_id}")

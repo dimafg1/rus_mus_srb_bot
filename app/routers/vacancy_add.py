@@ -63,6 +63,9 @@ from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.routers.vacancy_utils import _flex_to_db
 
+from app.routers.utils_category_title import format_category_title
+
+
 # Note: we don't use start_extra_fields_for_category here since vacancy
 # extra fields are handled internally via _start_flex_flow.
 from app.routers.utils import get_text
@@ -70,6 +73,9 @@ from app.routers.utils import get_text
 from app.routers.vacancy_utils import (
     vacancy_categories_inline_add,
 )
+
+from app.routers.utils_kb import grid3
+
 
 try:
     from app.routers.utils import clear_user_messages  # optional
@@ -118,6 +124,21 @@ async def _city_id_by_slug(slug: str) -> int | None:
     """RU: получить ID города по slug (локальный хелпер, чтобы не дёргать другие модули)."""
     async with SessionLocal() as s:
         return (await s.execute(select(City.id).where(City.slug == slug))).scalar_one_or_none()
+
+async def _vacancy_categories_kb_add(city_slug: str, parent_id: int | None) -> InlineKeyboardMarkup:
+    """Клавиатура категорий для публикации вакансий (без лишних пунктов) с авто «🔽»."""
+    pid = parent_id if parent_id is not None else VACANCY_ROOT_CATEGORY_ID
+    async with SessionLocal() as s:
+        cats = (await s.execute(
+            select(Category).where(Category.parent_id == pid).order_by(Category.name)
+        )).scalars().all()
+
+    rows = []
+    for c in cats:
+        title = await format_category_title(c.id, (c.name or "").strip(), SessionLocal)
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"vac_add_cat:{city_slug}:{c.id}")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _flex_to_db(value):
@@ -182,8 +203,10 @@ async def _vacancy_send_with_nav(m: Message, text: str, parse_mode: Optional[str
     nav_kb = await _vacancy_nav_keyboard()
     msg_nav = await m.answer(nav_text, reply_markup=nav_kb)
     last_bot_messages.setdefault(chat_id, []).append(msg_nav.message_id)
+    await register_bot_messages(chat_id, [msg_nav.message_id])
     msg = await m.answer(text, parse_mode=parse_mode)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
     return msg
 
 
@@ -291,6 +314,7 @@ async def _ask_current_flex_field(m_or_cbmsg, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await m_or_cbmsg.answer(prompt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(VacForm.flex)
 
 
@@ -336,6 +360,7 @@ async def vacancy_preview_and_confirm(m_or_cbmsg, state: FSMContext):
     ])
     msg = await m_or_cbmsg.answer(preview_text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(m_or_cbmsg.chat.id, []).append(msg.message_id)
+    await register_bot_messages(m_or_cbmsg.chat.id, [msg.message_id])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -375,6 +400,7 @@ async def vacancy_start(cb: CallbackQuery, state: FSMContext):
     header = await get_text('sell_choose_city', 'ru') or "Создать вакансию.\nСначала выберите город:"
     msg = await cb.message.answer(header, reply_markup=kb)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(VacForm.city)
     await cb.answer()
 
@@ -415,7 +441,7 @@ async def vacancy_choose_city(cb: CallbackQuery, state: FSMContext):
     await state.update_data(city_id=city_id, city_slug=city_slug)
 
     # базовая клавиатура ДЛЯ ПУБЛИКАЦИИ (только категории, без навигации)
-    kb_base = await vacancy_categories_inline_add(city_slug, parent_id=None)
+    kb_base = await _vacancy_categories_kb_add(city_slug, parent_id=None)
 
     # навигация: «Назад» -> список городов; «Главное меню»
     rows = list(kb_base.inline_keyboard or [])
@@ -486,7 +512,7 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
     # 5А) Есть подкатегории → показываем их
     if children:
         # аккуратная клавиатура без «лишних» пунктов (вариант для публикации)
-        kb = await vacancy_categories_inline_add(city_slug, parent_id=cat_id)
+        kb = await _vacancy_categories_kb_add(city_slug, parent_id=cat_id)
 
         rows = list(kb.inline_keyboard or [])
 
@@ -662,7 +688,7 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
         except Exception:
             parent_id = VACANCY_ROOT_CATEGORY_ID
 
-        kb = await vacancy_categories_inline_add(city_slug, parent_id=parent_id)
+        kb = await _vacancy_categories_kb_add(city_slug, parent_id=parent_id)
 
         # добавим «Главное меню», если его нет
         rows = list(kb.inline_keyboard or [])
@@ -1227,4 +1253,5 @@ async def vacancy_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     msg = await cb.message.answer("Публикация вакансии отменена.", reply_markup=await _vacancy_nav_keyboard())
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()

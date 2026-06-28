@@ -1,0 +1,640 @@
+from __future__ import annotations
+
+from collections import defaultdict
+
+from aiogram import F, Router
+from aiogram.types import (
+    CallbackQuery,
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputMediaPhoto,
+)
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from sqlalchemy import select
+
+from app.database import SessionLocal
+from app.models import Listing
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.services_edit_overview import _render_overview
+
+
+router = Router(name="services_edit_photos")
+
+# -------------------------------------------------------
+# Запоминаем и дочищаем пользовательские медиа-сообщения
+# -------------------------------------------------------
+_user_media_msgs = defaultdict(list)
+
+
+async def _remember_and_delete_user_media(msg: Message):
+    try:
+        _user_media_msgs[msg.chat.id].append(msg.message_id)
+    except Exception:
+        pass
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
+async def _clear_user_media(chat_id: int, bot):
+    ids = _user_media_msgs.pop(chat_id, [])
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+
+
+# -------------------------------------------------------
+# FSM
+# -------------------------------------------------------
+class ServicePhotoEditStates(StatesGroup):
+    waiting_add_photo = State()
+    waiting_replace_one = State()
+
+
+# -------------------------------------------------------
+# Внутренние утилиты
+# -------------------------------------------------------
+async def _get_listing(listing_id: int) -> Listing | None:
+    async with SessionLocal() as s:
+        return (
+            await s.execute(select(Listing).where(Listing.id == listing_id))
+        ).scalar_one_or_none()
+
+
+async def _save_listing_photos(listing_id: int, photo_ids: list[str]) -> bool:
+    async with SessionLocal() as s:
+        listing = (
+            await s.execute(select(Listing).where(Listing.id == listing_id))
+        ).scalar_one_or_none()
+        if not listing:
+            return False
+
+        listing.photo_file_id = ",".join(photo_ids) if photo_ids else None
+        await s.commit()
+        return True
+
+
+def _draft_from_listing(listing: Listing) -> list[str]:
+    if not listing or not listing.photo_file_id:
+        return []
+    return [x.strip() for x in listing.photo_file_id.split(",") if x.strip()]
+
+
+def _photo_editor_kb(listing_id: int, draft: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if len(draft) < 3:
+        rows.append([
+            InlineKeyboardButton(
+                text="➕ Добавить фото",
+                callback_data=f"sphoto:add:{listing_id}"
+            )
+        ])
+
+    for idx, _ in enumerate(draft, start=1):
+        rows.append([
+            InlineKeyboardButton(
+                text=f"🔁 Заменить фото {idx}",
+                callback_data=f"sphoto:swap:{listing_id}:{idx}"
+            ),
+            InlineKeyboardButton(
+                text=f"❌ Удалить фото {idx}",
+                callback_data=f"sphoto:del:{listing_id}:{idx}"
+            ),
+        ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=f"sphoto:back:{listing_id}"
+        )
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _cancel_kb(listing_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"sphoto:cancel:{listing_id}")]
+        ]
+    )
+
+
+def _confirm_kb(listing_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"sphoto:apply:{listing_id}"),
+                InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"sphoto:cancel:{listing_id}")
+            ]
+        ]
+    )
+
+
+async def _clear_pending_action(state: FSMContext):
+    await state.update_data(
+        sphoto_pending_action=None,
+        sphoto_pending_index=None,
+        sphoto_pending_photo_ids=None,
+    )
+
+
+async def _render_photo_editor(chat_id: int, bot, send, listing_id: int, state: FSMContext):
+    await clear_bot_messages(chat_id, bot)
+    await _clear_user_media(chat_id, bot)
+
+    data = await state.get_data()
+    draft = data.get("sphoto_draft_ids")
+
+    if draft is None:
+        listing = await _get_listing(listing_id)
+        if not listing:
+            msg = await send("Объявление не найдено.")
+            last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
+            return
+        draft = _draft_from_listing(listing)
+        await state.update_data(
+            sphoto_listing_id=listing_id,
+            sphoto_draft_ids=draft,
+        )
+
+    text = (
+        "🖼 <b>Редактирование фото услуги</b>\n\n"
+        f"Сейчас фото: <b>{len(draft)} / 3</b>\n\n"
+        "Можно удалить отдельное фото, добавить новое или заменить конкретное фото."
+    )
+
+    message_ids = []
+
+    if draft:
+        try:
+            if len(draft) == 1:
+                p = await bot.send_photo(chat_id, draft[0])
+                message_ids.append(p.message_id)
+            else:
+                media = [InputMediaPhoto(media=fid) for fid in draft]
+                msgs = await bot.send_media_group(chat_id, media=media)
+                message_ids.extend([m.message_id for m in msgs])
+        except Exception:
+            pass
+
+    msg = await send(
+        text,
+        reply_markup=_photo_editor_kb(listing_id, draft),
+        parse_mode="HTML"
+    )
+    message_ids.append(msg.message_id)
+
+    last_bot_messages[chat_id] = message_ids
+    await register_bot_messages(chat_id, message_ids)
+
+    print(
+        f"[services_edit_photos.py] _render_photo_editor | "
+        f"chat_id={chat_id} | listing_id={listing_id} | photos={len(draft)}"
+    )
+
+
+async def _show_confirmation(
+    chat_id: int,
+    bot,
+    send,
+    listing_id: int,
+    text: str,
+    preview_photo_ids: list[str] | None = None,
+):
+    await clear_bot_messages(chat_id, bot)
+    await _clear_user_media(chat_id, bot)
+
+    message_ids: list[int] = []
+
+    if preview_photo_ids:
+        try:
+            if len(preview_photo_ids) == 1:
+                p = await bot.send_photo(chat_id, preview_photo_ids[0])
+                message_ids.append(p.message_id)
+            else:
+                media = [InputMediaPhoto(media=fid) for fid in preview_photo_ids]
+                msgs = await bot.send_media_group(chat_id, media=media)
+                message_ids.extend([m.message_id for m in msgs])
+        except Exception:
+            pass
+
+    msg = await send(text, reply_markup=_confirm_kb(listing_id))
+    message_ids.append(msg.message_id)
+
+    last_bot_messages[chat_id] = message_ids
+    await register_bot_messages(chat_id, message_ids)
+
+    print(
+        f"[services_edit_photos.py] _show_confirmation | "
+        f"chat_id={chat_id} | listing_id={listing_id} | preview={len(preview_photo_ids or [])}"
+    )
+
+
+# -------------------------------------------------------
+# Открыть редактор фото
+# -------------------------------------------------------
+@router.callback_query(F.data.startswith("sphoto:open:"))
+async def sphoto_open(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    try:
+        listing_id = int(cb.data.split(":")[2])
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        return
+
+    listing = await _get_listing(listing_id)
+    if not listing:
+        await cb.answer("Объявление не найдено.", show_alert=True)
+        return
+
+    if listing.owner_id != cb.from_user.id:
+        await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+        return
+
+    await state.update_data(
+        sphoto_listing_id=listing_id,
+        sphoto_draft_ids=_draft_from_listing(listing),
+    )
+    await _clear_pending_action(state)
+    await state.set_state(None)
+
+    await _render_photo_editor(chat_id, cb.message.bot, cb.message.answer, listing_id, state)
+    await cb.answer()
+
+    print(
+        f"[services_edit_photos.py] sphoto_open | "
+        f"chat_id={chat_id} | listing_id={listing_id}"
+    )
+
+
+# -------------------------------------------------------
+# Назад в overview
+# -------------------------------------------------------
+@router.callback_query(F.data.startswith("sphoto:back:"))
+async def sphoto_back(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+
+    try:
+        listing_id = int(cb.data.split(":")[2])
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        return
+
+    await _clear_pending_action(state)
+    await state.update_data(
+        sphoto_listing_id=None,
+        sphoto_draft_ids=None,
+    )
+    await state.set_state(None)
+
+    await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
+    await cb.answer()
+
+    print(
+        f"[services_edit_photos.py] sphoto_back | "
+        f"chat_id={chat_id} | listing_id={listing_id}"
+    )
+
+
+# -------------------------------------------------------
+# Отмена текущего действия -> обратно в редактор фото
+# -------------------------------------------------------
+@router.callback_query(F.data.startswith("sphoto:cancel:"))
+async def sphoto_cancel(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    try:
+        listing_id = int(cb.data.split(":")[2])
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        return
+
+    await _clear_pending_action(state)
+    await state.set_state(None)
+
+    await _render_photo_editor(chat_id, cb.bot, cb.message.answer, listing_id, state)
+    await cb.answer()
+
+    print(
+        f"[services_edit_photos.py] sphoto_cancel | "
+        f"chat_id={chat_id} | listing_id={listing_id}"
+    )
+
+
+# -------------------------------------------------------
+# Удалить одно фото -> сначала подтверждение
+# -------------------------------------------------------
+@router.callback_query(F.data.regexp(r"^sphoto:del:(\d+):(\d+)$"))
+async def sphoto_delete_request(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    parts = (cb.data or "").split(":")
+    listing_id = int(parts[2])
+    idx_1based = int(parts[3])
+
+    data = await state.get_data()
+    draft = list(data.get("sphoto_draft_ids") or [])
+
+    idx = idx_1based - 1
+    if idx < 0 or idx >= len(draft):
+        await cb.answer("Фото не найдено.", show_alert=True)
+        return
+
+    await state.update_data(
+        sphoto_pending_action="delete",
+        sphoto_pending_index=idx,
+        sphoto_pending_photo_ids=None,
+    )
+    await state.set_state(None)
+
+    await _show_confirmation(
+        chat_id,
+        cb.bot,
+        cb.message.answer,
+        listing_id,
+        f"Удалить фото {idx_1based}?"
+    )
+    await cb.answer()
+
+    print(
+        f"[services_edit_photos.py] sphoto_delete_request | "
+        f"chat_id={chat_id} | listing_id={listing_id} | idx={idx}"
+    )
+
+
+# -------------------------------------------------------
+# Добавить одно фото -> отправка фото -> подтверждение -> БД
+# -------------------------------------------------------
+@router.callback_query(F.data.startswith("sphoto:add:"))
+async def sphoto_add(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+
+    try:
+        listing_id = int(cb.data.split(":")[2])
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    draft = list(data.get("sphoto_draft_ids") or [])
+
+    if len(draft) >= 3:
+        await cb.answer("Максимум 3 фото.", show_alert=True)
+        return
+
+    await _clear_pending_action(state)
+    await state.update_data(sphoto_listing_id=listing_id)
+
+    msg = await cb.message.answer(
+        "Отправьте одно новое фото для добавления.\n\n"
+        f"Сейчас загружено: {len(draft)} / 3",
+        reply_markup=_cancel_kb(listing_id)
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    await state.set_state(ServicePhotoEditStates.waiting_add_photo)
+    await cb.answer()
+
+    print(
+        f"[services_edit_photos.py] sphoto_add | "
+        f"chat_id={chat_id} | listing_id={listing_id}"
+    )
+
+
+@router.message(ServicePhotoEditStates.waiting_add_photo, F.photo)
+async def sphoto_add_receive(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_media(message)
+
+    data = await state.get_data()
+    listing_id = int(data.get("sphoto_listing_id"))
+
+    await state.update_data(
+        sphoto_pending_action="add",
+        sphoto_pending_photo_ids=[message.photo[-1].file_id],
+    )
+    await state.set_state(None)
+
+    await _show_confirmation(
+        chat_id,
+        message.bot,
+        message.answer,
+        listing_id,
+        "Добавить это фото к объявлению?",
+        preview_photo_ids=[message.photo[-1].file_id]
+    )
+
+    print(
+        f"[services_edit_photos.py] sphoto_add_receive | "
+        f"chat_id={chat_id} | listing_id={listing_id}"
+    )
+
+
+@router.message(ServicePhotoEditStates.waiting_add_photo)
+async def sphoto_add_not_photo(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_media(message)
+
+    data = await state.get_data()
+    listing_id = int(data.get("sphoto_listing_id"))
+
+    msg = await message.answer(
+        "Пожалуйста, отправьте именно одно фото.",
+        reply_markup=_cancel_kb(listing_id)
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    print(
+        f"[services_edit_photos.py] sphoto_add_not_photo | "
+        f"chat_id={chat_id} | listing_id={listing_id}"
+    )
+
+
+# -------------------------------------------------------
+# Заменить одно фото -> отправка фото -> подтверждение -> БД
+# -------------------------------------------------------
+@router.callback_query(F.data.regexp(r"^sphoto:swap:(\d+):(\d+)$"))
+async def sphoto_swap(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+
+    parts = (cb.data or "").split(":")
+    listing_id = int(parts[2])
+    idx = int(parts[3]) - 1
+
+    data = await state.get_data()
+    draft = list(data.get("sphoto_draft_ids") or [])
+
+    if idx < 0 or idx >= len(draft):
+        await cb.answer("Фото не найдено.", show_alert=True)
+        return
+
+    await _clear_pending_action(state)
+    await state.update_data(
+        sphoto_listing_id=listing_id,
+        sphoto_pending_index=idx
+    )
+
+    msg = await cb.message.answer(
+        f"Отправьте новое фото для замены фото {idx + 1}.",
+        reply_markup=_cancel_kb(listing_id)
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    await state.set_state(ServicePhotoEditStates.waiting_replace_one)
+    await cb.answer()
+
+    print(
+        f"[services_edit_photos.py] sphoto_swap | "
+        f"chat_id={chat_id} | listing_id={listing_id} | idx={idx}"
+    )
+
+
+@router.message(ServicePhotoEditStates.waiting_replace_one, F.photo)
+async def sphoto_receive_replace_one(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_media(message)
+
+    data = await state.get_data()
+    listing_id = int(data.get("sphoto_listing_id"))
+    idx = int(data.get("sphoto_pending_index"))
+
+    await state.update_data(
+        sphoto_pending_action="replace_one",
+        sphoto_pending_photo_ids=[message.photo[-1].file_id],
+    )
+    await state.set_state(None)
+
+    await _show_confirmation(
+        chat_id,
+        message.bot,
+        message.answer,
+        listing_id,
+        f"Заменить фото {idx + 1} новым фото?",
+        preview_photo_ids=[message.photo[-1].file_id]
+    )
+
+    print(
+        f"[services_edit_photos.py] sphoto_receive_replace_one | "
+        f"chat_id={chat_id} | listing_id={listing_id} | idx={idx}"
+    )
+
+
+@router.message(ServicePhotoEditStates.waiting_replace_one)
+async def sphoto_replace_one_not_photo(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    await clear_bot_messages(chat_id, message.bot)
+    await _remember_and_delete_user_media(message)
+
+    data = await state.get_data()
+    listing_id = int(data.get("sphoto_listing_id"))
+
+    msg = await message.answer(
+        "Пожалуйста, отправьте именно фото.",
+        reply_markup=_cancel_kb(listing_id)
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
+
+    print(
+        f"[services_edit_photos.py] sphoto_replace_one_not_photo | "
+        f"chat_id={chat_id} | listing_id={listing_id}"
+    )
+
+
+# -------------------------------------------------------
+# Применить подтверждённое действие -> сразу запись в БД
+# -------------------------------------------------------
+@router.callback_query(F.data.startswith("sphoto:apply:"))
+async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    try:
+        listing_id = int(cb.data.split(":")[2])
+    except Exception:
+        await cb.answer("Некорректные данные.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    action = data.get("sphoto_pending_action")
+    idx = data.get("sphoto_pending_index")
+    pending_photo_ids = list(data.get("sphoto_pending_photo_ids") or [])
+
+    listing = await _get_listing(listing_id)
+    if not listing:
+        await cb.answer("Объявление не найдено.", show_alert=True)
+        return
+
+    current = _draft_from_listing(listing)
+    new_photos = list(current)
+
+    if action == "delete":
+        if idx is None or idx < 0 or idx >= len(new_photos):
+            await cb.answer("Фото не найдено.", show_alert=True)
+            return
+        new_photos.pop(idx)
+
+    elif action == "add":
+        if not pending_photo_ids:
+            await cb.answer("Нет фото для добавления.", show_alert=True)
+            return
+        if len(new_photos) >= 3:
+            await cb.answer("Максимум 3 фото.", show_alert=True)
+            return
+        new_photos.append(pending_photo_ids[0])
+        new_photos = new_photos[:3]
+
+    elif action == "replace_one":
+        if idx is None or idx < 0 or idx >= len(new_photos):
+            await cb.answer("Фото не найдено.", show_alert=True)
+            return
+        if not pending_photo_ids:
+            await cb.answer("Нет фото для замены.", show_alert=True)
+            return
+        new_photos[idx] = pending_photo_ids[0]
+
+    else:
+        await cb.answer("Нет действия для подтверждения.", show_alert=True)
+        return
+
+    ok = await _save_listing_photos(listing_id, new_photos)
+    if not ok:
+        await cb.answer("Не удалось сохранить фото.", show_alert=True)
+        return
+
+    await state.update_data(sphoto_draft_ids=new_photos)
+    await _clear_pending_action(state)
+    await state.set_state(None)
+
+    await _render_photo_editor(chat_id, cb.bot, cb.message.answer, listing_id, state)
+    await cb.answer("Изменения применены")
+
+    print(
+        f"[services_edit_photos.py] sphoto_apply | "
+        f"chat_id={chat_id} | listing_id={listing_id} | action={action} | photos={len(new_photos)}"
+    )

@@ -20,4 +20,4 @@ set -a
 source .env
 [ -f ".env.web" ] && source .env.web
 set +a
-"$POETRY" run uvicorn app.web.app:app --reload --port 8080
+"$POETRY" run uvicorn app.web.app:app --port 8080

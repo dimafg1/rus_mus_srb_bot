@@ -3,10 +3,10 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from app.routers.utils import clear_bot_messages, last_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 from sqlalchemy import select, text, func, and_, or_
 from app.database import SessionLocal
-from app.models import Category
+from app.models import Category, BotUser
 from app.states import AdminCategoryStates, AdminFieldStates
 from aiogram.types import ReplyKeyboardRemove
 import inspect
@@ -31,7 +31,16 @@ def get_admin_menu():
                 InlineKeyboardButton(text="🗂 Редактировать категории", callback_data="admin:edit_categories")
             ],
             [
+                InlineKeyboardButton(text="🎭 Афиша: модерация", callback_data="admin:events:0")
+            ],
+            [
                 InlineKeyboardButton(text="📬 Обратная связь", callback_data="admin_feedback")
+            ],
+            [
+                InlineKeyboardButton(text="📊 Аналитика", callback_data="admin:analytics")
+            ],
+            [
+                InlineKeyboardButton(text="👥 Пользователи бота", callback_data="admin:users:0")
             ],
             [
                 InlineKeyboardButton(text="👤 Панель пользователя", callback_data="main_menu")
@@ -58,7 +67,9 @@ async def save_category_fields(session, cat_id: int, fields: list[dict]) -> None
 @router.message(Command("admin"))
 async def admin_panel_entry(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("У вас нет доступа к админ-панели.")
+        msg = await message.answer("У вас нет доступа к админ-панели.")
+        last_bot_messages.setdefault(message.chat.id, []).append(msg.message_id)
+        await register_bot_messages(message.chat.id, [msg.message_id])
         return
 
     await clear_bot_messages(message.chat.id, message.bot)
@@ -70,6 +81,7 @@ async def admin_panel_entry(message: Message):
         reply_markup=menu
     )
     last_bot_messages[message.chat.id] = [msg.message_id]
+    await register_bot_messages(message.chat.id, [msg.message_id])
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"m.text: {getattr(message, 'text', None)} | "
@@ -109,6 +121,7 @@ async def admin_edit_categories_cb(cb: CallbackQuery):
         parse_mode="HTML"
     )
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"cb.data: {getattr(cb, 'data', None)} | "
@@ -117,29 +130,55 @@ async def admin_edit_categories_cb(cb: CallbackQuery):
         f"msg_id: {getattr(msg, 'message_id', None)}"
     )
 
-# ====== Админ: Главное меню (возврат по кнопке "Назад") ======
 @router.callback_query(F.data == "admin")
 async def admin_main_menu_cb(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    chat_id = cb.message.chat.id
 
+    # 1) Удаляем сообщение, по которому нажали кнопку (предыдущее меню)
+    try:
+        await cb.message.delete()
+    except Exception as e:
+        print(f"[WARN] admin_main_menu_cb delete clicked msg: {e}")
+
+    # 2) Чистим служебные сообщения из кэша
+    await clear_bot_messages(chat_id, cb.bot)
+
+    # 3) Рисуем админ-меню и кладём его в кэш
     menu = get_admin_menu()
-    msg = await cb.message.answer(
-        "🔒 <b>Админ-панель</b>\nВыберите действие:",
-        parse_mode="HTML",
-        reply_markup=menu
-    )
-    last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    msg = None
+    try:
+        msg = await cb.bot.send_message(
+            chat_id,
+            "🔒 <b>Админ-панель</b>\nВыберите действие:",
+            parse_mode="HTML",
+            reply_markup=menu
+        )
+    except Exception as e:
+        print(f"[ERROR] admin_main_menu_cb send_message: {e}")
+
+    if msg:
+        lst = last_bot_messages.get(chat_id) or []
+        lst.append(msg.message_id)
+        last_bot_messages[chat_id] = lst
+        await register_bot_messages(chat_id, lst)
+
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"cb.data: {getattr(cb, 'data', None)} | "
-        f"chat_id: {getattr(cb.message.chat, 'id', None)} | "
+        f"chat_id: {chat_id} | "
         f"user_id: {getattr(cb.from_user, 'id', None)} | "
-        f"msg_id: {getattr(msg, 'message_id', None)}"
+        f"msg_id: {getattr(msg, 'message_id', None) if msg else None} | "
+        f"cached_bot_msgs={last_bot_messages.get(chat_id)}"
     )
+
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 # ====== Админ: многоуровневое меню подкатегорий (с хлебными крошками) ======
 @router.callback_query(F.data.startswith("admin:edit_category:"))
@@ -256,6 +295,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
 
     msg = await cb.message.answer(text, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -294,6 +334,7 @@ async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     last_bot_messages[cb.message.chat.id] = [menu_msg.message_id, msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [menu_msg.message_id, msg.message_id])
     await state.set_state(AdminCategoryStates.waiting_for_new_category_name)
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -340,6 +381,7 @@ async def admin_add_category_name(message: Message, state: FSMContext):
     menu_msg = await message.answer("Возврат", reply_markup=menu)
     msg = await message.answer("✏️ Введите <b>slug</b> для категории ...")
     last_bot_messages[message.chat.id] = [menu_msg.message_id, msg.message_id]
+    await register_bot_messages(message.chat.id, [menu_msg.message_id, msg.message_id])
     await state.set_state(AdminCategoryStates.waiting_for_new_category_slug)
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -392,6 +434,7 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
             reply_markup=markup
         )
         last_bot_messages[message.chat.id] = [msg.message_id]
+        await register_bot_messages(message.chat.id, [msg.message_id])
         print(
             f"FUNC: {inspect.currentframe().f_code.co_name} | "
             f"step: slug_validate_fail | "
@@ -418,6 +461,7 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
                 reply_markup=ReplyKeyboardRemove()
             )
             last_bot_messages[message.chat.id] = [msg.message_id]
+            await register_bot_messages(message.chat.id, [msg.message_id])
             print(
                 f"FUNC: {inspect.currentframe().f_code.co_name} | "
                 f"step: slug_duplicate | "
@@ -475,6 +519,7 @@ async def admin_rename_category_start(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     last_bot_messages[cb.message.chat.id] = [menu_msg.message_id, msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [menu_msg.message_id, msg.message_id])
     await state.set_state(AdminCategoryStates.renaming_category_name)
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -544,6 +589,7 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
         reply_markup=slug_menu
     )
     last_bot_messages[message.chat.id] = [menu_msg.message_id, msg.message_id]
+    await register_bot_messages(message.chat.id, [menu_msg.message_id, msg.message_id])
     await state.set_state(AdminCategoryStates.renaming_category_slug)
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -612,6 +658,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
         last_bot_messages[chat_id] = [menu_msg.message_id, msg.message_id]
+        await register_bot_messages(chat_id, [menu_msg.message_id, msg.message_id])
         print(
             f"FUNC: {inspect.currentframe().f_code.co_name} | "
             f"step: renaming_category_slug_fail | "
@@ -654,6 +701,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
             last_bot_messages[chat_id] = [menu_msg.message_id, msg.message_id]
+            await register_bot_messages(chat_id, [menu_msg.message_id, msg.message_id])
             print(
                 f"FUNC: {inspect.currentframe().f_code.co_name} | "
                 f"step: renaming_category_slug_duplicate | "
@@ -752,6 +800,7 @@ async def admin_delete_category_confirm(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"cb.data: {cb.data} | chat_id: {cb.message.chat.id} | "
@@ -830,6 +879,7 @@ async def admin_send_success(cb_or_msg, text: str, parent_id: int):
     )
 
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -947,6 +997,7 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
 
     msg = await cb.message.answer(header, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     print(
         f"FUNC: send_admin_feedback_list | offset: {offset} | "
         f"chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id} | rows: {len(rows)} | total: {total}"
@@ -984,7 +1035,9 @@ async def admin_feedback_view(cb: CallbackQuery):
         )
         row = res.fetchone()
         if not row:
-            await cb.message.answer("Сообщение не найдено или удалено.")
+            msg = await cb.message.answer("Сообщение не найдено или удалено.")
+            last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+            await register_bot_messages(cb.message.chat.id, [msg.message_id])
             return
 
         # помечаем прочитанным
@@ -1061,6 +1114,7 @@ async def admin_feedback_view(cb: CallbackQuery):
 
     msg = await cb.message.answer(msg_text, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     # 6) Лог
     print(
@@ -1158,3 +1212,61 @@ async def admin_feedback_delete_yes(cb: CallbackQuery):
         await send_admin_feedback_list(cb, offset=0)
 
     print(f"FUNC: admin_feedback_delete_yes | deleted_id={fb_id} | next_id={next_id} | prev_id={prev_id} | chat_id={cb.message.chat.id} | user_id={cb.from_user.id}")
+
+
+# ====== Список пользователей бота ======
+
+USERS_PAGE_SIZE = 20
+
+
+@router.callback_query(F.data.startswith("admin:users:"))
+async def admin_users_list(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа.", show_alert=True)
+        return
+
+    try:
+        offset = int(cb.data.split(":")[2])
+    except Exception:
+        offset = 0
+
+    async with SessionLocal() as s:
+        total_row = await s.execute(select(func.count()).select_from(BotUser))
+        total = total_row.scalar() or 0
+
+        users_rows = await s.execute(
+            select(BotUser).order_by(BotUser.last_seen.desc()).offset(offset).limit(USERS_PAGE_SIZE)
+        )
+        users = users_rows.scalars().all()
+
+    if not users:
+        await cb.answer("Список пользователей пуст.", show_alert=True)
+        return
+
+    lines = [f"<b>👥 Пользователи бота</b> (всего: {total})\n"]
+    for u in users:
+        nick = f"@{u.username}" if u.username else (u.full_name or "—")
+        dt_belgrade = u.last_seen.replace(tzinfo=pytz.utc).astimezone(SERBIA_TZ)
+        dt_str = dt_belgrade.strftime("%d.%m.%Y %H:%M")
+        lines.append(f"• {nick} | <code>{u.user_id}</code> | {dt_str}")
+
+    text = "\n".join(lines)
+
+    nav_buttons = []
+    if offset > 0:
+        nav_buttons.append(
+            InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin:users:{max(0, offset - USERS_PAGE_SIZE)}")
+        )
+    if offset + USERS_PAGE_SIZE < total:
+        nav_buttons.append(
+            InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"admin:users:{offset + USERS_PAGE_SIZE}")
+        )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[nav_buttons] if nav_buttons else [])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")])
+
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    msg = await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
+    await cb.answer()

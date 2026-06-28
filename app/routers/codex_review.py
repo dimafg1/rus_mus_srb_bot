@@ -1,160 +1,260 @@
-# -*- coding: utf-8 -*-
+# coding: utf-8
 """
-RU: Роутер /codex_review — быстрая проверка кода через Codex.
-ОГРАНИЧЕНИЕ ДОСТУПА:
-    - Допущены только пользователи из ALLOWED_USER_IDS (переменная окружения .env.ai)
-      или из ALLOWED_USERS_HARDCODE ниже.
-
-Сценарий:
-    - /codex_review -> инструкция
-    - Принимаем .py как документ ИЛИ текстом
-    - Отправляем в CodexClient -> возвращаем Summary / Patch / Tests
-
-Отладка:
-    - Префикс печати [codex_review].
-
-Автор: вы
-Дата: 2025-09-17
+codex_review.py
+Железобетонно «заткнутый» роутер для работы с Codex/Code-review.
+- Режим активируется только командой /codex_review.
+- Работает только в состоянии CodexState.waiting_code.
+- Ограничен по правам: только is_admin(user_id) может запускать и использовать.
+- Есть команда отмены /codex_cancel.
+- Нет глобальных перехватчиков текста/файлов.
 """
 
-import os
-import re
-from typing import Set
+import asyncio
+import logging
+from typing import Optional
 
-from aiogram import Router, types, F
+from aiogram import F
+from aiogram import Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Message, CallbackQuery
 
-from app.ai.codex_client import CodexClient
+# Подключаем ваш клиент для Codex (если есть). Если его нет — обработаем аккуратно.
+try:
+    from app.routers.codex_client import CodexClient
+except Exception:
+    CodexClient = None  # будем ругаться аккуратно
+
+# Хелпер проверки прав — используем ваш is_admin из админ-панели, если есть
+try:
+    from app.routers.admin_panel import is_admin
+except Exception:
+    # fallback: запретим всё, если нет is_admin
+    def is_admin(user_id: int) -> bool:
+        return False
+
+# Локальные утилиты приложения (для безопасных ответов/логов)
+try:
+    from app.routers.utils import last_bot_messages, clear_bot_messages, register_bot_messages
+except Exception:
+    # заглушки, если модуль отличается — неблокирующие
+    last_bot_messages = {}
+    async def clear_bot_messages(chat_id, bot):
+        return
+    async def register_bot_messages(chat_id, ids):
+        return
 
 router = Router(name="codex_review")
+logger = logging.getLogger("codex_review")
 
-# ───────────────────── Доступ ───────────────────── #
-def _parse_allowed_from_env() -> Set[int]:
-    raw = os.getenv("ALLOWED_USER_IDS", "").strip()
-    if not raw:
-        return set()
-    ids = set()
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
+# Состояние: только одно — ждём код/файл
+class CodexState(StatesGroup):
+    waiting_code = State()
+
+# --- Вспомогательные функции ---------------------------------
+async def _is_requester_admin(state: FSMContext, user_id: int) -> bool:
+    """
+    Проверяем, что пользователь — запустивший режим и админ.
+    Возвращает True только если в FSM хранится codex_user_id == user_id и is_admin(user_id) == True.
+    """
+    try:
+        data = await state.get_data()
+        owner = data.get("codex_user_id")
+        if owner is None:
+            return False
+        if int(owner) != int(user_id):
+            return False
+        return bool(is_admin(user_id))
+    except Exception:
+        return False
+
+async def _reply_and_log(m: Message, text: str):
+    sent = None
+    try:
+        sent = await m.reply(text)
+    except Exception:
         try:
-            ids.add(int(part))
-        except ValueError:
+            sent = await m.answer(text)
+        except Exception:
+            logger.exception("Не удалось отправить сообщение пользователю.")
+    if sent:
+        last_bot_messages.setdefault(m.chat.id, []).append(sent.message_id)
+        try:
+            await register_bot_messages(m.chat.id, [sent.message_id])
+        except Exception:
             pass
-    return ids
 
-# 1) из .env.ai
-ALLOWED_USERS_ENV: Set[int] = _parse_allowed_from_env()
-# 2) «хардкод» на всякий случай — можно оставить пустым
-ALLOWED_USERS_HARDCODE: Set[int] = set()  # пример: {123456789}
+# --- Команда запуска режима ---------------------------------
+@router.message(Command(commands=["codex_review"]))
+async def cmd_codex_review_start(m: Message, state: FSMContext):
+    """
+    Точка входа в Codex-режим.
+    Доступна только админу (is_admin). После этого бот ждёт код/файл и НЕ реагирует на остальные сообщения.
+    """
+    user_id = m.from_user.id
+    chat_id = m.chat.id
 
-def _is_allowed(user_id: int) -> bool:
-    return (user_id in ALLOWED_USERS_ENV) or (user_id in ALLOWED_USERS_HARDCODE)
-
-def _deny_text() -> str:
-    return "⛔ У вас нет доступа к этой команде."
-
-# ───────────────────── Основное ───────────────────── #
-MAX_TEXT = 32_000
-PY_EXT = re.compile(r".*\\.py$", re.IGNORECASE)
-
-@router.message(Command("codex_review"))
-async def codex_review_help(m: types.Message):
-    print("[codex_review] /codex_review invoked chat=", m.chat.id, "user=", m.from_user.id)
-    if not _is_allowed(m.from_user.id):
-        await m.answer(_deny_text())
+    if not is_admin(user_id):
+        await _reply_and_log(m, "Доступ запрещён: команда доступна только администраторам.")
         return
 
-    await m.answer(
-        "Отправьте *.py файл документом или вставьте код одним сообщением.\n"
-        "Я верну краткий обзор, unified diff и заготовку pytest-тестов."
+    # Сохраняем в FSM кто владелец сессии (чтобы никто другой не мог использовать)
+    await state.set_state(CodexState.waiting_code)
+    await state.update_data(codex_user_id=user_id)
+
+    await _reply_and_log(
+        m,
+        (
+            "✅ Режим Codex включён.\n\n"
+            "Отправьте .py файл или вставьте код одним сообщением.\n"
+            "Чтобы отменить — отправьте /codex_cancel.\n"
+            "Я обработаю только сообщения от вас, пока вы в этом режиме."
+        ),
     )
+    logger.info("Codex mode started by user %s in chat %s", user_id, chat_id)
 
-@router.message(F.document)
-async def codex_from_document(m: types.Message):
-    print("[codex_review] document received chat=", m.chat.id, "user=", m.from_user.id)
-    if not _is_allowed(m.from_user.id):
-        await m.answer(_deny_text())
-        return
 
-    doc = m.document
-    if not doc or not PY_EXT.match(doc.file_name or ""):
-        await m.answer("Пришлите, пожалуйста, именно *.py файл документом.")
-        return
-
-    try:
-        file = await m.bot.get_file(doc.file_id)
-        file_bytes = await m.bot.download_file(file.file_path)
-        code = file_bytes.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        print("[codex_review] file download error:", e)
-        await m.answer("Не удалось скачать файл.")
-        return
-
-    code = code[:MAX_TEXT]
-    await _process_and_reply(m, code=code, filename=doc.file_name or "snippet.py")
-
-@router.message(F.text)
-async def codex_from_text(m: types.Message):
-    print("[codex_review] text received chat=", m.chat.id, "user=", m.from_user.id)
-    if not _is_allowed(m.from_user.id):
-        await m.answer(_deny_text())
-        return
-
-    code = (m.text or "").strip()
-    if len(code) < 10:
-        await m.answer("Похоже, это не код. Вставьте, пожалуйста, более развёрнутый фрагмент.")
-        return
-    code = code[:MAX_TEXT]
-    await _process_and_reply(m, code=code, filename="snippet.py")
-
-async def _process_and_reply(m: types.Message, code: str, filename: str):
-    try:
-        await m.answer("Анализирую код в Codex…")
-        client = CodexClient()
-        summary, patch, tests = client.review_code(code, filename=filename)
-
-        # 1) Summary
-        for part in _split_for_tg("Summary:\n" + summary):
-            await m.answer(part)
-
-        # 2) Patch (гарантируем code fence)
-        patch_block = patch if patch.startswith("```") else f"```diff\n{patch}\n```"
-        for part in _split_for_tg(patch_block, prefer_code=True):
-            await m.answer(part)
-
-        # 3) Tests
-        tests_block = tests if tests.startswith("```") else f"```python\n{tests}\n```"
-        for part in _split_for_tg(tests_block, prefer_code=True):
-            await m.answer(part)
-
-        print("[codex_review] done for chat=", m.chat.id)
-
-    except Exception as e:
-        print("[codex_review] error:", e)
-        await m.answer("Ошибка обращения к Codex. Проверьте OPENAI_API_KEY и доступ к модели.")
-
-def _split_for_tg(text: str, prefer_code: bool = False, limit: int = 3800):
+# --- Команда отмены режима ---------------------------------
+@router.message(Command(commands=["codex_cancel"]))
+async def cmd_codex_review_cancel(m: Message, state: FSMContext):
     """
-    RU: Грубая нарезка больших сообщений для Telegram.
-    Если prefer_code=True — закрываем незавершённые ```.
+    Явная отмена режима. Может выполнить только владелец сессии (и админ).
     """
-    res = []
-    cur = ""
-    for line in text.splitlines(True):
-        if len(cur) + len(line) > limit:
-            res.append(cur)
-            cur = ""
-        cur += line
-    if cur:
-        res.append(cur)
+    user_id = m.from_user.id
+    ok = await _is_requester_admin(state, user_id)
+    if not ok:
+        await _reply_and_log(m, "Нечего отменять (или вы не владелец сессии).")
+        return
 
-    if prefer_code:
-        balanced = []
-        for chunk in res:
-            if chunk.count("```") % 2 != 0:
-                chunk += "\n```"
-            balanced.append(chunk)
-        return balanced
-    return res
+    await state.clear()
+    await _reply_and_log(m, "Режим Codex отменён. Больше не реагирую на код.")
+    logger.info("Codex mode cancelled by user %s", user_id)
+
+
+# --- Обработка .py документа (только в состоянии и только от владельца) ----
+@router.message(CodexState.waiting_code, F.document)
+async def codex_handle_document(m: Message, state: FSMContext):
+    """
+    Обработка .py файла. Активна только если:
+    - FSM==CodexState.waiting_code
+    - Отправитель совпадает с codex_user_id
+    - is_admin(user) == True
+    """
+    user_id = m.from_user.id
+    chat_id = m.chat.id
+
+    # Безопасная проверка прав
+    if not await _is_requester_admin(state, user_id):
+        # просто игнорируем — не реагируем публично
+        logger.warning("codex_handle_document: rejected from user %s", user_id)
+        return
+
+    # Проверяем имя файла, минимальная проверка
+    filename = getattr(m.document, "file_name", "") or ""
+    if not filename.lower().endswith(".py"):
+        await _reply_and_log(m, "Пожалуйста, пришлите файл с расширением .py")
+        return
+
+    # Скачиваем файл и передаём в обработчик (если есть)
+    try:
+        file = await m.document.get_file()
+        file_bytes = await file.download(destination=bytes)  # returns bytes
+    except Exception as e:
+        logger.exception("Ошибка при загрузке файла")
+        await _reply_and_log(m, "Не удалось загрузить файл: " + str(e))
+        return
+
+    code_text = None
+    try:
+        code_text = file_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        code_text = None
+
+    if not code_text:
+        await _reply_and_log(m, "Не могу прочитать содержимое файла.")
+        return
+
+    # Вызов Codex-клиента (если есть)
+    if CodexClient is None:
+        await _reply_and_log(m, "Codex-клиент не доступен на сервере (CodexClient отсутствует).")
+        return
+
+    # Выполняем асинхронную обработку, ограничиваем таймаут
+    client = CodexClient()
+    await _reply_and_log(m, "Анализирую код в Codex...")
+    try:
+        # review_code — ожидаемый метод в вашем CodexClient; делаем защищённый вызов
+        result = await asyncio.wait_for(client.review_code(code_text, filename=filename), timeout=60)
+        # Предполагаем, что review_code возвращает текст
+        await _reply_and_log(m, f"Результат:\n\n{result}")
+    except asyncio.TimeoutError:
+        await _reply_and_log(m, "Время ожидания анализа истекло.")
+    except Exception as e:
+        logger.exception("Ошибка в CodexClient.review_code")
+        await _reply_and_log(m, "Ошибка обращения к Codex: " + str(e))
+
+
+# --- Обработка текста (одним сообщением с кодом) -------------------------
+@router.message(CodexState.waiting_code, F.text)
+async def codex_handle_text(m: Message, state: FSMContext):
+    """
+    Обработка сообщения с кодом (plain-text). Активна только в режиме и только от владельца-админа.
+    Чтобы не поймать случайную фразу, мы не реагируем на сообщения, начинающиеся с '/' (команды).
+    """
+    user_id = m.from_user.id
+
+    # Безопасная проверка: владелец и админ
+    if not await _is_requester_admin(state, user_id):
+        logger.warning("codex_handle_text: rejected from user %s", user_id)
+        return
+
+    # Игнор команд
+    if (m.text or "").strip().startswith("/"):
+        # не обрабатываем команды как код
+        return
+
+    # Получаем текст (ограничиваем длину для безопасности)
+    code_text = (m.text or "").strip()
+    if not code_text:
+        await _reply_and_log(m, "Пустое сообщение — пришлите код или .py файл.")
+        return
+    if len(code_text) > 20000:
+        await _reply_and_log(m, "Слишком большой фрагмент кода — пришлите файл .py.")
+        return
+
+    if CodexClient is None:
+        await _reply_and_log(m, "Codex-клиент не доступен на сервере.")
+        return
+
+    client = CodexClient()
+    await _reply_and_log(m, "Анализирую код в Codex...")
+    try:
+        result = await asyncio.wait_for(client.review_code(code_text, filename="snippet.py"), timeout=60)
+        await _reply_and_log(m, f"Результат:\n\n{result}")
+    except asyncio.TimeoutError:
+        await _reply_and_log(m, "Время ожидания анализа истекло.")
+    except Exception as e:
+        logger.exception("Ошибка в CodexClient.review_code")
+        await _reply_and_log(m, "Ошибка обращения к Codex: " + str(e))
+
+
+# --- Защита от «подвешенных» сессий: авто-таймаут (опционально) ------------
+# Если пользователь долго не отвечает, можно автоматически выйти из режима.
+# Этот таймаут НЕ обязателен; если хотите — включите вызов из scheduler.
+async def codex_auto_timeout_cleanup(state: FSMContext, timeout_seconds: int = 3600):
+    """
+    Очистить FSM сессии Codex, если были. Можно запускать по расписанию.
+    """
+    try:
+        data = await state.get_data()
+        if data.get("codex_user_id"):
+            await state.clear()
+            logger.info("codex_auto_timeout_cleanup: cleared codex session")
+    except Exception:
+        logger.exception("codex_auto_timeout_cleanup failed")
+
+
+# --- Экспорт роутера ------------------------------------------------------
+# router уже создан вверху — импортируйте его как: from app.routers.codex_review import router
+__all__ = ["router"]

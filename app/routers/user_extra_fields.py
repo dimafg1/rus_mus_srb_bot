@@ -11,7 +11,7 @@ import inspect
 
 from app.database import SessionLocal
 from app.models import Category, Listing
-from app.routers.utils import clear_bot_messages, last_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 from aiogram.filters import BaseFilter
 from aiogram import types
 
@@ -207,6 +207,7 @@ async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, re
         ])
         msg = await send("Для этой категории нет дополнительных полей.", reply_markup=kb)
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         print(f"[user_extra_fields] no_fields chat={chat_id}, cat_id={cat_id}")
         return
 
@@ -266,6 +267,7 @@ async def _ask_current_field(ev, state: FSMContext):
         ])
         msg = await send("\n\n".join(lines), reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         print(f"[user_extra_fields] finish chat={chat_id}, msgs={[msg.message_id]}")
         return
 
@@ -294,6 +296,7 @@ async def _ask_current_field(ev, state: FSMContext):
             reply_markup=kb, parse_mode="HTML"
         )
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         await state.set_state(UserExtraFieldStates.waiting_value)
         print(f"[user_extra_fields] ask {ftype} chat={chat_id}, idx={idx}, key={key}, required={required}")
         return
@@ -308,6 +311,7 @@ async def _ask_current_field(ev, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         msg = await send(f"{title}\n\n{cur_line}\n\nВыберите вариант:", reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         print(f"[user_extra_fields] ask checkbox chat={chat_id}, idx={idx}, key={key}")
         return
 
@@ -320,6 +324,7 @@ async def _ask_current_field(ev, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         msg = await send(f"{title}\n\n{cur_line}\n\nВыберите один из вариантов:", reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         print(f"[user_extra_fields] ask select chat={chat_id}, idx={idx}, key={key}, options={len(options)}")
         return
     
@@ -337,6 +342,7 @@ async def _ask_current_field(ev, state: FSMContext):
             reply_markup=kb, parse_mode="HTML"
         )
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         await state.set_state(UserExtraFieldStates.waiting_video)
         print(f"[user_extra_fields] ask video chat={chat_id}, idx={idx}, key={key}, required={required}")
         return
@@ -438,6 +444,7 @@ async def user_extra_value_message(message: Message, state: FSMContext):
             kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
             msg = await message.answer("Нужно число. Попробуйте ещё раз.", reply_markup=kb)
             last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
             print(f"[user_extra_fields] bad number chat={chat_id}, text={txt}")
             return
         await _advance_with_value(message, state, num)
@@ -470,6 +477,7 @@ async def user_extra_video_by_document(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
     msg = await message.answer("Это не видео-файл. Отправьте видео (как видео или как файл с типом video/*).", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     print(f"[user_extra_fields] bad document (not video) chat={chat_id}, mime={getattr(doc, 'mime_type', None)}")
 
 # 4.3 Любой другой контент — мягкая ошибка
@@ -499,6 +507,7 @@ async def user_extra_video_by_text(message: Message, state: FSMContext):
         reply_markup=kb
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     print(f"[user_extra_fields.py] user_extra_video_by_text | bad text | chat_id={chat_id} | text={txt}")
 
 
@@ -509,6 +518,7 @@ async def user_extra_video_wrong_content(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
     msg = await message.answer("Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     print(f"[user_extra_fields] wrong content while waiting_video chat={chat_id}, content_type={message.content_type}")
 
 

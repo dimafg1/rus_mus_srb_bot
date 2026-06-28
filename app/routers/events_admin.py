@@ -1,0 +1,258 @@
+"""app/routers/events_admin.py
+
+Модерация Афиши v1:
+- список pending
+- approve -> published
+- reject  -> rejected
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from aiogram import Router, F
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+
+from sqlalchemy import text as sql
+from app.database import SessionLocal
+from app.routers.utils import clear_bot_messages, last_bot_messages, log
+from app.routers.admin_panel import is_admin
+
+
+router = Router(name="events_admin")
+
+PAGE = 10
+
+
+async def _ensure_events_meta():
+    try:
+        async with SessionLocal() as s:
+            await s.execute(sql("""
+                CREATE TABLE IF NOT EXISTS events_meta (
+                    listing_id   INTEGER PRIMARY KEY
+                        REFERENCES listing(id) ON DELETE CASCADE ON UPDATE CASCADE,
+                    start_at_utc INTEGER NOT NULL,
+                    timezone     TEXT    NOT NULL DEFAULT 'Europe/Belgrade',
+                    venue_text   TEXT,
+                    city_text    TEXT,
+                    lat          REAL,
+                    lon          REAL,
+                    price_text   TEXT,
+                    status       TEXT    NOT NULL DEFAULT 'pending',
+                    created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                    CHECK (status IN ('pending','published','rejected'))
+                );
+            """))
+            await s.commit()
+    except Exception as e:
+        print(f"[AFISHA][ADMIN] ensure_events_meta error: {e}")
+
+
+async def _fetch_pending(offset: int) -> list[dict]:
+    await _ensure_events_meta()
+    q = sql("""
+        SELECT
+            l.id AS id,
+            l.title AS title,
+            em.start_at_utc AS start_at_utc
+        FROM listing l
+        JOIN events_meta em ON em.listing_id = l.id
+        WHERE l.type='events' AND em.status='pending'
+        ORDER BY em.start_at_utc ASC
+        LIMIT :limit OFFSET :offset
+    """)
+    try:
+        async with SessionLocal() as s:
+            res = await s.execute(q, {"limit": PAGE, "offset": offset})
+            return [dict(r._mapping) for r in res.fetchall()]
+    except Exception as e:
+        print(f"[AFISHA][ADMIN] fetch_pending error: {e}")
+        return []
+
+
+async def _fetch_one(event_id: int) -> dict | None:
+    await _ensure_events_meta()
+    q = sql("""
+        SELECT
+            l.id AS id,
+            l.title AS title,
+            l.descr AS descr,
+            l.contact AS contact,
+            l.photo_file_id AS photo_file_id,
+            COALESCE(c.name, em.city_text) AS city_name,
+            em.venue_text AS venue_text,
+            em.price_text AS price_text,
+            em.start_at_utc AS start_at_utc,
+            em.status AS status
+        FROM listing l
+        JOIN events_meta em ON em.listing_id = l.id
+        LEFT JOIN city c ON c.id=l.city_id
+        WHERE l.id=:id
+        LIMIT 1
+    """)
+    try:
+        async with SessionLocal() as s:
+            res = await s.execute(q, {"id": event_id})
+            row = res.first()
+            return dict(row._mapping) if row else None
+    except Exception as e:
+        print(f"[AFISHA][ADMIN] fetch_one error: {e}")
+        return None
+
+
+def _kb_list(offset: int, has_more: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    nav: list[InlineKeyboardButton] = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"admin:events:{max(0, offset-PAGE)}"))
+    if has_more:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"admin:events:{offset+PAGE}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="◀️ В админ-панель", callback_data="admin")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _kb_event(event_id: int, back_offset: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"admin:event:pub:{event_id}:{back_offset}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin:event:rej:{event_id}:{back_offset}")],
+        [InlineKeyboardButton(text="◀️ К списку", callback_data=f"admin:events:{back_offset}")],
+    ])
+
+
+@router.callback_query(F.data.startswith("admin:events"))
+async def admin_events_list(cb: CallbackQuery):
+    chat_id = cb.message.chat.id
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    # offset
+    offset = 0
+    parts = cb.data.split(":")
+    if len(parts) == 3 and parts[2].isdigit():
+        offset = int(parts[2])
+
+    log(f"[events_admin.py] admin_events_list | chat_id={chat_id} offset={offset}")
+
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    items = await _fetch_pending(offset)
+    if not items:
+        msg = await cb.message.answer("Нет событий на модерации.", reply_markup=_kb_list(offset=0, has_more=False))
+        last_bot_messages[chat_id] = [msg.message_id]
+        await cb.answer()
+        return
+
+    lines = ["🧾 <b>Афиша: модерация (pending)</b>"]
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    for it in items:
+        title = (it.get("title") or "Событие").strip()
+        if len(title) > 48:
+            title = title[:45] + "…"
+        kb_rows.append([InlineKeyboardButton(text=title, callback_data=f"admin:event:view:{int(it['id'])}:{offset}")])
+
+    has_more = len(items) == PAGE
+    kb_rows.extend(_kb_list(offset=offset, has_more=has_more).inline_keyboard)
+    msg = await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    last_bot_messages[chat_id] = [msg.message_id]
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("admin:event:view:"))
+async def admin_event_view(cb: CallbackQuery):
+    chat_id = cb.message.chat.id
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    parts = cb.data.split(":")
+    try:
+        event_id = int(parts[3])
+    except Exception:
+        event_id = 0
+    try:
+        back_offset = int(parts[4])
+    except Exception:
+        back_offset = 0
+
+    log(f"[events_admin.py] admin_event_view | chat_id={chat_id} id={event_id}")
+
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    row = await _fetch_one(event_id)
+    if not row:
+        msg = await cb.message.answer("Не найдено.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ К списку", callback_data=f"admin:events:{back_offset}")]]))
+        last_bot_messages[chat_id] = [msg.message_id]
+        await cb.answer()
+        return
+
+    dt = datetime.fromtimestamp(int(row.get("start_at_utc") or 0), tz=timezone.utc)
+    when = dt.strftime("%d.%m.%Y %H:%M UTC") if row.get("start_at_utc") else "—"
+    txt = (
+        f"🧾 <b>{row.get('title') or 'Событие'}</b>\n"
+        f"📅 {when}\n"
+        f"📍 {row.get('city_name') or 'Город'}{(', ' + row['venue_text']) if row.get('venue_text') else ''}\n"
+        f"💲 {row.get('price_text') or '—'}\n\n"
+        f"{(row.get('descr') or '').strip()}"
+    ).strip()
+
+    kb = _kb_event(event_id, back_offset)
+    if row.get("photo_file_id"):
+        sent = await cb.message.answer_photo(photo=row["photo_file_id"], caption=txt, parse_mode="HTML", reply_markup=kb)
+    else:
+        sent = await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb)
+    last_bot_messages[chat_id] = [sent.message_id]
+    await cb.answer()
+
+
+async def _set_status(event_id: int, status: str):
+    await _ensure_events_meta()
+    try:
+        async with SessionLocal() as s:
+            await s.execute(sql("""
+                UPDATE events_meta
+                SET status=:st, updated_at=strftime('%s','now')
+                WHERE listing_id=:id
+            """), {"st": status, "id": event_id})
+            await s.commit()
+    except Exception as e:
+        print(f"[AFISHA][ADMIN] set_status error: {e}")
+
+
+@router.callback_query(F.data.startswith("admin:event:pub:"))
+async def admin_event_publish(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    event_id = int(parts[3])
+    back_offset = int(parts[4])
+    await _set_status(event_id, "published")
+    await cb.answer("Опубликовано")
+    cb.data = f"admin:events:{back_offset}"
+    await admin_events_list(cb)
+
+
+@router.callback_query(F.data.startswith("admin:event:rej:"))
+async def admin_event_reject(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    event_id = int(parts[3])
+    back_offset = int(parts[4])
+    await _set_status(event_id, "rejected")
+    await cb.answer("Отклонено")
+    cb.data = f"admin:events:{back_offset}"
+    await admin_events_list(cb)

@@ -7,7 +7,7 @@ from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.states import EditListing
 from app.keyboards import get_common_menu_button
-from app.routers.utils import clear_bot_messages, last_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 from app.routers.services_edit_overview import _render_overview as _render_services_overview
 
 
@@ -58,7 +58,9 @@ async def edit_title_start(cb: CallbackQuery, state: FSMContext):
     listing_id = int(cb.data.split(":")[2])
     await state.set_state(EditListing.waiting_title)          # <-- было EditListing.title
     await state.update_data(listing_id=listing_id)
-    await cb.message.answer("Введите новый заголовок (1–70 символов):")
+    msg = await cb.message.answer("Введите новый заголовок (1–70 символов):")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
 
 
@@ -68,13 +70,17 @@ async def edit_title_save(msg: Message, state: FSMContext):
     listing_id = int(data["listing_id"])
     title = (msg.text or "").strip()
     if not (1 <= len(title) <= 70):
-        await msg.answer("Заголовок должен быть 1–70 символов. Попробуйте снова.")
+        err = await msg.answer("Заголовок должен быть 1–70 символов. Попробуйте снова.")
+        last_bot_messages.setdefault(msg.chat.id, []).append(err.message_id)
+        await register_bot_messages(msg.chat.id, [err.message_id])
         return
     async with SessionLocal() as s:
         l = await _get_listing(s, listing_id)
         l.title = title
         s.add(l); await s.commit()
-    await msg.answer("Заголовок обновлён.")
+    ok = await msg.answer("Заголовок обновлён.")
+    last_bot_messages.setdefault(msg.chat.id, []).append(ok.message_id)
+    await register_bot_messages(msg.chat.id, [ok.message_id])
     await state.clear()
 
 
@@ -83,7 +89,9 @@ async def edit_descr_start(cb: CallbackQuery, state: FSMContext):
     listing_id = int(cb.data.split(":")[2])
     await state.set_state(EditListing.waiting_descr)          # <-- было EditListing.descr
     await state.update_data(listing_id=listing_id)
-    await cb.message.answer("Введите новое описание (или оставьте пустым).")
+    msg = await cb.message.answer("Введите новое описание (или оставьте пустым).")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
 
 
@@ -96,7 +104,9 @@ async def edit_descr_save(msg: Message, state: FSMContext):
         l = await _get_listing(s, listing_id)
         l.descr = descr
         s.add(l); await s.commit()
-    await msg.answer("Описание обновлено.")
+    ok = await msg.answer("Описание обновлено.")
+    last_bot_messages.setdefault(msg.chat.id, []).append(ok.message_id)
+    await register_bot_messages(msg.chat.id, [ok.message_id])
     await state.clear()
 
 
@@ -105,7 +115,9 @@ async def edit_price_start(cb: CallbackQuery, state: FSMContext):
     listing_id = int(cb.data.split(":")[2])
     await state.set_state(EditListing.waiting_price)          # <-- было EditListing.price
     await state.update_data(listing_id=listing_id)
-    await cb.message.answer("Укажите новую стоимость (или «Договорная»).")
+    msg = await cb.message.answer("Укажите новую стоимость (или «Договорная»).")
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
 
 
@@ -118,7 +130,9 @@ async def edit_price_save(msg: Message, state: FSMContext):
         l = await _get_listing(s, listing_id)
         l.price = price or "Договорная"
         s.add(l); await s.commit()
-    await msg.answer("Стоимость обновлена.")
+    ok = await msg.answer("Стоимость обновлена.")
+    last_bot_messages.setdefault(msg.chat.id, []).append(ok.message_id)
+    await register_bot_messages(msg.chat.id, [ok.message_id])
     await state.clear()
 
 
@@ -144,4 +158,6 @@ async def edit_finish(cb: CallbackQuery):
     # Можно вернуть в «Мои услуги» или в объявление — оставляю нейтрально:
     main_btn = await get_common_menu_button('main_menu', 'ru')
     kb = InlineKeyboardMarkup(inline_keyboard=[[main_btn]] if main_btn else [])
-    await cb.message.answer("Готово.", reply_markup=kb)
+    done = await cb.message.answer("Готово.", reply_markup=kb)
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(done.message_id)
+    await register_bot_messages(cb.message.chat.id, [done.message_id])

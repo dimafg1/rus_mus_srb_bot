@@ -107,7 +107,8 @@ async def vacancy_main_menu(lang: str = "ru") -> InlineKeyboardMarkup:
     keyboard: List[List[InlineKeyboardButton]] = []
     keyboard.append([InlineKeyboardButton(text="Поиск вакансий 🔎", callback_data="vac_search")])
     if city_buttons:
-        keyboard.append(city_buttons)
+        for i in range(0, len(city_buttons), 2):
+            keyboard.append(city_buttons[i:i+2])
     keyboard.append([InlineKeyboardButton(text="📄 Мои вакансии", callback_data="vac:my")])
     keyboard.append([InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ВАКАНСИЮ", callback_data="vac:new")])
 
@@ -172,6 +173,15 @@ async def vacancy_listings_inline(city_slug: str, cat_id: int, listings) -> Inli
     """
     kb = InlineKeyboardBuilder()
 
+    # Узнаём родителя текущей категории для корректной кнопки "Назад"
+    parent_id = None
+    async with SessionLocal() as s:
+        cat = (await s.execute(
+            select(Category).where(Category.id == cat_id)
+        )).scalar_one_or_none()
+        if cat:
+            parent_id = cat.parent_id
+
     # Кнопки вакансий
     for l in listings:
         title = (l.title or "(без заголовка)").strip()
@@ -182,19 +192,25 @@ async def vacancy_listings_inline(city_slug: str, cat_id: int, listings) -> Inli
         )
 
     if not listings:
-        # Пустая категория — просто покажем заглушку, без колбэка
+        # Пустая категория — просто покажем заглушку, без реального перехода
         kb.button(text="Пока нет вакансий", callback_data="go_isk")
 
-    # Назад к списку категорий
-    kb.button(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{cat_id}")
+    # Назад на один уровень вверх
+    if parent_id:
+        kb.button(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{parent_id}")
+    else:
+        # fallback для верхнего уровня
+        kb.button(text="⬅️ Назад", callback_data=f"vcity:{city_slug}")
 
-    # Главное меню (если настроено)
+    # Главное меню
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
         kb.row(main_btn)
 
     kb.adjust(1)
     return kb.as_markup()
+
+
 
 
 async def my_vacancies_inline(listings) -> InlineKeyboardMarkup:

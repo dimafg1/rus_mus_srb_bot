@@ -5,6 +5,11 @@ from sqlalchemy import (
     String, Text, DateTime, Boolean, Integer, Float, Column, ForeignKey
 )
 
+# --- Events ---
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import func
+from datetime import date, datetime
+
 # ─────────────────────────────────────────────────────────
 # City
 # ─────────────────────────────────────────────────────────
@@ -92,6 +97,53 @@ class Listing(SQLModel, table=True):
         sa_column=Column(Integer, ForeignKey("category.id", ondelete="SET NULL"), index=True, nullable=True),
     )
 
+    # ───────────────────────────────────────────────────────────────────────
+    # Жизненный цикл объявления:
+    # active   — показывается пользователям
+    # archived — скрыто из поиска/выдачи, доступно для админа/аналитики
+    status: str = Field(
+        default="active",
+        sa_column=Column(String(50), index=True, nullable=False),
+    )
+
+    # Дата, когда объявление должно быть архивировано
+    expires_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
+    # Дата фактической архивации
+    archived_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
+    # Причина архивации:
+    # expired / sold / closed / unpublished / user_deleted / admin_removed / event_passed
+    archive_reason: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(50), index=True, nullable=True),
+    )
+
+    # Кто архивировал: user / admin / system
+    archived_by: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(50), nullable=True),
+    )
+
+    # Telegram ID пользователя или админа, выполнившего действие
+    archived_by_user_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
+
+    # Когда отправлялось уведомление о скорой архивации
+    reminded_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
+
 
 
 # ─────────────────────────────────────────────────────────
@@ -141,6 +193,48 @@ class Menu(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────
+# BotMessage (сообщения бота для очистки чата после рестарта)
+# ─────────────────────────────────────────────────────────
+class BotMessage(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    chat_id: int = Field(
+        sa_column=Column(Integer, index=True, nullable=False)
+    )
+
+    message_id: int = Field(
+        sa_column=Column(Integer, index=True, nullable=False)
+    )
+
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# BotUser (трекинг пользователей: ник, id, время последнего захода)
+# ─────────────────────────────────────────────────────────
+class BotUser(SQLModel, table=True):
+    __tablename__ = "BotUser"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: int = Field(
+        sa_column=Column(Integer, unique=True, index=True, nullable=False)
+    )
+    username: Optional[str] = Field(
+        default=None, sa_column=Column(String(100))
+    )
+    full_name: Optional[str] = Field(
+        default=None, sa_column=Column(String(255))
+    )
+    last_seen: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # Profile
 # ─────────────────────────────────────────────────────────
 class Profile(SQLModel, table=True):
@@ -169,3 +263,4 @@ class Profile(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+

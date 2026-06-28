@@ -44,6 +44,10 @@ from app.keyboards import (
 
 from app.routers.user_extra_fields import start_extra_fields_for_category
 
+from app.routers.utils_category_title import format_category_title
+
+from app.routers.utils_kb import grid3
+
 
 router = Router(name="services_add")
 SERVICES_ROOT_CATEGORY_ID = 80  # корень дерева категорий «Услуги»
@@ -110,9 +114,11 @@ async def _send_with_services_nav(m: Message, text: str, reply_markup=None, pars
     nav_kb   = await _services_return_kb()
     msg_nav  = await m.answer(nav_text, reply_markup=nav_kb)
     last_bot_messages.setdefault(m.chat.id, []).append(msg_nav.message_id)
+    await register_bot_messages(m.chat.id, [msg_nav.message_id])
 
     msg = await m.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await register_bot_messages(m.chat.id, [msg.message_id])
     return msg_nav, msg
 
 
@@ -167,6 +173,7 @@ async def service_start(cb: CallbackQuery, state: FSMContext):
     header = await get_text('sell_choose_city', 'ru') or "Создать объявление.\nСначала выберите город:"
     msg = await cb.message.answer(header, reply_markup=kb)
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     print(f"[services_add.py] service_start ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}")
 
 
@@ -190,8 +197,11 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
 
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city.slug)
 
-    rows = [[InlineKeyboardButton(text=cat.name, callback_data=f"services:add:cat:{cat.id}:{city.id}")]
-            for cat in cats]
+    rows = []
+    for cat in cats:
+        title = await format_category_title(cat.id, (cat.name or "").strip(), SessionLocal)
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"services:add:cat:{cat.id}:{city.id}")])
+
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="service_start")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -199,6 +209,7 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
     text = tmpl.format(city_name=city.name)
     msg = await cb.message.answer(text, reply_markup=kb)
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
     print(f"[services_add.py] services_add_select_city ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id}")
 
 
@@ -229,6 +240,7 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
         text = tmpl.format(cat_name=cat.name)
         msg = await cb.message.answer(text, reply_markup=kb)
         last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+        await register_bot_messages(cb.message.chat.id, [msg.message_id])
         print(f"[services_add.py] services_add_select_category → deepen ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id} parent_id={cat_id} children={cnt}")
         return
 
@@ -271,6 +283,7 @@ async def service_title_set(m: Message, state: FSMContext):
 
     # ✅ Запоминаем оба сообщения, чтобы потом удалить
     last_bot_messages[chat_id] = [nav_msg.message_id, text_msg.message_id]
+    await register_bot_messages(chat_id, [nav_msg.message_id, text_msg.message_id])
 
     print(f"[services_add.py] service_title_set ✓ | chat_id={chat_id} user_id={m.from_user.id} title={title!r}")
 
@@ -319,6 +332,7 @@ async def service_descr_set(m: Message, state: FSMContext):
 
     # ✅ Запоминаем оба сообщения
     last_bot_messages[chat_id] = [nav_msg.message_id, text_msg.message_id]
+    await register_bot_messages(chat_id, [nav_msg.message_id, text_msg.message_id])
 
     print(f"[services_add.py] service_descr_set ✓ | chat_id={chat_id} user_id={m.from_user.id} title={title!r} descr_len={len(descr)}")
 
@@ -410,11 +424,13 @@ async def _send_photo_prompt(m: Message, photo_count: int, state: FSMContext, la
     # ── Отправка и сохранение message_id для последующего удаления
     msg = await m.answer(text_main, reply_markup=_photo_skip_kb(), parse_mode="HTML")
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
+    await register_bot_messages(m.chat.id, [msg.message_id])
 
     msg2 = None
     if text_tip:
         msg2 = await m.answer(text_tip)
         last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
+        await register_bot_messages(m.chat.id, [msg2.message_id])
         await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
     else:
         await state.update_data(photo_prompt_msgs=[msg.message_id])
@@ -585,13 +601,14 @@ async def service_cancel_photo(cb: CallbackQuery, state: FSMContext):
         await clear_user_messages(chat_id, cb.bot)
     except Exception:
         pass
-    from app.routers.utils import clear_bot_messages, last_bot_messages
+    from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
     await clear_bot_messages(chat_id, cb.bot)
 
     # 4) Сообщение «Отменено»
     cancel_text = await _text("sell_cancelled", "ru", "❌ Публикация отменена.")
     msg = await cb.bot.send_message(chat_id, cancel_text, parse_mode="HTML")
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+    await register_bot_messages(chat_id, [msg.message_id])
 
     # 5) Низ: «Главное меню»
     from app.keyboards import get_common_menu_button
@@ -601,6 +618,7 @@ async def service_cancel_photo(cb: CallbackQuery, state: FSMContext):
         title = await _text("main_menu", "ru", "Главное меню")
         m2 = await cb.bot.send_message(chat_id, title, reply_markup=kb, parse_mode="HTML")
         last_bot_messages.setdefault(chat_id, []).append(m2.message_id)
+        await register_bot_messages(chat_id, [m2.message_id])
 
     # 6) Сброс FSM и ответ на колбэк
     await state.clear()
@@ -650,6 +668,7 @@ async def _preview_and_confirm(m: Message, state: FSMContext):
 
     msg_header = await m.answer(header, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(m.chat.id, []).append(msg_header.message_id)
+    await register_bot_messages(m.chat.id, [msg_header.message_id])
     if sent_ids:
         sent_photo_messages.setdefault(m.chat.id, []).extend(sent_ids)
 
@@ -734,6 +753,7 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         msg = await cb.message.answer(f"{text_pub}\n\n{text_extra}", reply_markup=kb)
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
 
         await cb.answer()
         print(f"[services_add.py] service_ok ✓ | SAVED listing_id={l.id} | chat_id={chat_id} user_id={cb.from_user.id} msg_id={msg.message_id}")
@@ -770,6 +790,7 @@ async def service_cancel_confirm(cb: CallbackQuery, state: FSMContext):
     cancel_text = await get_text('sell_cancelled', 'ru') or "❌ Публикация отменена."
     msg1 = await cb.message.answer(cancel_text)
     last_bot_messages.setdefault(chat_id, []).append(msg1.message_id)
+    await register_bot_messages(chat_id, [msg1.message_id])
 
     # Показываем кнопку «Главное меню» (для возврата)
     main_btn = await get_common_menu_button('main_menu', 'ru')
@@ -780,6 +801,7 @@ async def service_cancel_confirm(cb: CallbackQuery, state: FSMContext):
             reply_markup=kb
         )
         last_bot_messages.setdefault(chat_id, []).append(msg2.message_id)
+        await register_bot_messages(chat_id, [msg2.message_id])
 
     await state.clear()
     await cb.answer()
@@ -830,8 +852,14 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
 
     # Возврат к списку категорий
     async with SessionLocal() as s:
-        cats = (await s.execute(select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(Category.name))).scalars().all()
-    rows = [[InlineKeyboardButton(text=c.name, callback_data=f"services:add:cat:{c.id}:{city_id}")] for c in cats]
+        cats = (await s.execute(
+            select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(Category.name)
+        )).scalars().all()
+    rows = []
+    for c in cats:
+        title = await format_category_title(c.id, (c.name or "").strip(), SessionLocal)
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"services:add:cat:{c.id}:{city_id}")])
+
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"services:add:city:{city_id}")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await safe_edit_or_send(cb, "Выберите категорию", reply_markup=kb)

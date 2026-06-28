@@ -13,23 +13,23 @@ from app.routers.admin_panel import is_admin
 
 
 
-# ---------- Главное меню ----------
-def main_inline_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📂 Каталог", callback_data="go_catalog"),
-                InlineKeyboardButton(text="🤝 Ищу", callback_data="go_isk")
-            ],
-            [
-                InlineKeyboardButton(text="📅 Афиша", callback_data="go_events"),
-                InlineKeyboardButton(text="💸 Барахолка", callback_data="go_market")
-            ],
-            [
-                InlineKeyboardButton(text="❓ Помощь", callback_data="go_help")
-            ]
-        ]
-    )
+# # ---------- Главное меню ----------
+# def main_inline_menu():
+#     return InlineKeyboardMarkup(
+#         inline_keyboard=[
+#             [
+#                 InlineKeyboardButton(text="📂 Каталог", callback_data="go_catalog"),
+#                 InlineKeyboardButton(text="🤝 Ищу", callback_data="go_isk")
+#             ],
+#             [
+#                 InlineKeyboardButton(text="📅 Афиша", callback_data="go_events"),
+#                 InlineKeyboardButton(text="💸 Барахолка", callback_data="go_market")
+#             ],
+#             [
+#                 InlineKeyboardButton(text="❓ Помощь", callback_data="go_help")
+#             ]
+#         ]
+#     )
 
 async def get_common_menu_button(code: str, lang="ru"):
     async with SessionLocal() as session:
@@ -101,10 +101,11 @@ async def market_inline(lang="ru"):
     if first_row:
         keyboard.append(first_row)
 
-    # Второй ряд — города (динамически)
+    # Второй блок — города (по 2 в ряд)
     city_buttons = await build_city_buttons("mcity")
     if city_buttons:
-        keyboard.append(city_buttons)
+        for i in range(0, len(city_buttons), 2):
+            keyboard.append(city_buttons[i:i + 2])
 
     # Остальные пункты меню (например, "Мои объявления", "Разместить объявление")
     for row in rows:
@@ -414,19 +415,37 @@ async def musicians_sub_inline(lang="ru"):
 # ---------- Афиша ----------
 async def events_main_inline(lang="ru"):
     city_buttons = await build_city_buttons("ecity", lang)
+
+    # --- гарантированно разбиваем города по 2 в строке ---
+    city_rows = []
+    temp_row = []
+
+    for btn in city_buttons:
+        temp_row.append(btn)
+        if len(temp_row) == 2:
+            city_rows.append(temp_row)
+            temp_row = []
+
+    if temp_row:  # если нечётное количество
+        city_rows.append(temp_row)
+
+    # --- МЕНЮ: Поиск -> Города -> Мои объявления -> остальное ---
     keyboard = [
-        city_buttons,
-        [
-            InlineKeyboardButton(text="Ближайшие мероприятия", callback_data="events:near"),
-            InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ИНФОРМАЦИЮ", callback_data="event_new")
-        ]
+        [InlineKeyboardButton(text="🔎 Поиск", callback_data="af:search")],
+        [InlineKeyboardButton(text="🗓 Календарь", callback_data="af:cal:all")],
+    ] + city_rows + [
+        [InlineKeyboardButton(text="👤 Мои объявления", callback_data="af:my")],
+        [InlineKeyboardButton(text="Ближайшие мероприятия", callback_data="events:near")],
+        [InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ИНФОРМАЦИЮ", callback_data="event_new")],
     ]
 
     main_menu_btn = await get_common_menu_button('main_menu', lang)
     if main_menu_btn:
         keyboard.append([main_menu_btn])
 
+    print(f"[keyboards.py][events_main_inline] CALLED | cities={len(city_buttons)} | rows={len(keyboard)}")
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 
 async def build_main_menu(lang='ru') -> InlineKeyboardMarkup:
     async with SessionLocal() as session:

@@ -7,7 +7,7 @@ from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.states import EditListing
 from app.keyboards import get_common_menu_button
-from app.routers.utils import clear_bot_messages, last_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 
 # доп-поля
 from app.routers.user_extra_fields import (
@@ -58,6 +58,7 @@ async def _ask_title(ev, state: FSMContext, listing: Listing, city_slug: str, ca
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(EditListing.waiting_title)
     print(f"[edit.ask_title] chat={chat_id} user={ev.from_user.id} listing={listing.id}")
 
@@ -73,6 +74,7 @@ async def _ask_price(ev, state: FSMContext, listing: Listing, city_slug: str, ca
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(EditListing.waiting_price)
     print(f"[edit.ask_price] chat={chat_id} user={ev.from_user.id} listing={listing.id}")
 
@@ -89,6 +91,7 @@ async def _ask_descr(ev, state: FSMContext, listing: Listing, city_slug: str, ca
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(EditListing.waiting_descr)
     print(f"[edit.ask_descr] chat={chat_id} user={ev.from_user.id} listing={listing.id}")
 
@@ -191,6 +194,7 @@ async def edit_finish(cb: CallbackQuery, state: FSMContext):
     ])
     msg = await cb.message.answer("Изменения сохранены ✅", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
     await state.clear()
     await cb.answer()
     print(f"[edit.finish.core] chat={chat_id} user={cb.from_user.id} listing={listing.id}")
@@ -239,6 +243,7 @@ async def edit_back(cb: CallbackQuery, state: FSMContext):
         await clear_bot_messages(chat_id, cb.bot)
         msg = await cb.message.answer("Возврат к объявлению.", reply_markup=kb)
         last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
     print(f"[edit.back.core] chat={cb.message.chat.id} user={cb.from_user.id} state={cur_state}")
 
