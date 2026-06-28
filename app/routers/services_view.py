@@ -29,7 +29,8 @@ from app.routers.utils import (
     clear_bot_messages, safe_edit_or_send, register_bot_messages,
     last_bot_messages, sent_photo_messages,
     render_flex_block, render_contact, render_category_path,
-    last_search_query_message, last_search_menu_message, my_listing_messages
+    last_search_query_message, last_search_menu_message, my_listing_messages,
+    build_contact_url,
 )
 
 from app.search.fuzzy import search_items
@@ -605,11 +606,10 @@ async def sv_item(cb: CallbackQuery):
                 callback_data=f"service_extend:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
             )])
     elif listing.contact and listing.contact.startswith("@"):
-        username = listing.contact.lstrip("@")
-        contact_btn = await get_common_menu_button("btn_contact_provider", "ru")
+        c_btn = await get_common_menu_button("btn_contact_provider", "ru")
         buttons.append([InlineKeyboardButton(
-            text=(contact_btn.text if contact_btn else "💬 Связаться"),
-            url=f"https://t.me/{username}"
+            text=(c_btn.text if c_btn else "💬 Связаться"),
+            url=build_contact_url(listing.id, listing.contact, cb.from_user.id, "services"),
         )])
 
     # Кнопки навигации — в конец

@@ -46,6 +46,7 @@ from app.search.fuzzy import search_items
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
 from app.lifecycle import days_left_text, should_show_extend_button, extend_listing
+from app.routers.utils import build_contact_url
 
 
 VACANCY_ROOT_ID = 90
@@ -353,7 +354,10 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
             )])
     else:
         if contact and contact.startswith("@"):
-            buttons.append([InlineKeyboardButton(text="💬 Связаться", url=f"https://t.me/{contact.lstrip('@')}")])
+            buttons.append([InlineKeyboardButton(
+                text="💬 Связаться",
+                url=build_contact_url(listing.id, contact, cb.from_user.id, "vacancy"),
+            )])
 
     # Назад — строго по источнику открытия карточки
     if from_search:

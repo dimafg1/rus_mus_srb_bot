@@ -529,3 +529,23 @@ def make_listing_banner(title: str, price: str | None) -> str:
     img.save(tmp.name, "PNG")
     tmp.close()
     return tmp.name
+
+
+_WEBAPP_BASE = os.getenv("WEBAPP_BASE", "https://unixound.com/rus_mus_srb_bot").rstrip("/")
+_USE_CONTACT_REDIRECT = os.getenv("USE_CONTACT_REDIRECT", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_contact_url(listing_id: int, contact: str, user_id: int, source: str = "direct") -> str:
+    """Возвращает tracked redirect URL или прямой t.me — в зависимости от USE_CONTACT_REDIRECT."""
+    username = (contact or "").lstrip("@").strip()
+    if not username:
+        return ""
+    direct = f"https://t.me/{username}"
+    if not _USE_CONTACT_REDIRECT or not _WEBAPP_BASE:
+        return direct
+    try:
+        from app.web.security import sign_contact_click_token
+        token = sign_contact_click_token(listing_id, user_id, source)
+        return f"{_WEBAPP_BASE}/go/contact?t={token}"
+    except Exception:
+        return direct

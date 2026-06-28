@@ -37,7 +37,8 @@ from app.routers.utils import (
     render_main_fields,
     render_contact,
     render_flex_compact,
-    render_category_path
+    render_category_path,
+    build_contact_url,
 )
 
 from app.search.fuzzy import search_items
@@ -1014,13 +1015,12 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
             ])
 
     elif listing.contact and listing.contact.startswith("@"):
-        username = listing.contact.lstrip("@").strip()
-        contact_btn = await get_common_menu_button('btn_contact_seller', lang='ru')
-        contact_btn = InlineKeyboardButton(
-            text=contact_btn.text if contact_btn else "💬 Contact seller",
-            url=f"https://t.me/{username}",
-        )
-        buttons.append([contact_btn])
+        source = "search" if came_from_search else "my" if from_my else "catalog"
+        c_btn = await get_common_menu_button('btn_contact_seller', lang='ru')
+        buttons.append([InlineKeyboardButton(
+            text=c_btn.text if c_btn else "💬 Contact seller",
+            url=build_contact_url(listing.id, listing.contact, cb.from_user.id, source),
+        )])
 
     # Куда вести «Назад»
     if from_my:
@@ -1483,8 +1483,10 @@ async def item_detail_handler(cb: CallbackQuery):
 
     seller_button = None
     if listing.contact and listing.contact.startswith("@"):
-        seller_button = InlineKeyboardButton(text="Написать продавцу",
-                                             url=f"https://t.me/{listing.contact.lstrip('@')}")
+        seller_button = InlineKeyboardButton(
+            text="Написать продавцу",
+            url=build_contact_url(listing.id, listing.contact, cb.from_user.id, "search"),
+        )
     detail_kb = InlineKeyboardMarkup(inline_keyboard=[[seller_button]]) if seller_button \
         else InlineKeyboardMarkup(inline_keyboard=[])
 
@@ -1855,11 +1857,11 @@ async def show_search_listing(cb: CallbackQuery):
             else InlineKeyboardButton(text="❌ Delete listing", callback_data=f"sell_sold:{listing.id}")
         buttons.append([del_btn])
     elif listing.contact and listing.contact.startswith("@"):
-        username = listing.contact.lstrip("@")
-        contact_btn = await get_common_menu_button('btn_contact_seller', lang='ru')
-        contact_btn = InlineKeyboardButton(text=contact_btn.text, url=f"https://t.me/{username}") if contact_btn \
-            else InlineKeyboardButton(text="💬 Contact seller", url=f"https://t.me/{username}")
-        buttons.append([contact_btn])
+        c_btn = await get_common_menu_button('btn_contact_seller', lang='ru')
+        buttons.append([InlineKeyboardButton(
+            text=c_btn.text if c_btn else "💬 Contact seller",
+            url=build_contact_url(listing.id, listing.contact, cb.from_user.id, "search"),
+        )])
 
     # ⬅️ Назад к поиску
     # стало — возвращаемся к прошлым результатам
