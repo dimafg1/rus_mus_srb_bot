@@ -232,6 +232,10 @@ class BotUser(SQLModel, table=True):
         default_factory=datetime.utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
+    first_seen: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 # ─────────────────────────────────────────────────────────

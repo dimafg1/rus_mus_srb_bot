@@ -233,6 +233,7 @@ class TrackUserMiddleware:
                         username=username,
                         full_name=full_name,
                         last_seen=now,
+                        first_seen=now,
                     ).on_conflict_do_update(
                         index_elements=["user_id"],
                         set_={"username": username, "full_name": full_name, "last_seen": now},

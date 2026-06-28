@@ -13,6 +13,7 @@ app/routers/admin_analytics.py
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from html import escape
 
 from aiogram import Router, F
@@ -61,6 +62,7 @@ async def _send_admin_analytics_message(cb: CallbackQuery, text: str, markup: In
 def _analytics_main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="📅 Рост", callback_data="admin:analytics:growth")],
             [InlineKeyboardButton(text="📊 Обзор по разделам", callback_data="admin:analytics:sections")],
             [InlineKeyboardButton(text="🔎 Популярные запросы", callback_data="admin:analytics:top_searches")],
             [InlineKeyboardButton(text="❌ Пустые поиски", callback_data="admin:analytics:no_results")],
@@ -270,6 +272,11 @@ def _pct(part: int | float, total: int | float) -> str:
     return f"{(float(part) / float(total) * 100):.1f}%"
 
 
+def _week_trend(this_week: int, prev_week: int) -> str:
+    arrow = "↑" if this_week > prev_week else ("↓" if this_week < prev_week else "→")
+    return f"+{this_week} {arrow}  пред. нед. +{prev_week}"
+
+
 def _avg(part: int | float, total: int | float) -> str:
     if not total:
         return "0.0"
@@ -387,31 +394,123 @@ async def admin_analytics_menu(cb: CallbackQuery) -> None:
         return
 
     async with SessionLocal() as s:
-        search_count = (await s.execute(sql("SELECT COUNT(*) FROM search_log"))).scalar_one()
-        open_count = (await s.execute(sql("SELECT COUNT(*) FROM listing_views WHERE action = 'open'"))).scalar_one()
-        no_result_count = (await s.execute(sql("SELECT COUNT(*) FROM search_log WHERE results_count = 0"))).scalar_one()
-        unique_viewers = (await s.execute(sql("SELECT COUNT(DISTINCT user_id) FROM listing_views WHERE action = 'open'"))).scalar_one()
-        search_open_count = (await s.execute(sql("""
-            SELECT COUNT(*)
-            FROM listing_views
-            WHERE action = 'open' AND source = 'search'
-        """))).scalar_one()
-        owners_count = (await s.execute(sql("SELECT COUNT(DISTINCT owner_id) FROM listing"))).scalar_one()
+        # Поиск и просмотры
+        search_count = (await s.execute(sql("SELECT COUNT(*) FROM search_log"))).scalar_one() or 0
+        no_result_count = (await s.execute(sql("SELECT COUNT(*) FROM search_log WHERE results_count = 0"))).scalar_one() or 0
+        open_count = (await s.execute(sql("SELECT COUNT(*) FROM listing_views WHERE action = 'open'"))).scalar_one() or 0
+
+        # Объявления
+        total_listings = (await s.execute(sql("SELECT COUNT(*) FROM listing"))).scalar_one() or 0
+        new_listings_week = (await s.execute(sql(
+            "SELECT COUNT(*) FROM listing WHERE created_at >= datetime('now', '-7 days')"
+        ))).scalar_one() or 0
+        new_listings_prev = (await s.execute(sql(
+            "SELECT COUNT(*) FROM listing WHERE created_at >= datetime('now', '-14 days')"
+            " AND created_at < datetime('now', '-7 days')"
+        ))).scalar_one() or 0
+
+        # Пользователи (BotUser)
+        try:
+            total_users = (await s.execute(sql("SELECT COUNT(*) FROM BotUser"))).scalar_one() or 0
+            new_users_week = (await s.execute(sql(
+                "SELECT COUNT(*) FROM BotUser WHERE first_seen >= datetime('now', '-7 days')"
+            ))).scalar_one() or 0
+            new_users_prev = (await s.execute(sql(
+                "SELECT COUNT(*) FROM BotUser WHERE first_seen >= datetime('now', '-14 days')"
+                " AND first_seen < datetime('now', '-7 days')"
+            ))).scalar_one() or 0
+            dau = (await s.execute(sql(
+                "SELECT COUNT(*) FROM BotUser WHERE last_seen >= datetime('now', 'start of day')"
+            ))).scalar_one() or 0
+            wau = (await s.execute(sql(
+                "SELECT COUNT(*) FROM BotUser WHERE last_seen >= datetime('now', '-7 days')"
+            ))).scalar_one() or 0
+            mau = (await s.execute(sql(
+                "SELECT COUNT(*) FROM BotUser WHERE last_seen >= datetime('now', '-30 days')"
+            ))).scalar_one() or 0
+            authors_converted = (await s.execute(sql(
+                "SELECT COUNT(DISTINCT l.owner_id) FROM listing l"
+                " JOIN BotUser bu ON bu.user_id = l.owner_id"
+            ))).scalar_one() or 0
+        except Exception as e:
+            print(f"[admin_analytics] BotUser query error: {e}")
+            total_users = new_users_week = new_users_prev = dau = wau = mau = authors_converted = 0
+
+    search_warn = "  ⚠️" if search_count and no_result_count / search_count > 0.25 else ""
+    conversion = f"{authors_converted} ({_pct(authors_converted, total_users)})" if total_users else "—"
 
     text = (
         "📊 <b>Аналитика</b>\n\n"
-        "Отчёты по уже существующим таблицам:\n"
-        "<code>search_log</code>, <code>listing_views</code> и <code>listing</code>.\n\n"
-        f"🔎 Всего поисков: <b>{search_count}</b>\n"
-        f"❌ Пустых поисков: <b>{no_result_count}</b> ({_pct(no_result_count, search_count)})\n"
-        f"👁 Открытий карточек: <b>{open_count}</b>\n"
-        f"🔍 Открытий из поиска: <b>{search_open_count}</b>\n"
-        f"👤 Уникальных открывавших: <b>{unique_viewers}</b>\n"
-        f"✍️ Авторов объявлений: <b>{owners_count}</b>\n\n"
-        "Выберите отчёт:"
+        f"👥 <b>Пользователей:</b> {total_users}\n"
+        f"  За неделю: {_week_trend(new_users_week, new_users_prev)}\n"
+        f"  Сегодня: {dau}  /  нед.: {wau}  /  мес.: {mau}\n"
+        f"  Разместили объявление: {conversion}\n\n"
+        f"📋 <b>Объявлений:</b> {total_listings}\n"
+        f"  За неделю: {_week_trend(new_listings_week, new_listings_prev)}\n\n"
+        f"🔎 <b>Поиск:</b> {search_count} запросов\n"
+        f"  Пустых: {no_result_count} ({_pct(no_result_count, search_count)}){search_warn}\n"
+        f"  Открытий карточек: {open_count}\n\n"
+        "Выберите раздел:"
     )
 
     await _send_admin_analytics_message(cb, text, _analytics_main_kb())
+
+
+@router.callback_query(F.data == "admin:analytics:growth")
+async def admin_analytics_growth(cb: CallbackQuery) -> None:
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    today = date.today()
+    days_range = [today - timedelta(days=i) for i in range(6, -1, -1)]
+
+    async with SessionLocal() as s:
+        try:
+            user_rows = (await s.execute(sql(
+                "SELECT DATE(first_seen) AS day, COUNT(*) AS cnt FROM BotUser"
+                " WHERE first_seen >= datetime('now', '-6 days') GROUP BY day"
+            ))).mappings().all()
+            new_users_week = (await s.execute(sql(
+                "SELECT COUNT(*) FROM BotUser WHERE first_seen >= datetime('now', '-7 days')"
+            ))).scalar_one() or 0
+            new_users_prev = (await s.execute(sql(
+                "SELECT COUNT(*) FROM BotUser WHERE first_seen >= datetime('now', '-14 days')"
+                " AND first_seen < datetime('now', '-7 days')"
+            ))).scalar_one() or 0
+        except Exception as e:
+            print(f"[admin_analytics:growth] BotUser error: {e}")
+            user_rows, new_users_week, new_users_prev = [], 0, 0
+
+        listing_rows = (await s.execute(sql(
+            "SELECT DATE(created_at) AS day, COUNT(*) AS cnt FROM listing"
+            " WHERE created_at >= datetime('now', '-6 days') GROUP BY day"
+        ))).mappings().all()
+        new_listings_week = (await s.execute(sql(
+            "SELECT COUNT(*) FROM listing WHERE created_at >= datetime('now', '-7 days')"
+        ))).scalar_one() or 0
+        new_listings_prev = (await s.execute(sql(
+            "SELECT COUNT(*) FROM listing WHERE created_at >= datetime('now', '-14 days')"
+            " AND created_at < datetime('now', '-7 days')"
+        ))).scalar_one() or 0
+
+    user_map = {r["day"]: int(r["cnt"] or 0) for r in user_rows}
+    listing_map = {r["day"]: int(r["cnt"] or 0) for r in listing_rows}
+
+    lines = ["📅 <b>Рост — динамика за 7 дней</b>", ""]
+
+    lines.append("👥 <b>Новые пользователи</b>")
+    for d in days_range:
+        lines.append(f"  {d.strftime('%d.%m')}  {user_map.get(d.strftime('%Y-%m-%d'), 0)}")
+    lines.append(f"  Итого: +{new_users_week}  /  пред. нед. +{new_users_prev}")
+
+    lines.append("")
+    lines.append("📋 <b>Новые объявления</b>")
+    for d in days_range:
+        lines.append(f"  {d.strftime('%d.%m')}  {listing_map.get(d.strftime('%Y-%m-%d'), 0)}")
+    lines.append(f"  Итого: +{new_listings_week}  /  пред. нед. +{new_listings_prev}")
+
+    await _send_admin_analytics_message(cb, "\n".join(lines), _analytics_back_kb())
 
 
 @router.callback_query(F.data == "admin:analytics:sections")
