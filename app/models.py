@@ -239,6 +239,21 @@ class BotUser(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────
+# ContactView (клик по кнопке «Написать» в карточке объявления)
+# ─────────────────────────────────────────────────────────
+class ContactView(SQLModel, table=True):
+    __tablename__ = "ContactView"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    listing_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    section: Optional[str] = Field(default=None, sa_column=Column(String(50)))
+    user_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    ts: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # Profile
 # ─────────────────────────────────────────────────────────
 class Profile(SQLModel, table=True):

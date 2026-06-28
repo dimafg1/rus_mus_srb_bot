@@ -41,6 +41,7 @@ from app.routers.utils import (
 )
 
 from app.search.fuzzy import search_items
+from app.routers.contact import make_contact_btn
 
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
@@ -1013,15 +1014,10 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
                 )
             ])
 
-    elif listing.contact and listing.contact.startswith("@"):
-        username = listing.contact.lstrip("@").strip()
-        contact_btn = await get_common_menu_button('btn_contact_seller', lang='ru')
-
-        contact_btn = InlineKeyboardButton(
-            text=contact_btn.text if contact_btn else "💬 Contact seller",
-            url=f"https://t.me/{username}",
-        )
-        buttons.append([contact_btn])
+    elif listing.contact:
+        btn = make_contact_btn(listing.id, listing.contact, "market")
+        if btn:
+            buttons.append([btn])
 
     # Куда вести «Назад»
     if from_my:
@@ -1482,11 +1478,7 @@ async def item_detail_handler(cb: CallbackQuery):
     )
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
-    seller_button = None
-    if listing.contact and listing.contact.startswith("@"):
-        seller_button = InlineKeyboardButton(text="Написать продавцу",
-                                             url=f"https://t.me/{listing.contact.lstrip('@')}")
-
+    seller_button = make_contact_btn(listing.id, listing.contact or "", "market")
     detail_kb = InlineKeyboardMarkup(inline_keyboard=[[seller_button]]) if seller_button \
         else InlineKeyboardMarkup(inline_keyboard=[])
 
@@ -1856,13 +1848,10 @@ async def show_search_listing(cb: CallbackQuery):
         del_btn = InlineKeyboardButton(text=del_btn.text, callback_data=f"sell_sold:{listing.id}") if del_btn \
             else InlineKeyboardButton(text="❌ Delete listing", callback_data=f"sell_sold:{listing.id}")
         buttons.append([del_btn])
-    elif listing.contact and listing.contact.startswith("@"):
-        # 💬 Связаться с продавцом
-        username = listing.contact.lstrip("@")
-        contact_btn = await get_common_menu_button('btn_contact_seller', lang='ru')
-        contact_btn = InlineKeyboardButton(text=contact_btn.text, url=f"https://t.me/{username}") if contact_btn \
-            else InlineKeyboardButton(text="💬 Contact seller", url=f"https://t.me/{username}")
-        buttons.append([contact_btn])
+    elif listing.contact:
+        btn = make_contact_btn(listing.id, listing.contact, "market")
+        if btn:
+            buttons.append([btn])
 
     # ⬅️ Назад к поиску
     # стало — возвращаемся к прошлым результатам

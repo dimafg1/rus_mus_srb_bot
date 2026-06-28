@@ -309,6 +309,8 @@ async def delete_stray_messages(message: Message, state: FSMContext):
 
 from app.routers.admin_panel import router as admin_panel_router
 from app.routers.admin_analytics import router as admin_analytics_router
+from app.routers.contact import router as contact_router
+dp.include_router(contact_router)
 dp.include_router(admin_panel_router)
 dp.include_router(admin_analytics_router)
 dp.include_router(admin_fields_router)
