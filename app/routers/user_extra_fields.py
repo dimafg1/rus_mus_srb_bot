@@ -284,7 +284,7 @@ async def _ask_current_field(ev, state: FSMContext):
 
     # Текущее значение — вытянем из listing.flex (если есть)
     cur_val = await _current_value_from_listing(state, key)
-    cur_line = f"Текущее значение: <b>{_fmt_value_for_display(cur_val)}</b>"
+    cur_line = f"Текущее значение: <code>{_fmt_value_for_display(cur_val)}</code>"
 
     controls = _controls_row()
 

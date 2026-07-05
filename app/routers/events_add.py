@@ -2351,7 +2351,7 @@ async def afisha_edit_descr_start(cb: CallbackQuery, state: FSMContext):
         chat_id=chat_id,
         text=(
             "✏️ <b>Редактирование описания</b>\n\n"
-            f"<b>Текущее:</b>\n{cur_short}\n\n"
+            f"Текущее:\n<code>{cur_short}</code>\n\n"
             "Введите новое описание одним сообщением.\n"
             "Чтобы убрать описание — отправьте <code>-</code>"
         ),

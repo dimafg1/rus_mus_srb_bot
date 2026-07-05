@@ -3,7 +3,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import NoResultFound
 import logging
 import inspect
@@ -179,7 +179,7 @@ async def market_list(cb: CallbackQuery):
     city = await city_by_slug(city_slug)
     async with SessionLocal() as s:
         cat = (await s.execute(select(Category).where(Category.slug == cat_slug))).scalar_one()
-        children = (await s.execute(select(Category).where(Category.parent_id == cat.id))).scalars().all()
+        children = (await s.execute(select(Category).where(Category.parent_id == cat.id).order_by(text("order_num"), Category.name))).scalars().all()
 
     keyboard = []
 
@@ -947,6 +947,15 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
                         else:
                             video_id = sval
                     break
+            # Fallback: если категория без определения полей — ищем "video" напрямую
+            if not video_url and not video_id:
+                raw = flex_vals.get("video", "")
+                if isinstance(raw, str) and raw.strip():
+                    sval = raw.strip()
+                    if "http" in sval.lower() or "://" in sval:
+                        video_url = sval
+                    else:
+                        video_id = sval
         except Exception:
             pass
 

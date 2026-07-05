@@ -10,7 +10,7 @@ from aiogram.types import (
     InputMediaPhoto, InputMediaVideo, WebAppInfo
 )
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, func, text as sql_text
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import joinedload
 import os, urllib.parse, json
@@ -279,7 +279,7 @@ async def sv_city(cb: CallbackQuery):
     async with SessionLocal() as s:
         city = (await s.execute(select(City).where(City.id == city_id))).scalar_one()
         cats = (await s.execute(
-            select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(Category.name)
+            select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
 
     kb = await _services_categories_kb(cats, city_id=city.id, parent_id=SERVICES_ROOT_CATEGORY_ID)
@@ -317,7 +317,7 @@ async def sv_cat(cb: CallbackQuery):
         city = (await s.execute(select(City).where(City.id == city_id))).scalar_one()
         cat  = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
         children = (await s.execute(
-            select(Category).where(Category.parent_id == cat_id).order_by(Category.name)
+            select(Category).where(Category.parent_id == cat_id).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
 
         # ── обработка «Назад» ────────────────────────────────────────────────
@@ -329,7 +329,7 @@ async def sv_cat(cb: CallbackQuery):
                 top_cats = (await s.execute(
                     select(Category)
                     .where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID)
-                    .order_by(Category.name)
+                    .order_by(sql_text("order_num"), Category.name)
                 )).scalars().all()
 
                 kb = await _services_categories_kb(top_cats, city_id=city_id, parent_id=SERVICES_ROOT_CATEGORY_ID)
@@ -344,7 +344,7 @@ async def sv_cat(cb: CallbackQuery):
             # назад к подкатегориям родителя (сиблинги)
             parent = (await s.execute(select(Category).where(Category.id == parent_id))).scalar_one()
             siblings = (await s.execute(
-                select(Category).where(Category.parent_id == parent_id).order_by(Category.name)
+                select(Category).where(Category.parent_id == parent_id).order_by(sql_text("order_num"), Category.name)
             )).scalars().all()
 
             kb = await _services_categories_kb(siblings, city_id=city_id, parent_id=parent_id)

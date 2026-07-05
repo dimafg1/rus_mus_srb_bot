@@ -529,8 +529,8 @@ async def _ask_main_value(message: Message, listing_id: int, field: str, prompt:
     cur = (current_text or "").strip()
     txt = (
         f"{prompt}\n"
-        f"Текущее: <i>{cur if cur else '—'}</i>\n\n"
-        f"Отправьте новое значение одним сообщением."
+        f"Текущее: <code>{cur if cur else '—'}</code>\n\n"
+        f"Отправьте новое значение (или нажмите на текущее выше, чтобы скопировать)."
     )
     msg = await message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
@@ -670,8 +670,8 @@ async def sefx_start(cb: CallbackQuery, state: FSMContext):
     ])
     txt = (
         f"Поле: <b>{label}</b>\n"
-        f"Текущее: <i>{(current_text or '—')}</i>\n\n"
-        f"Отправьте новое значение одним сообщением."
+        f"Текущее: <code>{(current_text or '—')}</code>\n\n"
+        f"Отправьте новое значение (или нажмите на текущее выше, чтобы скопировать)."
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]

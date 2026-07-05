@@ -15,7 +15,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy import select  # or_, func не требуются в этой версии
+from sqlalchemy import select, text  # or_, func не требуются в этой версии
 from aiogram.types import CallbackQuery
 
 from app.database import SessionLocal
@@ -99,7 +99,7 @@ async def _category_children(cat_id: int) -> List[Category]:
     Получить список дочерних категорий по parent_id.
     """
     async with SessionLocal() as s:
-        res = await s.execute(select(Category).where(Category.parent_id == cat_id))
+        res = await s.execute(select(Category).where(Category.parent_id == cat_id).order_by(text("order_num"), Category.name))
         return res.scalars().all()
     
 async def _vacancy_categories_kb(city_slug: str | None, parent_id: int | None) -> InlineKeyboardMarkup:
@@ -107,7 +107,7 @@ async def _vacancy_categories_kb(city_slug: str | None, parent_id: int | None) -
     pid = parent_id if parent_id is not None else VACANCY_ROOT_ID
     async with SessionLocal() as s:
         cats = (await s.execute(
-            select(Category).where(Category.parent_id == pid).order_by(Category.name)
+            select(Category).where(Category.parent_id == pid).order_by(text("order_num"), Category.name)
         )).scalars().all()
 
     rows = []

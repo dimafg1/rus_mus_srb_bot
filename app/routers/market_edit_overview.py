@@ -401,19 +401,19 @@ async def ef_edit_main(cb: CallbackQuery, state: FSMContext):
     if field == "title":
         title = "🪧 <b>Заголовок</b>"
         cur   = _fmt(listing.title)
-        ask   = "Отправьте новый текст заголовка:"
+        ask   = "Отправьте новый текст (или нажмите на значение выше, чтобы скопировать):"
     elif field == "price":
         title = "💰 <b>Цена</b>"
         cur   = _fmt(listing.price)
-        ask   = "Отправьте новую цену:"
+        ask   = "Отправьте новую цену (или нажмите на значение выше, чтобы скопировать):"
     else:
         title = "📝 <b>Описание</b>"
         cur   = _fmt(listing.descr)
-        ask   = "Отправьте новый текст описания:"
+        ask   = "Отправьте новый текст (или нажмите на значение выше, чтобы скопировать):"
 
     kb = _controls_cancel(listing_id)
     msg = await cb.message.answer(
-        f"{title}\n\nТекущее значение:\n<b>{cur}</b>\n\n{ask}",
+        f"{title}\n\nТекущее значение:\n<code>{cur}</code>\n\n{ask}",
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -522,7 +522,7 @@ async def ef_edit_extra(cb: CallbackQuery, state: FSMContext):
         pass
 
     title = f"<b>{label}</b>"
-    cur_line = f"Текущее значение:\n<b>{_fmt(cur_val)}</b>"
+    cur_line = f"Текущее значение:\n<code>{_fmt(cur_val)}</code>"
 
     # интерфейсы по типам
     if ftype in ("text", "number"):

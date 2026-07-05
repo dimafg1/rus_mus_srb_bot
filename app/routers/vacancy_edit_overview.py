@@ -281,8 +281,8 @@ async def vef_main_title_start(cb: CallbackQuery, state: FSMContext):
     ])
     txt = (
         "🖊 <b>Заголовок</b>\n"
-        f"Текущее значение:\n{current}\n\n"
-        "Отправьте новый текст заголовка:"
+        f"Текущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
@@ -334,8 +334,8 @@ async def vef_main_descr_start(cb: CallbackQuery, state: FSMContext):
     ])
     txt = (
         "📄 <b>Описание</b>\n"
-        f"Текущее значение:\n{current}\n\n"
-        "Отправьте новый текст описания:"
+        f"Текущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
@@ -388,8 +388,8 @@ async def vef_main_price_start(cb: CallbackQuery, state: FSMContext):
     ])
     txt = (
         "💰 <b>Оплата</b>\n"
-        f"Текущее значение:\n{current}\n\n"
-        "Отправьте новый текст для поля «Оплата»:"
+        f"Текущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущее ↑ и отредактируйте):"
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]

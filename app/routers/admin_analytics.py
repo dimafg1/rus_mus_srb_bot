@@ -71,6 +71,7 @@ def _analytics_main_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📂 Источники открытий", callback_data="admin:analytics:sources")],
             [InlineKeyboardButton(text="📈 Search → open", callback_data="admin:analytics:search_conversion")],
             [InlineKeyboardButton(text="👤 Авторы объявлений", callback_data="admin:analytics:owners")],
+            [InlineKeyboardButton(text="🏙 По городам", callback_data="admin:analytics:cities")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="admin")],
         ]
     )
@@ -828,6 +829,64 @@ async def admin_analytics_search_conversion(cb: CallbackQuery) -> None:
                 f"• <b>{_safe_text(_section_label(section))}</b> <code>{_safe_text(section)}</code>: "
                 f"поисков {searches}, open из поиска {opens}, {_pct(opens, searches)}"
             )
+
+    await _send_admin_analytics_message(cb, "\n".join(lines), _analytics_back_kb())
+
+
+@router.callback_query(F.data == "admin:analytics:cities")
+async def admin_analytics_cities(cb: CallbackQuery) -> None:
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    async with SessionLocal() as s:
+        rows = (await s.execute(sql("""
+            SELECT c.id, c.name,
+                   COUNT(DISTINCT l.id) AS total,
+                   COUNT(DISTINCT CASE WHEN COALESCE(l.is_sold,0)=0 THEN l.id END) AS active,
+                   SUM(CASE WHEN lv.action='open' THEN 1 ELSE 0 END) AS views,
+                   COUNT(DISTINCT CASE WHEN lv.action='open' THEN lv.user_id END) AS viewers,
+                   SUM(CASE WHEN lv.action='contact' THEN 1 ELSE 0 END) AS contacts,
+                   SUM(CASE WHEN l.type='market' THEN 1 ELSE 0 END) AS market,
+                   SUM(CASE WHEN l.type='service' THEN 1 ELSE 0 END) AS service,
+                   SUM(CASE WHEN l.type='vacancy' THEN 1 ELSE 0 END) AS vacancy,
+                   SUM(CASE WHEN l.type='events' THEN 1 ELSE 0 END) AS events
+            FROM city c
+            LEFT JOIN listing l ON l.city_id=c.id
+            LEFT JOIN listing_views lv ON lv.listing_id=l.id
+            GROUP BY c.id, c.name
+            ORDER BY views DESC, total DESC
+        """))).mappings().all()
+
+    if not rows:
+        await _send_admin_analytics_message(cb, "🏙 <b>Города</b>\n\nНет данных.", _analytics_back_kb())
+        return
+
+    lines = ["🏙 <b>Аналитика по городам</b>", ""]
+    section_labels = {"market": "Барахолка", "service": "Услуги",
+                      "vacancy": "Вакансии", "events": "Афиша"}
+    for r in rows:
+        name = _safe_text((r["name"] or "").rstrip(".").strip())
+        total   = int(r["total"] or 0)
+        active  = int(r["active"] or 0)
+        views   = int(r["views"] or 0)
+        viewers = int(r["viewers"] or 0)
+        contacts = int(r["contacts"] or 0)
+        conv = f"{contacts/views*100:.1f}%" if views else "—"
+        # build per-section breakdown
+        by_sec = []
+        for key, label in section_labels.items():
+            cnt = int(r[key] or 0)
+            if cnt:
+                by_sec.append(f"{label}: {cnt}")
+        sec_str = " · ".join(by_sec) if by_sec else "—"
+        lines.append(
+            f"📍 <b>{name}</b>\n"
+            f"   📋 <b>{total}</b> объявл. (акт.: <b>{active}</b>)\n"
+            f"   👁 <b>{views}</b> просм. · 👥 <b>{viewers}</b> польз.\n"
+            f"   📞 <b>{contacts}</b> контакт. · конверсия: <b>{conv}</b>\n"
+            f"   {_safe_text(sec_str)}"
+        )
 
     await _send_admin_analytics_message(cb, "\n".join(lines), _analytics_back_kb())
 

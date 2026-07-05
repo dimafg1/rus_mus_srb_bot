@@ -56,9 +56,16 @@ async def service_edit_overview(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("edit:title:"))
 async def edit_title_start(cb: CallbackQuery, state: FSMContext):
     listing_id = int(cb.data.split(":")[2])
-    await state.set_state(EditListing.waiting_title)          # <-- было EditListing.title
+    await state.set_state(EditListing.waiting_title)
     await state.update_data(listing_id=listing_id)
-    msg = await cb.message.answer("Введите новый заголовок (1–70 символов):")
+    async with SessionLocal() as s:
+        l = await _get_listing(s, listing_id)
+        current = l.title or "—"
+    msg = await cb.message.answer(
+        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
+        parse_mode="HTML"
+    )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
@@ -87,9 +94,16 @@ async def edit_title_save(msg: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("edit:descr:"))
 async def edit_descr_start(cb: CallbackQuery, state: FSMContext):
     listing_id = int(cb.data.split(":")[2])
-    await state.set_state(EditListing.waiting_descr)          # <-- было EditListing.descr
+    await state.set_state(EditListing.waiting_descr)
     await state.update_data(listing_id=listing_id)
-    msg = await cb.message.answer("Введите новое описание (или оставьте пустым).")
+    async with SessionLocal() as s:
+        l = await _get_listing(s, listing_id)
+        current = l.descr or "—"
+    msg = await cb.message.answer(
+        f"📝 <b>Описание</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
+        parse_mode="HTML"
+    )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
@@ -113,9 +127,16 @@ async def edit_descr_save(msg: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("edit:price:"))
 async def edit_price_start(cb: CallbackQuery, state: FSMContext):
     listing_id = int(cb.data.split(":")[2])
-    await state.set_state(EditListing.waiting_price)          # <-- было EditListing.price
+    await state.set_state(EditListing.waiting_price)
     await state.update_data(listing_id=listing_id)
-    msg = await cb.message.answer("Укажите новую стоимость (или «Договорная»).")
+    async with SessionLocal() as s:
+        l = await _get_listing(s, listing_id)
+        current = l.price or "—"
+    msg = await cb.message.answer(
+        f"💰 <b>Стоимость</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новую стоимость (или скопируйте текущую ↑ и отредактируйте):",
+        parse_mode="HTML"
+    )
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()

@@ -170,10 +170,10 @@ class BotText(SQLModel, table=True):
     __tablename__ = "BotText"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    code: str = Field(sa_column=Column(String(100), index=True, nullable=False))
+    code: str = Field(sa_column=Column(String(100), unique=True, nullable=False))
     title: Optional[str] = Field(default=None, sa_column=Column(String(255)))
-    text: str = Field(sa_column=Column(Text, nullable=False))
-    lang: str = Field(default="ru", sa_column=Column(String(10), index=True, nullable=False))
+    text_ru: str = Field(default="", sa_column=Column(Text, nullable=False))
+    text_en: str = Field(default="", sa_column=Column(Text, nullable=False))
     updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
 
@@ -182,13 +182,14 @@ class BotText(SQLModel, table=True):
 # ─────────────────────────────────────────────────────────
 class Menu(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    code: str = Field(sa_column=Column(String(100), index=True, nullable=False))
+    code: str = Field(sa_column=Column(String(100), unique=True, nullable=False))
     parent_code: str = Field(sa_column=Column(String(100), index=True, nullable=False))
-    text: str = Field(sa_column=Column(Text, nullable=False))
+    text: str = Field(sa_column=Column(Text, nullable=False))       # text_ru (основной)
+    text_en: str = Field(default="", sa_column=Column(Text, nullable=False))
     callback_data: str = Field(sa_column=Column(String(255), nullable=False))
     order_num: int = Field(sa_column=Column(Integer, nullable=False))
-    visible: int = Field(sa_column=Column(Integer, nullable=False))  # оставляю int, как было
-    lang: str = Field(sa_column=Column(String(10), nullable=False))
+    visible: int = Field(sa_column=Column(Integer, nullable=False))
+    lang: str = Field(default="ru", sa_column=Column(String(10), nullable=False))
     icon: Optional[str] = Field(default=None, sa_column=Column(String(50)))
 
 

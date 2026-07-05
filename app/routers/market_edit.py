@@ -53,8 +53,8 @@ async def _ask_title(ev, state: FSMContext, listing: Listing, city_slug: str, ca
 
     kb = _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
-        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<b>{listing.title or '—'}</b>\n\n"
-        "Отправьте новый текст заголовка:",
+        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{listing.title or '—'}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -69,8 +69,8 @@ async def _ask_price(ev, state: FSMContext, listing: Listing, city_slug: str, ca
 
     kb = _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
-        f"💰 <b>Цена</b>\n\nТекущее значение:\n<b>{listing.price or '—'}</b>\n\n"
-        "Отправьте новую цену (в любом вашем формате):",
+        f"💰 <b>Цена</b>\n\nТекущее значение:\n<code>{listing.price or '—'}</code>\n\n"
+        "Отправьте новую цену (или скопируйте текущую ↑ и отредактируйте):",
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -86,8 +86,8 @@ async def _ask_descr(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     kb = _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
         "📝 <b>Описание</b>\n\nТекущее значение:\n"
-        f"<b>{(listing.descr or '—')}</b>\n\n"
-        "Отправьте новый текст описания:",
+        f"<code>{(listing.descr or '—')}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]

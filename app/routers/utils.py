@@ -2,7 +2,7 @@
 from collections import defaultdict
 from app.models import City, Category, Listing, BotMessage
 from app.database import SessionLocal
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from typing import Dict, Any, Optional, List
 from app.models import Category, Menu  # или Menu, если категории хранятся там
 from app.database import SessionLocal
@@ -195,12 +195,15 @@ import aiosqlite
 DB_PATH = "dev.db"  # Укажите ваш путь или используйте переменную из настроек!
 
 async def get_text(code: str, lang: str = "ru", default=None):
+    col = f"text_{lang}" if lang in ("ru", "en") else "text_ru"
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT text FROM BotText WHERE code = ? AND lang = ?", (code, lang)
+            f"SELECT {col}, text_ru FROM BotText WHERE code = ?", (code,)
         ) as cursor:
             row = await cursor.fetchone()
-            return row[0] if row else (default or f"[Text not found for: {code}]")
+            if row:
+                return row[0] or row[1] or ""
+            return default or f"[{code}]"
 
 
 # --- Безопасное редактирование или отправка нового сообщения ---
@@ -227,7 +230,7 @@ async def city_by_slug(slug: str) -> City:
 
 async def children_of(parent_id: Optional[int]) -> List[Category]:
     async with SessionLocal() as s:
-        q = select(Category).where(Category.parent_id == parent_id)
+        q = select(Category).where(Category.parent_id == parent_id).order_by(text("order_num"), Category.name)
         return (await s.execute(q)).scalars().all()
 
 PAGE = 10
@@ -297,24 +300,36 @@ def _flex_parse(flex_data: Any) -> Dict[str, Any]:
 async def _flex_labels_for_category(session: AsyncSession, category_id: int, lang: str = "ru") -> Dict[str, str]:
     """
     Подгрузка подписей для ключей flex из Category.fields.
-    В будущем сюда можно добавить поддержку разных языков (lang).
+    Обходит всю цепочку parent_id снизу вверх; дочерние поля перекрывают родительские.
     """
+    # Собираем цепочку от текущей до корня
+    chain: list = []
+    cur_id = category_id
+    guard = 0
+    while cur_id and guard < 10:
+        guard += 1
+        cat = await session.get(Category, cur_id)
+        if not cat:
+            break
+        chain.append(cat)
+        cur_id = cat.parent_id
+
+    # Идём сверху вниз, дочерние переопределяют родительские
     labels: Dict[str, str] = {}
-    cat = await session.get(Category, category_id)
-    if not cat or not cat.fields:
-        return labels
-    try:
-        defs = json.loads(cat.fields)
-        if isinstance(defs, list):
-            for f in defs:
-                key = str(f.get("key", "")).strip().lower()
-                if not key:
-                    continue
-                # пока просто используем одно и то же поле label
-                label = (f.get("label") or key).strip()
-                labels[key] = label or key
-    except Exception:
-        pass
+    for cat in reversed(chain):
+        if not cat.fields:
+            continue
+        try:
+            defs = json.loads(cat.fields)
+            if isinstance(defs, list):
+                for f in defs:
+                    key = str(f.get("key", "")).strip().lower()
+                    if not key:
+                        continue
+                    label = (f.get("label") or key).strip()
+                    labels[key] = label or key
+        except Exception:
+            pass
     return labels
 
 
@@ -370,29 +385,35 @@ async def render_flex_block(session: AsyncSession, listing: Listing, lang: str =
     # Разбираем значения гибких полей
     flex = _flex_parse(listing.flex)
 
-    # Карта типов по ключам из описания полей категории
+    # Карта типов по ключам — вся цепочка parent_id, дочерние перекрывают родительские
     type_by_key: dict[str, str] = {}
     try:
-        cat = (await session.execute(
-            select(Category).where(Category.id == listing.category_id)
-        )).scalar_one_or_none()
-
-        defs = []
-        if cat and cat.fields:
+        chain_cats: list = []
+        cur_id = listing.category_id
+        guard = 0
+        while cur_id and guard < 10:
+            guard += 1
+            cat = (await session.execute(
+                select(Category).where(Category.id == cur_id)
+            )).scalar_one_or_none()
+            if not cat:
+                break
+            chain_cats.append(cat)
+            cur_id = cat.parent_id
+        for cat in reversed(chain_cats):
+            if not cat.fields:
+                continue
             try:
                 defs = json.loads(cat.fields)
-                if not isinstance(defs, list):
-                    defs = []
+                if isinstance(defs, list):
+                    for f in defs:
+                        k = str(f.get("key", "")).strip().lower()
+                        t = str(f.get("type", "")).strip().lower()
+                        if k:
+                            type_by_key[k] = t
             except Exception:
-                defs = []
-
-        for f in defs:
-            k = str(f.get("key", "")).strip().lower()
-            t = str(f.get("type", "")).strip().lower()
-            if k:
-                type_by_key[k] = t
+                pass
     except Exception:
-        # В случае ошибки просто не будем фильтровать по типам (но ниже всё равно пропустим video, если карта заполнится)
         type_by_key = type_by_key or {}
 
     # Лейблы для ключей
@@ -422,8 +443,8 @@ async def render_flex_block(session: AsyncSession, listing: Listing, lang: str =
             skipped_service += 1
             continue
 
-        # не отображаем видео-поля
-        if type_by_key.get(key) == "video":
+        # не отображаем видео-поля (по типу из определения или по ключу "video")
+        if type_by_key.get(key) == "video" or key == "video":
             skipped_video += 1
             continue
 
@@ -531,21 +552,9 @@ def make_listing_banner(title: str, price: str | None) -> str:
     return tmp.name
 
 
-_WEBAPP_BASE = os.getenv("WEBAPP_BASE", "https://unixound.com/rus_mus_srb_bot").rstrip("/")
-_USE_CONTACT_REDIRECT = os.getenv("USE_CONTACT_REDIRECT", "1").strip().lower() in {"1", "true", "yes", "on"}
-
 
 def build_contact_url(listing_id: int, contact: str, user_id: int, source: str = "direct") -> str:
-    """Возвращает tracked redirect URL или прямой t.me — в зависимости от USE_CONTACT_REDIRECT."""
     username = (contact or "").lstrip("@").strip()
     if not username:
         return ""
-    direct = f"https://t.me/{username}"
-    if not _USE_CONTACT_REDIRECT or not _WEBAPP_BASE:
-        return direct
-    try:
-        from app.web.security import sign_contact_click_token
-        token = sign_contact_click_token(listing_id, user_id, source)
-        return f"{_WEBAPP_BASE}/go/contact?t={token}"
-    except Exception:
-        return direct
+    return f"https://t.me/{username}"
