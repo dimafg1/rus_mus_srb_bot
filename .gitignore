@@ -1,0 +1,9 @@
+.env
+.env.ai
+*.db
+*.db-shm
+*.db-wal
+*.db.bak*
+__pycache__/
+*.pyc
+.DS_Store
