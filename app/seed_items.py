@@ -6,6 +6,7 @@
 
 import asyncio, random
 from datetime import datetime
+from app.models import utcnow_naive
 from sqlalchemy import select
 from app.database import init_db, SessionLocal
 from app.models import City, Category, Item
@@ -29,7 +30,7 @@ async def run():
                 title=title,
                 descr=descr,
                 contact=f"@user{random.randint(1000,9999)}",
-                created_at=datetime.utcnow(),
+                created_at=utcnow_naive(),
             ))
         await s.commit()
         print("Dummy items inserted")

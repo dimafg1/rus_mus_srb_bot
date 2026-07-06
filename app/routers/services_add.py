@@ -9,6 +9,7 @@
 from __future__ import annotations
 import asyncio, json
 from datetime import datetime
+from app.models import utcnow_naive
 
 from aiogram import Router, F
 from aiogram.types import (
@@ -706,7 +707,7 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
                 price     = data["price"],
                 descr     = data.get("descr"),
                 contact   = (f"@{cb.from_user.username}" if cb.from_user.username else "контакт не указан"),
-                created_at= datetime.utcnow(),
+                created_at= utcnow_naive(),
                 type      = "service",
                 photo_file_id=",".join(data.get("photos", [])) if data.get("photos") else None,
             )

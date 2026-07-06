@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from app.models import utcnow_naive
 from sqlalchemy import select
 from app.database import init_db, SessionLocal
 from app.models import Vacancy, City
@@ -21,7 +22,7 @@ async def run():
                 descr=descr,
                 contact="@"+f"user{city_slug}",
                 owner_id=0,
-                created_at=datetime.utcnow(),
+                created_at=utcnow_naive(),
             ))
         await s.commit()
         print("Demo vacancies inserted")

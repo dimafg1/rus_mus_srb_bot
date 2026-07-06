@@ -11,6 +11,7 @@ from app.states import AdminCategoryStates, AdminFieldStates
 from aiogram.types import ReplyKeyboardRemove
 import inspect
 from datetime import datetime
+from app.models import utcnow_naive
 import json
 import pytz
 SERBIA_TZ = pytz.timezone("Europe/Belgrade")
@@ -1086,7 +1087,7 @@ async def admin_feedback_view(cb: CallbackQuery):
     try:
         dt_val = datetime.fromisoformat(dt_val) if isinstance(dt_val, str) else dt_val
     except Exception:
-        dt_val = datetime.utcnow()
+        dt_val = utcnow_naive()
     dt_str = dt_val.strftime("%H:%M %d:%m:%y")
 
     header = (

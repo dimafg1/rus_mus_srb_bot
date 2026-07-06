@@ -19,6 +19,7 @@ import asyncio
 from collections import defaultdict
 from typing import List, Dict, Optional, Any, Callable, Awaitable
 from datetime import datetime
+from app.models import utcnow_naive
 import logging
 
 from aiogram import Bot, Dispatcher, F
@@ -80,7 +81,8 @@ from app.routers.utils import (
     sent_photo_messages,
     my_listing_messages,
 )
-from app.texts import get_text
+# get_text берём из routers.utils (aiosqlite-версия с поддержкой default);
+# версия из app.texts здесь раньше импортировалась и тут же перекрывалась
 from app.routers.utils import get_text
 from app.keyboards import get_common_menu_button
 from app.routers.market_view import router as market_view_router
@@ -100,7 +102,6 @@ from app.routers import feedback
 from app.routers.admin_panel import is_admin
 from app.routers.admin_fields import router as admin_fields_router
 from app.routers.user_extra_fields import router as user_extra_fields_router
-from app.routers.market_edit import router as market_edit_router
 from app.routers.market_edit_overview import router as market_edit_overview_router
 
 from app.routers.events_view import router as events_view_router
@@ -119,11 +120,6 @@ from app.routers.vacancy_edit import router as vacancy_edit_router
 from app.routers.codex_review import router as codex_review_router
 
 from app.routers.utils import log
-
-
-def setup_routers(dp):
-    # ... ваши остальные роутеры ...
-    dp.include_router(codex_review_router)
 
 
 
@@ -169,6 +165,16 @@ logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
 )
+
+# Дублируем логи в файл с ротацией: logs/bot.log, 5 МБ x 5 файлов
+from logging.handlers import RotatingFileHandler
+_log_dir = Path(__file__).resolve().parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_file_handler = RotatingFileHandler(
+    _log_dir / "bot.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"))
+logging.getLogger().addHandler(_file_handler)
 
 # Приглушаем болтливые библиотеки
 logging.getLogger("aiogram").setLevel(logging.WARNING)
@@ -225,7 +231,7 @@ class TrackUserMiddleware:
             try:
                 async with SessionLocal() as s:
                     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-                    now = datetime.utcnow()
+                    now = utcnow_naive()
                     username = user.username or None
                     full_name = (f"{user.first_name or ''} {user.last_name or ''}").strip() or None
                     stmt = sqlite_insert(BotUser).values(
@@ -269,6 +275,27 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode="HTML"),
 )
 dp = Dispatcher()
+
+
+# ── Глобальный обработчик ошибок: полный трейсбек + контекст в лог ──────────
+@dp.errors()
+async def on_error(event, **kwargs):
+    log = logging.getLogger("app.errors")
+    update = getattr(event, "update", None)
+    exc = getattr(event, "exception", None)
+    ctx = {"update_id": getattr(update, "update_id", None)}
+    try:
+        if update and update.callback_query:
+            ctx["user_id"] = update.callback_query.from_user.id
+            ctx["callback_data"] = update.callback_query.data
+        elif update and update.message:
+            ctx["user_id"] = update.message.from_user.id if update.message.from_user else None
+            ctx["text"] = (update.message.text or "")[:200]
+    except Exception:
+        pass
+    log.error("Unhandled error | %s", ctx, exc_info=exc)
+    return True  # ошибка обработана, aiogram не роняет polling
+
 
 print("=== rus_mus_srb_bot started (DEV) ===")
 

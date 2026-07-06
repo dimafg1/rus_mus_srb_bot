@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from app.models import utcnow_naive
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import NoResultFound
@@ -60,7 +61,7 @@ async def run():
                 descr=descr,
                 contact=contact,
                 photo_file_id=photo,
-                created_at=datetime.utcnow(),
+                created_at=utcnow_naive(),
                 is_sold=False,
             )
             session.add(listing)

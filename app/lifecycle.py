@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import ceil
 from typing import Optional
 
@@ -48,7 +48,7 @@ PURGE_AFTER_DAYS_FROM_CREATED = 365
 
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _strip_tz(dt: datetime) -> datetime:

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import SQLModel, Field
 from sqlalchemy import (
@@ -9,6 +9,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 from datetime import date, datetime
+
+
+def utcnow_naive() -> datetime:
+    """Naive UTC now — замена deprecated datetime.utcnow() с идентичным поведением.
+    Naive-формат сохраняем сознательно: сравнения дат в БД и lifecycle.py
+    строятся на naive-датах, aware-даты сломали бы работу со старыми записями."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # ─────────────────────────────────────────────────────────
 # City
@@ -47,7 +54,7 @@ class Item(SQLModel, table=True):
     contact: str = Field(sa_column=Column(String(255), nullable=False))
 
     is_approved: bool = Field(default=False, sa_column=Column(Boolean, index=True, nullable=False))
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    created_at: datetime = Field(default_factory=utcnow_naive, sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 # ─────────────────────────────────────────────────────────
@@ -67,7 +74,7 @@ class Listing(SQLModel, table=True):
     photo_file_id: Optional[str] = Field(default=None, sa_column=Column(String(255)))
 
     is_sold: bool = Field(default=False, sa_column=Column(Boolean, index=True, nullable=False))
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    created_at: datetime = Field(default_factory=utcnow_naive, sa_column=Column(DateTime(timezone=True), nullable=False))
 
     # ───────────────────────────────────────────────────────────────────────
     # Поле type предназначено для возможного разделения объявлений на разные
@@ -158,7 +165,7 @@ class Vacancy(SQLModel, table=True):
     contact: str = Field(sa_column=Column(String(255), nullable=False))
 
     owner_id: int = Field(sa_column=Column(Integer, nullable=False))  # Telegram user ID автора
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    created_at: datetime = Field(default_factory=utcnow_naive, sa_column=Column(DateTime(timezone=True), nullable=False))
     is_closed: bool = Field(default=False, sa_column=Column(Boolean, index=True, nullable=False))
 
 
@@ -208,7 +215,7 @@ class BotMessage(SQLModel, table=True):
     )
 
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=utcnow_naive,
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
@@ -230,11 +237,11 @@ class BotUser(SQLModel, table=True):
         default=None, sa_column=Column(String(255))
     )
     last_seen: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=utcnow_naive,
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
     first_seen: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=utcnow_naive,
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
@@ -266,6 +273,6 @@ class Profile(SQLModel, table=True):
     moderation_status: Optional[str] = Field(default="pending", sa_column=Column(String(50)))
     is_active: Optional[int] = Field(default=1, sa_column=Column(Integer))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
-    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), nullable=False))
+    created_at: datetime = Field(default_factory=utcnow_naive, sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(default_factory=utcnow_naive, sa_column=Column(DateTime(timezone=True), nullable=False))
 

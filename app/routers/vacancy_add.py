@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from app.models import utcnow_naive
 from html import escape as _esc
 from typing import List, Optional
 
@@ -1092,7 +1093,7 @@ async def vacancy_input_price(m: Message, state: FSMContext):
             contact=contact,
             photo_file_id=None,     # фото в вакансиях не используем
             is_sold=False,
-            created_at=datetime.utcnow(),
+            created_at=utcnow_naive(),
             type="vacancy",
             flex=None,              # доп.поля редактируются ПОСЛЕ публикации
             extra_category_id1=None,
@@ -1218,7 +1219,7 @@ async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
             contact=contact,
             photo_file_id=None,      # вакансия — без фото
             is_sold=False,
-            created_at=datetime.utcnow(),  # если в модели нет default
+            created_at=utcnow_naive(),  # если в модели нет default
             flex=flex_payload,
             extra_category_id1=extra_cat1,
             extra_category_id2=extra_cat2,

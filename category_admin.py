@@ -24,13 +24,27 @@ DB_PATH = Path(__file__).parent / "dev.db"
 ROOT_IDS = {"market": 30, "services": 80, "vacancy": 90}
 ROOT_NAMES = {"market": "Барахолка", "services": "Услуги", "vacancy": "Вакансии"}
 
+# Логи в файл с ротацией: logs/admin.log, 5 МБ x 5 файлов
+import logging
+from logging.handlers import RotatingFileHandler
+_log_dir = Path(__file__).parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_fh = RotatingFileHandler(_log_dir / "admin.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+_fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_fh, logging.StreamHandler()])
+
 app = FastAPI()
 
 
 # ─────────────────────────── DB helpers ───────────────────────────
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    # timeout + busy_timeout: бот и админка работают с базой параллельно,
+    # без них конкурентная запись даёт "database is locked".
+    # foreign_keys НЕ включаем: в DDL listing.category_id без ON DELETE,
+    # включение сломает удаление категорий с объявлениями.
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
     return conn
 

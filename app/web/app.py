@@ -8,6 +8,7 @@ app.include_router(contact_redirect_router)
 
 from fastapi import Request
 from datetime import datetime
+from app.models import utcnow_naive
 import aiosqlite
 
 
@@ -24,7 +25,7 @@ async def log_contact_click(request: Request):
             """, (
                 int(listing_id) if listing_id else None,
                 source or "unknown",
-                datetime.utcnow().isoformat()
+                utcnow_naive().isoformat()
             ))
             await db.commit()
 

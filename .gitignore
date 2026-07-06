@@ -1,6 +1,8 @@
 .env
 .env.ai
 *.db
+backups/
+logs/
 *.db-shm
 *.db-wal
 *.db.bak*
