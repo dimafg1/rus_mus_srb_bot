@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "category_admin",
+      "runtimeExecutable": "/Users/d/Library/Caches/pypoetry/virtualenvs/rus-mus-srb-bot-uk7w-_v4-py3.13/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "category_admin:app", "--port", "8099"],
+      "port": 8099
+    }
+  ]
+}

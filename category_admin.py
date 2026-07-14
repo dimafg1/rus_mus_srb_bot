@@ -3,10 +3,10 @@
 Запуск: python category_admin.py   (или двойной клик на category_admin.command)
 Открыть: http://localhost:8001
 """
-import sqlite3, json, datetime, os
+import sqlite3, json, datetime, os, re
 from pathlib import Path
 from collections import defaultdict
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Any
@@ -34,6 +34,31 @@ _fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %
 logging.basicConfig(level=logging.INFO, handlers=[_fh, logging.StreamHandler()])
 
 app = FastAPI()
+
+# ── Доступ только с этой машины и из Tailscale-сети ──────────────────────────
+# Приложение слушает 0.0.0.0 (для удалённого доступа через Tailscale),
+# но админка без авторизации не должна быть видна из офисного Wi-Fi.
+# Tailscale выдаёт адреса из CGNAT-диапазона 100.64.0.0/10.
+import ipaddress
+_ALLOWED_NETS = [
+    ipaddress.ip_network("127.0.0.0/8"),      # localhost
+    ipaddress.ip_network("::1/128"),           # localhost IPv6
+    ipaddress.ip_network("100.64.0.0/10"),     # Tailscale
+]
+
+
+@app.middleware("http")
+async def _ip_allowlist(request: Request, call_next):
+    client_ip = request.client.host if request.client else ""
+    try:
+        ip = ipaddress.ip_address(client_ip)
+        if not any(ip in net for net in _ALLOWED_NETS):
+            logging.warning("Отклонён запрос с недоверенного IP: %s %s", client_ip, request.url.path)
+            from fastapi.responses import PlainTextResponse
+            return PlainTextResponse("Forbidden", status_code=403)
+    except ValueError:
+        pass  # нераспознанный адрес (unix socket и т.п.) — пропускаем
+    return await call_next(request)
 
 
 # ─────────────────────────── DB helpers ───────────────────────────
@@ -705,6 +730,18 @@ def get_listing(listing_id: int):
             except Exception:
                 pass
         flex_fields = list(fields_by_key.values())
+        # Данные афиши: дата/время/площадка события лежат в events_meta
+        event = None
+        em = conn.execute(
+            "SELECT start_date_local, start_time_local, venue_text, city_text, price_text, status "
+            "FROM events_meta WHERE listing_id=?", (listing_id,)
+        ).fetchone()
+        if em:
+            event = {
+                "date": em[0] or "", "time": em[1] or "",
+                "venue": em[2] or "", "city_text": em[3] or "",
+                "price_text": em[4] or "", "status": em[5] or "",
+            }
     photo_ids = [p.strip() for p in (row[5] or "").split(",") if p.strip()]
     video = _parse_video(row[17] or "")
     try:
@@ -723,6 +760,7 @@ def get_listing(listing_id: int):
         "search_opens": row[15] or 0, "catalog_opens": row[16] or 0,
         "flex": flex_data,
         "flex_fields": flex_fields,
+        "event": event,
     }
 
 
@@ -732,6 +770,57 @@ class ListingUpdate(BaseModel):
     price: Optional[str] = None
     contact: Optional[str] = None
     flex: Optional[dict] = None
+    event: Optional[dict] = None  # {date: 'ДД-ММ-ГГГГ', time: 'ЧЧ:ММ', venue, price_text}
+
+
+# Гибкие парсеры даты/времени — те же правила, что в боте (events_add.py),
+# чтобы админ мог вводить в любом привычном формате.
+def _parse_event_date(raw: str):
+    """07.10.25 / 07-10-25 / 07/10/2025 / 071025 / 07102025 / 2026-02-20 → datetime | None"""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    digits = re.sub(r"\D", "", s)
+    try:
+        if len(digits) == 6:  # DDMMYY
+            return datetime.datetime(2000 + int(digits[4:6]), int(digits[2:4]), int(digits[0:2]))
+        if len(digits) == 8:
+            a, b, c = int(digits[0:2]), int(digits[2:4]), int(digits[4:8])
+            if 1 <= a <= 31 and 1 <= b <= 12 and 2000 <= c <= 2100:  # DDMMYYYY
+                return datetime.datetime(c, b, a)
+            year, month, day = int(digits[0:4]), int(digits[4:6]), int(digits[6:8])
+            if 2000 <= year <= 2100:  # YYYYMMDD
+                return datetime.datetime(year, month, day)
+    except ValueError:
+        return None
+    for fmt in ("%d.%m.%y", "%d-%m-%y", "%d/%m/%y",
+                "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y",
+                "%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"):
+        try:
+            return datetime.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_event_time(raw: str):
+    """HH:MM / HH.MM / HH-MM / 'HH MM' / HHMM / HMM / HH → (hh, mm) | None"""
+    s = (raw or "").strip().lower()
+    if not s:
+        return None
+    if re.fullmatch(r"\d{1,4}", s):
+        if len(s) <= 2:
+            hh, mm = int(s), 0
+        else:
+            hh, mm = int(s[:-2]), int(s[-2:])
+        return (hh, mm) if 0 <= hh <= 23 and 0 <= mm <= 59 else None
+    s_norm = re.sub(r"\s+", ":", s).replace(".", ":").replace("-", ":")
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s_norm)
+    if not m:
+        return None
+    hh, mm = map(int, m.groups())
+    return (hh, mm) if 0 <= hh <= 23 and 0 <= mm <= 59 else None
+
 
 @app.patch("/api/listing/{listing_id}")
 def update_listing(listing_id: int, body: ListingUpdate):
@@ -755,12 +844,57 @@ def update_listing(listing_id: int, body: ListingUpdate):
                 existing_flex = {}
             existing_flex.update(body.flex)
             fields.append("flex=?"); vals.append(json.dumps(existing_flex, ensure_ascii=False))
-        if not fields:
+
+        updated = False
+        if fields:
+            vals.append(listing_id)
+            conn.execute(f"UPDATE listing SET {', '.join(fields)} WHERE id=?", vals)
+            updated = True
+
+        # Событие (афиша): при смене даты/времени пересчитываем start_at_utc —
+        # по нему бот фильтрует прошедшие события и сортирует выдачу.
+        norm_event = None
+        if body.event is not None:
+            em = conn.execute(
+                "SELECT start_date_local, start_time_local, timezone FROM events_meta WHERE listing_id=?",
+                (listing_id,)
+            ).fetchone()
+            if em:
+                ev = body.event
+                em_fields, em_vals = [], []
+                date_s = (ev.get("date") or "").strip() or (em[0] or "")
+                time_s = (ev.get("time") or "").strip() or (em[1] or "00:00")
+                if "date" in ev or "time" in ev:
+                    dt_date = _parse_event_date(date_s)
+                    t = _parse_event_time(time_s)
+                    if dt_date is None:
+                        raise HTTPException(400, "Не понял дату. Примеры: 07.10.25, 07-10-2025, 071025")
+                    if t is None:
+                        raise HTTPException(400, "Не понял время. Примеры: 19:00, 19.00, 1900, 19")
+                    dt_local = dt_date.replace(hour=t[0], minute=t[1])
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo(em[2] or "Europe/Belgrade")
+                    start_utc = int(dt_local.replace(tzinfo=tz).astimezone(datetime.timezone.utc).timestamp())
+                    # Сохраняем в нормализованном виде — как это делает бот
+                    date_norm = dt_local.strftime("%d-%m-%Y")
+                    time_norm = f"{t[0]:02d}:{t[1]:02d}"
+                    em_fields += ["start_date_local=?", "start_time_local=?", "start_at_utc=?"]
+                    em_vals += [date_norm, time_norm, start_utc]
+                    norm_event = {"date": date_norm, "time": time_norm}
+                if "venue" in ev:
+                    em_fields.append("venue_text=?"); em_vals.append((ev.get("venue") or "").strip())
+                if "price_text" in ev:
+                    em_fields.append("price_text=?"); em_vals.append((ev.get("price_text") or "").strip())
+                if em_fields:
+                    em_vals.append(listing_id)
+                    conn.execute(f"UPDATE events_meta SET {', '.join(em_fields)} WHERE listing_id=?", em_vals)
+                    updated = True
+
+        if not updated:
             raise HTTPException(400, "Nothing to update")
-        vals.append(listing_id)
-        conn.execute(f"UPDATE listing SET {', '.join(fields)} WHERE id=?", vals)
         conn.commit()
-    return {"ok": True}
+    # norm_event — нормализованные дата/время, чтобы фронт показал их сразу
+    return {"ok": True, **({"event": norm_event} if norm_event else {})}
 
 @app.post("/api/listing/{listing_id}/toggle_sold")
 def toggle_sold(listing_id: int):
@@ -802,19 +936,162 @@ def remove_photo(listing_id: int, body: RemovePhotoBody):
         conn.commit()
     return {"ok": True, "remaining": len(photos)}
 
-@app.get("/api/tg_photo/{file_id:path}")
-async def tg_photo(file_id: str):
+
+# ── Загрузка фото/видео в объявление через Bot API ──────────────────────────
+# Файл отправляется ботом в чат админа (UPLOAD_CHAT_ID) → Telegram возвращает
+# file_id → он сохраняется в объявление. Байты хранятся у Telegram, как и все
+# медиа бота. Побочный эффект: в вашем чате с ботом появляется сообщение-носитель.
+UPLOAD_CHAT_ID = 519335258  # Telegram ID админа (@snd_producer)
+MAX_PHOTOS = 3              # как в мастере добавления объявления в боте
+
+
+async def _tg_upload(kind: str, filename: str, data: bytes) -> str:
+    """kind: 'photo' | 'video'. Возвращает file_id."""
+    method = "sendPhoto" if kind == "photo" else "sendVideo"
+    field = "photo" if kind == "photo" else "video"
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+            data={"chat_id": UPLOAD_CHAT_ID, "disable_notification": "true"},
+            files={field: (filename or f"upload.{'jpg' if kind == 'photo' else 'mp4'}", data)},
+        )
+        resp = r.json()
+        if not resp.get("ok"):
+            raise HTTPException(502, f"Telegram: {resp.get('description', 'upload failed')}")
+        msg = resp["result"]
+        file_id = msg["photo"][-1]["file_id"] if kind == "photo" else msg["video"]["file_id"]
+        # Убираем сообщение-носитель из чата: file_id остаётся рабочим
+        # и после удаления сообщения (файл живёт на серверах Telegram).
+        try:
+            await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                data={"chat_id": UPLOAD_CHAT_ID, "message_id": msg["message_id"]},
+            )
+        except Exception:
+            pass  # не удалилось — не критично, файл уже загружен
+    return file_id
+
+
+@app.post("/api/listing/{listing_id}/add_photo")
+async def add_photo(listing_id: int, request: Request, filename: str = ""):
     if not BOT_TOKEN:
         raise HTTPException(503, "Bot token not configured")
-    async with httpx.AsyncClient(timeout=10) as client:
+    with db() as conn:
+        row = conn.execute("SELECT photo_file_id FROM listing WHERE id=?", (listing_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Listing not found")
+        photos = [p.strip() for p in (row[0] or "").split(",") if p.strip()]
+        if len(photos) >= MAX_PHOTOS:
+            raise HTTPException(400, f"Максимум {MAX_PHOTOS} фото")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Пустой файл")
+    file_id = await _tg_upload("photo", filename, data)
+    with db() as conn:
+        row = conn.execute("SELECT photo_file_id FROM listing WHERE id=?", (listing_id,)).fetchone()
+        photos = [p.strip() for p in (row[0] or "").split(",") if p.strip()]
+        photos.append(file_id)
+        conn.execute("UPDATE listing SET photo_file_id=? WHERE id=?", (",".join(photos), listing_id))
+        conn.commit()
+    return {"ok": True, "file_id": file_id, "photos": photos}
+
+
+@app.post("/api/listing/{listing_id}/add_video")
+async def add_video(listing_id: int, request: Request, filename: str = ""):
+    if not BOT_TOKEN:
+        raise HTTPException(503, "Bot token not configured")
+    with db() as conn:
+        row = conn.execute("SELECT flex FROM listing WHERE id=?", (listing_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Listing not found")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Пустой файл")
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "Видео больше 20 МБ: Bot API не сможет отдать его в приложении")
+    file_id = await _tg_upload("video", filename, data)
+    with db() as conn:
+        row = conn.execute("SELECT flex FROM listing WHERE id=?", (listing_id,)).fetchone()
+        try:
+            flex = json.loads(row[0]) if row[0] else {}
+        except Exception:
+            flex = {}
+        flex["video"] = file_id  # заменяет существующее видео
+        conn.execute("UPDATE listing SET flex=? WHERE id=?",
+                     (json.dumps(flex, ensure_ascii=False), listing_id))
+        conn.commit()
+    return {"ok": True, "file_id": file_id}
+
+# Кэш скачанных медиа: без него каждая перемотка видео тянет файл из Telegram заново
+_media_cache: dict = {}          # file_id -> (bytes, content_type)
+_MEDIA_CACHE_MAX = 64 * 1024 * 1024  # ~64 МБ суммарно
+
+_MIME_BY_EXT = {
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+
+
+async def _fetch_tg_file(file_id: str):
+    if file_id in _media_cache:
+        return _media_cache[file_id]
+    async with httpx.AsyncClient(timeout=60) as client:
         r = await client.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile", params={"file_id": file_id})
         data = r.json()
         if not data.get("ok"):
-            raise HTTPException(404, "File not found")
+            # Частая причина для видео: Bot API не отдаёт файлы больше 20 МБ
+            desc = data.get("description", "File not found")
+            raise HTTPException(404, desc)
         file_path = data["result"]["file_path"]
-        img_r = await client.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
-        content_type = img_r.headers.get("content-type", "image/jpeg")
-        return StreamingResponse(iter([img_r.content]), media_type=content_type)
+        f_r = await client.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
+        content = f_r.content
+    content_type = f_r.headers.get("content-type", "")
+    # Telegram нередко отдаёт octet-stream — определяем mime по расширению
+    ext = os.path.splitext(file_path)[1].lower()
+    if not content_type or content_type == "application/octet-stream":
+        content_type = _MIME_BY_EXT.get(ext, "application/octet-stream")
+    # Простейшая защита кэша от разрастания
+    if sum(len(v[0]) for v in _media_cache.values()) + len(content) > _MEDIA_CACHE_MAX:
+        _media_cache.clear()
+    _media_cache[file_id] = (content, content_type)
+    return content, content_type
+
+
+@app.get("/api/tg_photo/{file_id:path}")
+async def tg_photo(file_id: str, request: Request):
+    if not BOT_TOKEN:
+        raise HTTPException(503, "Bot token not configured")
+    content, content_type = await _fetch_tg_file(file_id)
+    total = len(content)
+
+    # Range-запросы обязательны для видео: Safari не воспроизводит <video>
+    # без ответа 206 Partial Content. Нарезаем на своей стороне.
+    range_header = request.headers.get("range")
+    if range_header and range_header.startswith("bytes="):
+        try:
+            spec = range_header[6:].split(",")[0].strip()
+            start_s, _, end_s = spec.partition("-")
+            start = int(start_s) if start_s else 0
+            end = int(end_s) if end_s else total - 1
+            end = min(end, total - 1)
+            if start > end or start >= total:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(416, "Invalid range")
+        chunk = content[start:end + 1]
+        return StreamingResponse(
+            iter([chunk]), status_code=206, media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{total}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(len(chunk)),
+            },
+        )
+    return StreamingResponse(
+        iter([content]), media_type=content_type,
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(total)},
+    )
 
 
 SECTION_ROOTS = {"market": 30, "service": 80, "vacancy": 90, "events": 100}
@@ -2638,6 +2915,17 @@ function renderListingModal(d) {
     .filter(Boolean)
     .join('');
 
+  // Блок афиши: дата/время/площадка из events_meta
+  const ev = d.event;
+  const eventRows = ev ? [
+    ev.date  ? `<span class="listing-meta-key">📅 Дата</span><span class="listing-meta-val">${esc(ev.date)}</span>` : '',
+    ev.time  ? `<span class="listing-meta-key">⏰ Время</span><span class="listing-meta-val">${esc(ev.time)}</span>` : '',
+    ev.venue ? `<span class="listing-meta-key">📍 Площадка</span><span class="listing-meta-val">${esc(ev.venue)}</span>` : '',
+    ev.city_text && !d.city ? `<span class="listing-meta-key">Город (текст)</span><span class="listing-meta-val">${esc(ev.city_text)}</span>` : '',
+    ev.price_text ? `<span class="listing-meta-key">💲 Цена входа</span><span class="listing-meta-val">${esc(ev.price_text)}</span>` : '',
+    ev.status && ev.status !== 'published' ? `<span class="listing-meta-key">Статус события</span><span class="listing-meta-val">${esc(ev.status)}</span>` : '',
+  ].filter(Boolean).join('') : '';
+
   document.getElementById('listing-content').innerHTML = `
     ${d.is_sold ? '<div class="listing-sold-badge">✓ Закрыто / продано</div>' : ''}
     <div id="lm-photos">${photosHtml}</div>
@@ -2645,6 +2933,7 @@ function renderListingModal(d) {
     <div class="listing-title" id="lm-title">${esc(d.title||'Без названия')}</div>
     ${d.price ? `<div class="listing-price" id="lm-price">${esc(d.price)}</div>` : `<div class="listing-price" id="lm-price" style="display:none"></div>`}
     ${d.descr ? `<div class="listing-descr" id="lm-descr">${esc(d.descr)}</div>` : `<div class="listing-descr" id="lm-descr" style="display:none"></div>`}
+    ${ev ? `<div class="listing-meta" id="lm-event" style="border-left:3px solid #7af;padding-left:10px">${eventRows}</div>` : ''}
     <div class="listing-meta">
       ${d.category ? `<span class="listing-meta-key">Категория</span><span class="listing-meta-val">${esc(d.category)}</span>` : ''}
       ${d.city ? `<span class="listing-meta-key">Город</span><span class="listing-meta-val">${esc(d.city)}</span>` : ''}
@@ -2697,6 +2986,20 @@ function lmStartEdit() {
   document.getElementById('lm-contact').innerHTML =
     `<div class="lm-field-group"><label class="lm-field-label">Контакт</label>
      <input id="lm-inp-contact" class="lm-edit-input" value="${esc(d.contact||'')}"></div>`;
+  // Событие (афиша): дата/время/площадка/цена входа
+  const evEl = document.getElementById('lm-event');
+  if (evEl && d.event) {
+    const ev = d.event;
+    evEl.innerHTML = `
+      <span class="listing-meta-key"><label class="lm-field-label">📅 Дата</label></span>
+      <span class="listing-meta-val"><input id="lm-inp-ev-date" class="lm-edit-input" value="${esc(ev.date||'')}" placeholder="21.09.26 / 210926 / 21-09-2026" title="Любой привычный формат: 21.09.26, 21-09-2026, 210926, 2026-09-21"></span>
+      <span class="listing-meta-key"><label class="lm-field-label">⏰ Время</label></span>
+      <span class="listing-meta-val"><input id="lm-inp-ev-time" class="lm-edit-input" value="${esc(ev.time||'')}" placeholder="19:00 / 1900 / 19" title="Любой привычный формат: 19:00, 19.00, 1900, 19"></span>
+      <span class="listing-meta-key"><label class="lm-field-label">📍 Площадка</label></span>
+      <span class="listing-meta-val"><input id="lm-inp-ev-venue" class="lm-edit-input" value="${esc(ev.venue||'')}"></span>
+      <span class="listing-meta-key"><label class="lm-field-label">💲 Цена входа</label></span>
+      <span class="listing-meta-val"><input id="lm-inp-ev-price" class="lm-edit-input" value="${esc(ev.price_text||'')}"></span>`;
+  }
   // Flex fields
   const flexEl = document.getElementById('lm-flex');
   const flexFields = d.flex_fields || [];
@@ -2718,6 +3021,59 @@ function lmStartEdit() {
     ph.style.position = 'relative';
     ph.appendChild(btn);
   });
+  // Кнопки добавления фото/видео
+  const photosWrap = document.getElementById('lm-photos');
+  if (photosWrap && !document.getElementById('lm-media-add')) {
+    const bar = document.createElement('div');
+    bar.id = 'lm-media-add';
+    bar.style.cssText = 'display:flex;gap:8px;margin:6px 0 12px';
+    const nPhotos = (d.photo_ids || []).length;
+    bar.innerHTML = `
+      ${nPhotos < 3 ? `<button class="btn btn-sm" style="background:#1a3a6a;color:#7af" onclick="document.getElementById('lm-file-photo').click()">➕ Фото (${nPhotos}/3)</button>` : ''}
+      <button class="btn btn-sm" style="background:#1a3a6a;color:#7af" onclick="document.getElementById('lm-file-video').click()">🎥 ${d.video_type ? 'Заменить видео' : 'Добавить видео'}</button>
+      <span id="lm-upload-status" style="color:#9bc;font-size:12px;align-self:center"></span>
+      <input type="file" id="lm-file-photo" accept="image/*" style="display:none" onchange="lmUploadMedia(this, 'photo')">
+      <input type="file" id="lm-file-video" accept="video/*" style="display:none" onchange="lmUploadMedia(this, 'video')">`;
+    photosWrap.after(bar);
+  }
+}
+
+async function lmUploadMedia(input, kind) {
+  const d = window._currentListing;
+  const file = input.files[0];
+  if (!file) return;
+  if (kind === 'video' && file.size > 20 * 1024 * 1024) {
+    alert('Видео больше 20 МБ — Bot API не сможет показывать его в приложении.');
+    input.value = '';
+    return;
+  }
+  const status = document.getElementById('lm-upload-status');
+  if (status) status.textContent = '⏳ Загрузка в Telegram…';
+  try {
+    const ep = kind === 'photo' ? 'add_photo' : 'add_video';
+    const r = await fetch(`/api/listing/${d.id}/${ep}?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/octet-stream'},
+      body: file,
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.detail || r.status);
+    // Обновляем локальное состояние и перерисовываем в режиме редактирования
+    if (kind === 'photo') {
+      d.photo_ids = res.photos;
+    } else {
+      d.video_type = 'telegram';
+      d.video_id = res.file_id;
+      d.flex = {...(d.flex || {}), video: res.file_id};
+    }
+    window._currentListing = d;
+    renderListingModal(d);
+    lmStartEdit();
+  } catch(e) {
+    if (status) status.textContent = '';
+    alert('Ошибка загрузки: ' + e.message);
+    input.value = '';
+  }
 }
 
 function lmCancelEdit() {
@@ -2734,24 +3090,41 @@ async function lmSaveEdit() {
     flexUpdate = {};
     flexInputs.forEach(inp => { flexUpdate[inp.dataset.flexKey] = inp.value; });
   }
+  // Событие (афиша)
+  let eventUpdate = null;
+  const evDate = document.getElementById('lm-inp-ev-date');
+  if (evDate) {
+    eventUpdate = {
+      date:       evDate.value.trim(),
+      time:       document.getElementById('lm-inp-ev-time')?.value.trim() ?? '',
+      venue:      document.getElementById('lm-inp-ev-venue')?.value.trim() ?? '',
+      price_text: document.getElementById('lm-inp-ev-price')?.value.trim() ?? '',
+    };
+  }
   const body = {
     title:   document.getElementById('lm-inp-title')?.value ?? d.title,
     descr:   document.getElementById('lm-inp-descr')?.value ?? d.descr,
     price:   document.getElementById('lm-inp-price')?.value ?? d.price,
     contact: document.getElementById('lm-inp-contact')?.value ?? d.contact,
     ...(flexUpdate ? {flex: flexUpdate} : {}),
+    ...(eventUpdate ? {event: eventUpdate} : {}),
   };
   try {
     const r = await fetch(`/api/listing/${d.id}`, {
       method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
     });
-    if (!r.ok) throw new Error((await r.json()).detail || r.status);
+    const saved = await r.json();
+    if (!r.ok) throw new Error(saved.detail || r.status);
     // Обновляем локальный объект и перерисовываем
     Object.assign(window._currentListing, {
       title: body.title, descr: body.descr, price: body.price, contact: body.contact,
     });
     if (flexUpdate) {
       window._currentListing.flex = {...(d.flex || {}), ...flexUpdate};
+    }
+    if (eventUpdate) {
+      // сервер возвращает нормализованные дату/время (21.09.26 → 21-09-2026)
+      window._currentListing.event = {...(d.event || {}), ...eventUpdate, ...(saved.event || {})};
     }
     renderListingModal(window._currentListing);
   } catch(e) { alert('Ошибка сохранения: ' + e.message); }
@@ -2830,7 +3203,10 @@ document.addEventListener('keydown', e => {
     return;
   }
   const ml = document.getElementById('modal-listing');
-  if (ml.classList.contains('open')) { closeListingModal(); return; }
+  if (ml.classList.contains('open')) {
+    if (e.key === 'Escape') closeListingModal();
+    return;
+  }
   if (e.key==='Escape') closeAll();
 });
 
@@ -2987,4 +3363,6 @@ def index():
 
 if __name__ == "__main__":
     print("Open: http://localhost:8001")
-    uvicorn.run(app, host="127.0.0.1", port=8001, log_level="warning")
+    print("Удалённо (Tailscale): http://<tailscale-ip>:8001")
+    # 0.0.0.0 + IP-фильтр выше: пускаем только localhost и Tailscale-сеть
+    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="warning")
