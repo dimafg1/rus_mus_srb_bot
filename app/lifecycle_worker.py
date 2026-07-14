@@ -23,7 +23,7 @@ from sqlalchemy import select, text as sql_text
 from app import lifecycle as lc
 from app.database import SessionLocal
 from app.models import Category, City, Listing
-from app.routers.utils import get_text
+from app.routers.utils import get_text, register_bot_message
 
 CHECK_INTERVAL_SECONDS = 3600  # раз в час
 EVENT_GRACE_SECONDS = 86400    # событие архивируется через сутки после начала
@@ -127,7 +127,11 @@ async def _send_reminder(bot: Bot, listing: Listing, city_slug: dict, cat_slug: 
     ]])
 
     try:
-        await bot.send_message(listing.owner_id, msg_text, reply_markup=kb)
+        msg = await bot.send_message(listing.owner_id, msg_text, reply_markup=kb)
+        # Регистрируем в системе очистки чата: напоминание (и карточка, в которую
+        # оно превращается после нажатия «Продлить») удалится при следующем
+        # взаимодействии пользователя с ботом, как все служебные сообщения.
+        await register_bot_message(listing.owner_id, msg.message_id)
         return True
     except Exception as e:
         log.warning("reminder send failed | listing=%s owner=%s | %s", listing.id, listing.owner_id, e)
