@@ -428,12 +428,26 @@ async def go_help(cb: CallbackQuery, state: FSMContext):
             "• Для возврата используйте кнопку 'Назад'\n"
             "• Введите 'отмена' для отмены любого действия"
         )
-    # Получаем кнопку "Главное меню" из базы
+    rows = [[InlineKeyboardButton(text="❓ Частые вопросы", callback_data="go_faq")]]
     main_menu_btn = await get_common_menu_button('main_menu')
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[main_menu_btn]] if main_menu_btn else []
-    )
+    if main_menu_btn:
+        rows.append([main_menu_btn])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await safe_edit_or_send(cb, help_text, kb)
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "go_faq")
+async def go_faq(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await clear_bot_messages(chat_id, cb.bot)
+    faq_text = await get_text("faq", "ru")
+    rows = [[InlineKeyboardButton(text="⬅️ Назад к помощи", callback_data="go_help")]]
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        rows.append([main_menu_btn])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    await safe_edit_or_send(cb, faq_text, kb)
     await cb.answer()
 
 
