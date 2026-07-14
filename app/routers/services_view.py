@@ -407,7 +407,10 @@ async def sv_cat(cb: CallbackQuery):
             rows.append([main_menu_btn])
 
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
-        msg = await cb.bot.send_message(chat_id, "Пока пусто в этой категории.", reply_markup=kb)
+        async with SessionLocal() as s:
+            cat_path = await render_category_path(s, cat_id, root_id=SERVICES_ROOT_CATEGORY_ID)
+        text = f"🛎 Услуги → <b>{city.name}</b> → {cat_path}\nПока пусто в этой категории."
+        msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()

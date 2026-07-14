@@ -22,7 +22,7 @@ from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.keyboards import get_common_menu_button
 from app.texts import get_text
-from app.routers.utils import clear_bot_messages, safe_edit_or_send, register_bot_messages, render_flex_block, render_category_path
+from app.routers.utils import clear_bot_messages, safe_edit_or_send, register_bot_messages, render_flex_block, render_category_path, city_by_slug
 from app.routers.utils import (
     clear_bot_messages,
     last_search_menu_message,
@@ -139,9 +139,19 @@ async def vacancy_view_city(cb: CallbackQuery):
     city_slug = cb.data.split(":", 1)[1] if ":" in cb.data else None
     kb = await _vacancy_categories_kb(city_slug, parent_id=None)
 
+    # Имя города вместо slug
+    city_name = city_slug or "(город не задан)"
+    if city_slug:
+        try:
+            city = await city_by_slug(city_slug)
+            if city:
+                city_name = city.name
+        except Exception:
+            pass
+
     await safe_edit_or_send(
         cb,
-        f"🤝 Вакансии → {city_slug or '(город не задан)'}\nВыберите категорию:",
+        f"🤝 Вакансии → <b>{city_name}</b>\nВыберите категорию:",
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -159,13 +169,25 @@ async def vacancy_list(cb: CallbackQuery):
     _, city_slug, cat_id_s = cb.data.split(":", 2)
     cat_id = int(cat_id_s)
 
+    # Хлебные крошки: Вакансии → Город → Категория → …
+    city_name = city_slug or ""
+    try:
+        city_obj = await city_by_slug(city_slug)
+        if city_obj:
+            city_name = city_obj.name
+    except Exception:
+        pass
+    async with SessionLocal() as s:
+        cat_path = await render_category_path(s, cat_id, root_id=VACANCY_ROOT_ID)
+    crumbs = f"🤝 Вакансии → <b>{city_name}</b> → {cat_path}"
+
     # Если есть подкатегории — углубляемся
     children = await _category_children(cat_id)
     if children:
         kb = await _vacancy_categories_kb(city_slug, parent_id=cat_id)
         await safe_edit_or_send(
             cb,
-            "Выберите подкатегорию:",
+            f"{crumbs}\nВыберите подкатегорию:",
             reply_markup=kb,
             parse_mode="HTML",
         )
@@ -191,7 +213,8 @@ async def vacancy_list(cb: CallbackQuery):
         listings = (await s.execute(q)).scalars().all()
 
     kb = await vacancy_listings_inline(city_slug, cat_id, listings)
-    await safe_edit_or_send(cb, "Выберите объявление:", reply_markup=kb, parse_mode="HTML")
+    tail = "Выберите объявление:" if listings else "Пока пусто в этой категории."
+    await safe_edit_or_send(cb, f"{crumbs}\n{tail}", reply_markup=kb, parse_mode="HTML")
     await cb.answer()
     _dbg("vacancy_list.listings", city_slug=city_slug, cat_id=cat_id, found=len(listings))
 
