@@ -236,12 +236,15 @@ async def market_list(cb: CallbackQuery):
             ])
 
     # 3) Кнопка Назад
+    parent_cat = None
     if cat.parent_id:
         async with SessionLocal() as s:
             parent_cat = (
                 await s.execute(select(Category).where(Category.id == cat.parent_id))
-            ).scalar_one()
+            ).scalar_one_or_none()
 
+    if parent_cat is not None and parent_cat.parent_id is not None:
+        # обычная подкатегория — назад на страницу родителя
         keyboard.append([
             InlineKeyboardButton(
                 text="⬅️ Назад",
@@ -249,6 +252,8 @@ async def market_list(cb: CallbackQuery):
             )
         ])
     else:
+        # родитель — корень раздела (или его нет): назад на городской список,
+        # иначе корень рисуется как «категория» с крошками «… → Барахолка»
         keyboard.append([
             InlineKeyboardButton(
                 text="⬅️ Назад",
