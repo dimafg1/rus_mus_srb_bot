@@ -13,6 +13,7 @@ from aiogram.filters import Command
 from sqlalchemy import select
 from datetime import datetime
 from app.models import utcnow_naive
+from app.lifecycle import ensure_expires_at
 
 from app.database import SessionLocal
 from app.models import City, Category, Listing
@@ -951,6 +952,7 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
                 except Exception:
                     l.flex = None
 
+            ensure_expires_at(l)  # срок жизни 30 дней
             s.add(l)
             await s.commit()
             await s.refresh(l)

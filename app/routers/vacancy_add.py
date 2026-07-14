@@ -30,6 +30,7 @@ import asyncio
 import json
 from datetime import datetime
 from app.models import utcnow_naive
+from app.lifecycle import ensure_expires_at
 from html import escape as _esc
 from typing import List, Optional
 
@@ -1099,6 +1100,7 @@ async def vacancy_input_price(m: Message, state: FSMContext):
             extra_category_id1=None,
             extra_category_id2=None,
         )
+        ensure_expires_at(l)  # срок жизни 30 дней
         s.add(l)
         await s.commit()
         await s.refresh(l)
@@ -1224,6 +1226,7 @@ async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
             extra_category_id1=extra_cat1,
             extra_category_id2=extra_cat2,
         )
+        ensure_expires_at(obj)  # срок жизни 30 дней
         s.add(obj)
         await s.flush()            # получим obj.id без доп. запроса
         listing_id = obj.id

@@ -384,6 +384,7 @@ async def sv_cat(cb: CallbackQuery):
                     Listing.extra_category_id2 == cat_id,
                 ),
                 or_(Listing.is_sold == 0, Listing.is_sold == False, Listing.is_sold.is_(False)),  # noqa: E712
+                Listing.status == "active",
             )
             .order_by(Listing.created_at.desc())
         )).scalars().all()

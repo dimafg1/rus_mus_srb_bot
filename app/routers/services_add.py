@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio, json
 from datetime import datetime
 from app.models import utcnow_naive
+from app.lifecycle import ensure_expires_at
 
 from aiogram import Router, F
 from aiogram.types import (
@@ -717,6 +718,8 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
             if flex_data:
                 try: l.flex = json.dumps(flex_data, ensure_ascii=False)
                 except Exception: l.flex = None
+
+            ensure_expires_at(l)  # срок жизни 30 дней
 
             s.add(l)
             await s.commit()

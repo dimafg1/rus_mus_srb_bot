@@ -775,6 +775,11 @@ async def main():
     # Подключаем роутеры
     dp.include_router(market_view_router)  # 👈 как у вас было
     dp.include_router(cleanup_router)
+
+    # Жизненный цикл объявлений: архивация, напоминания (раз в час)
+    from app.lifecycle_worker import lifecycle_worker
+    lifecycle_task = asyncio.create_task(lifecycle_worker(bot))
+
     # Тихая и корректная остановка по Ctrl+C / SIGTERM
     try:
 
@@ -783,6 +788,7 @@ async def main():
         # Опрос отменён — штатная ситуация при остановке
         pass
     finally:
+        lifecycle_task.cancel()
         # Закрываем HTTP-сессию бота и прочие ресурсы
         try:
             await bot.session.close()

@@ -110,14 +110,22 @@ def days_left(listing: Listing, *, now: Optional[datetime] = None) -> Optional[i
 
 
 def should_show_extend_button(listing: Listing, *, now: Optional[datetime] = None) -> bool:
-    if not is_active(listing) or not is_expirable(listing):
+    if not is_expirable(listing):
         return False
 
-    left = days_left(listing, now=now)
-    return left is not None and left <= REMIND_BEFORE_DAYS
+    if is_active(listing):
+        left = days_left(listing, now=now)
+        return left is not None and left <= REMIND_BEFORE_DAYS
+
+    # Архивное по истечению срока владелец может реактивировать:
+    # extend_listing() возвращает статус active и сдвигает срок.
+    return is_archived(listing) and listing.archive_reason == REASON_EXPIRED
 
 
 def needs_expiry_reminder(listing: Listing, *, now: Optional[datetime] = None) -> bool:
+    # Напоминаем только про ещё активные объявления (до архивации)
+    if not is_active(listing):
+        return False
     if not should_show_extend_button(listing, now=now):
         return False
     if listing.reminded_at is not None:

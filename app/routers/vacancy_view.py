@@ -184,6 +184,7 @@ async def vacancy_list(cb: CallbackQuery):
                 Listing.city_id == city_id,
                 Listing.category_id == cat_id,
                 Listing.is_sold == False,  # noqa: E712
+                Listing.status == "active",
             )
             .order_by(Listing.created_at.desc())
         )

@@ -202,6 +202,8 @@ async def market_list(cb: CallbackQuery):
                     (Listing.category_id == cat.id) |
                     (Listing.extra_category_id1 == cat.id) |
                     (Listing.extra_category_id2 == cat.id),
+                    Listing.is_sold.is_(False),
+                    Listing.status == "active",
                 )
                 .order_by(Listing.created_at.desc())
             )).scalars().all()
@@ -217,6 +219,8 @@ async def market_list(cb: CallbackQuery):
                     (Listing.category_id == cat.id) |
                     (Listing.extra_category_id1 == cat.id) |
                     (Listing.extra_category_id2 == cat.id),
+                    Listing.is_sold.is_(False),
+                    Listing.status == "active",
                 )
                 .order_by(Listing.created_at.desc())
             )).scalars().all()
@@ -1552,7 +1556,7 @@ async def handle_market_search(m: Message, state: FSMContext):
     async with SessionLocal() as s:
         rows = (await s.execute(
             select(Listing)
-            .where(Listing.is_sold.is_(False))
+            .where(Listing.is_sold.is_(False), Listing.status == "active")
             .order_by(Listing.created_at.desc())
         )).scalars().all()
 
