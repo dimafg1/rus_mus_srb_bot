@@ -144,7 +144,12 @@ async def _services_categories_kb(cats, city_id: int, parent_id: int) -> InlineK
         title = await format_category_title(c.id, (c.name or "").strip(), SessionLocal)
         rows.append([InlineKeyboardButton(text=title, callback_data=f"sv:cat:{city_id}:{c.id}")])
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sv:cities")])
+    # Назад: с корневого списка — к городам; с вложенного — на уровень выше
+    if parent_id == SERVICES_ROOT_CATEGORY_ID:
+        back_cb = "sv:cities"
+    else:
+        back_cb = f"sv:cat:{city_id}:{parent_id}:back"
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
 
     main_menu_btn = await get_common_menu_button("main_menu", "ru")
     if main_menu_btn:
@@ -390,9 +395,11 @@ async def sv_cat(cb: CallbackQuery):
         )).scalars().all()
 
     if not items:
+        # :back поднимает на уровень выше ОТ УКАЗАННОЙ категории —
+        # передаём саму категорию (передача родителя прыгала через уровень)
         rows = [[InlineKeyboardButton(
             text="⬅️ Назад",
-            callback_data=f"sv:cat:{city_id}:{cat.parent_id or SERVICES_ROOT_CATEGORY_ID}:back"
+            callback_data=f"sv:cat:{city_id}:{cat.id}:back"
         )]]
 
         main_menu_btn = await get_common_menu_button("main_menu", "ru")
