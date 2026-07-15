@@ -1051,6 +1051,18 @@ async def _fetch_tg_file(file_id: str):
     ext = os.path.splitext(file_path)[1].lower()
     if not content_type or content_type == "application/octet-stream":
         content_type = _MIME_BY_EXT.get(ext, "application/octet-stream")
+    if content_type == "application/octet-stream":
+        # Пути часто без расширения (videos/file_221) — судим по папке:
+        # без корректного mime <video> в Safari молча не играет
+        folder = file_path.split("/", 1)[0]
+        content_type = {
+            "videos": "video/mp4",
+            "video_notes": "video/mp4",
+            "animations": "video/mp4",
+            "photos": "image/jpeg",
+            "voice": "audio/ogg",
+            "music": "audio/mpeg",
+        }.get(folder, "application/octet-stream")
     # Простейшая защита кэша от разрастания
     if sum(len(v[0]) for v in _media_cache.values()) + len(content) > _MEDIA_CACHE_MAX:
         _media_cache.clear()
