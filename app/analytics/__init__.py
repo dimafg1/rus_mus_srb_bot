@@ -1,7 +1,9 @@
-# app/analytics.py
+# app/analytics/__init__.py
 """
+Аналитика бота.
+
 Единый поток аналитических событий — таблица analytics_events
-(Strategy v2, слой 1, §6 «Измеримость»).
+(Strategy v2, слой 1, §6 «Измеримость») — живёт здесь, в log_event().
 
 Словарь событий (event_type):
     user_started      — вход /start; source = deep-link параметр (None = органика)
@@ -10,13 +12,14 @@
     partner_shown     — показ партнёрской кампании (появится на шаге «кампании»)
     partner_opened    — открытие/клик кампании (появится на шаге «кампании»)
 
-События, которые ЖИВУТ В СУЩЕСТВУЮЩИХ ТАБЛИЦАХ и сюда НЕ дублируются:
-    listing_opened / contact_clicked  → listing_views (action = open / contact)
-    search_performed / search_no_results → search_log (results_count = 0)
+События, которые ЖИВУТ В ОТДЕЛЬНЫХ МОДУЛЯХ ЭТОГО ПАКЕТА и в analytics_events
+НЕ дублируются:
+    listing_opened / contact_clicked  → listing_views.py (action = open / contact)
+    search_performed / search_no_results → search_log.py (results_count = 0)
 
 Правила:
     - section: market / services / vacancy / events (как в listing_views);
-    - новые типы событий добавлять сюда в словарь и в KNOWN_EVENTS;
+    - новые типы событий добавлять в словарь выше и в KNOWN_EVENTS;
     - log_event никогда не бросает исключений — аналитика не ломает бота.
 """
 import json
