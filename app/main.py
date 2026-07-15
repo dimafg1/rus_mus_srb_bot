@@ -345,6 +345,8 @@ async def delete_stray_messages(message: Message, state: FSMContext):
 
 from app.routers.admin_panel import router as admin_panel_router
 from app.routers.admin_analytics import router as admin_analytics_router
+from app.routers.partner_view import router as partner_view_router
+dp.include_router(partner_view_router)
 dp.include_router(admin_panel_router)
 dp.include_router(admin_analytics_router)
 dp.include_router(admin_fields_router)
@@ -465,7 +467,7 @@ async def go_faq(cb: CallbackQuery, state: FSMContext):
 from app.models import Menu  # Не забудьте импортировать модель Menu
 
 # ↓↓↓ новая функция для построения клавиатуры главного меню ↓↓↓
-async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
+async def build_main_menu(lang="ru", user_id: int | None = None) -> InlineKeyboardMarkup:
     async with SessionLocal() as session:
         result = await session.execute(
             select(Menu)
@@ -489,6 +491,16 @@ async def build_main_menu(lang="ru") -> InlineKeyboardMarkup:
             temp_row = []
     if temp_row:  # если нечетное число, добавляем последнюю кнопку
         keyboard.append(temp_row)
+
+    # Партнёрская строка (под выключателем partner_rotation_enabled)
+    try:
+        from app.campaigns import partner_menu_button
+        partner_btn = await partner_menu_button(user_id)
+        if partner_btn:
+            keyboard.append([partner_btn])
+    except Exception as e:
+        print(f"[WARN] build_main_menu partner button: {e}")
+
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -565,7 +577,7 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
         welcome = None
     welcome = welcome or "👋 Привет всем!\n<b>Главное меню</b>\nВыберите раздел:"
 
-    menu_markup = await build_main_menu(lang="ru")
+    menu_markup = await build_main_menu(lang="ru", user_id=cb.from_user.id)
 
     # 6.1) Добавим «Админ-панель», если нужно
     try:
@@ -712,7 +724,7 @@ async def cmd_start(message: Message, state: FSMContext):
         welcome = "👋 Привет!\n<b>Главное меню</b>\nВыберите раздел:"
 
     # 4) базовое меню
-    markup = await build_main_menu()
+    markup = await build_main_menu(user_id=message.from_user.id)
 
     # 5) добавляем «Админ-панель» админу (без дублей) — как и было
     if is_admin(message.from_user.id):

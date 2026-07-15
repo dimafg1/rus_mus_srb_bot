@@ -278,6 +278,40 @@ class FeatureFlag(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────
+# Campaign — партнёрские кампании (Strategy v2, слой 2 §5).
+# UNIXOUND — обычная кампания, не хардкод. Ротация: app/campaigns.py.
+# Показы/клики — события partner_shown / partner_opened в analytics_events.
+# ─────────────────────────────────────────────────────────
+class Campaign(SQLModel, table=True):
+    __tablename__ = "campaign"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    key: str = Field(  # слаг для callback_data и аналитики
+        sa_column=Column(String(64), unique=True, index=True, nullable=False)
+    )
+    partner: str = Field(sa_column=Column(String(128), nullable=False))
+    line_text: str = Field(  # текст кнопки-строки в меню
+        sa_column=Column(String(64), nullable=False)
+    )
+    card_text: str = Field(sa_column=Column(Text, nullable=False))  # HTML карточки
+    photo_file_id: Optional[str] = Field(default=None, sa_column=Column(Text))
+    buttons: Optional[str] = Field(  # JSON: [{"text": ..., "url": ...}]
+        default=None, sa_column=Column(Text)
+    )
+    placement: str = Field(
+        default="main_menu", sa_column=Column(String(32), nullable=False, default="main_menu")
+    )
+    weight: int = Field(default=1, sa_column=Column(Integer, nullable=False, default=1))
+    active: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, default=False))
+    starts_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    ends_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(
+        default_factory=utcnow_naive,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # AnalyticsEvent — единый поток аналитических событий.
 # Словарь типов и правила записи: app/analytics.py.
 # Открытия карточек/контакты живут в listing_views, поиск — в search_log;
