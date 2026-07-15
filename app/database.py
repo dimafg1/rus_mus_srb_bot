@@ -63,3 +63,18 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE BotUser ADD COLUMN first_source VARCHAR(64)"))
         except Exception:
             pass  # колонка уже есть — нормально
+        # Посев выключателей монетизации (все выключены; словарь: app/features.py)
+        try:
+            for key in (
+                "monetization_enabled",
+                "paid_plans_enabled",
+                "paid_ranking_enabled",
+                "partner_rotation_enabled",
+                "payments_enabled",
+            ):
+                await conn.execute(text(
+                    "INSERT OR IGNORE INTO feature_flags (key, enabled, audience, updated_at) "
+                    "VALUES (:key, 0, 'all', datetime('now'))"
+                ), {"key": key})
+        except Exception as e:
+            print(f"[init_db] посев feature_flags: {e}")

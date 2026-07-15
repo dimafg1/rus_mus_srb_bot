@@ -253,6 +253,31 @@ class BotUser(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────
+# FeatureFlag — выключатели функций (Strategy v2: всё новое пишется
+# «под выключателем», включается по одному). Проверка: app/features.py.
+# audience: all | admins | список user_id через запятую.
+# ─────────────────────────────────────────────────────────
+class FeatureFlag(SQLModel, table=True):
+    __tablename__ = "feature_flags"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    key: str = Field(
+        sa_column=Column(String(64), unique=True, index=True, nullable=False)
+    )
+    enabled: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, default=False)
+    )
+    audience: str = Field(
+        default="all", sa_column=Column(String(255), nullable=False, default="all")
+    )
+    note: Optional[str] = Field(default=None, sa_column=Column(String(255)))
+    updated_at: datetime = Field(
+        default_factory=utcnow_naive,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # AnalyticsEvent — единый поток аналитических событий.
 # Словарь типов и правила записи: app/analytics.py.
 # Открытия карточек/контакты живут в listing_views, поиск — в search_log;
