@@ -2500,8 +2500,16 @@ function catSetActivity(v, catId, stype) {
   catalogShowListings(catId, stype, 0);
 }
 
+// Перерисовка текущей сетки каталога после действий в модалке
+// (продление, скрытие, удаление) — иначе бейджи статуса устаревают
+window._catalogRefresh = null;
+function refreshCatalogIfOpen() {
+  try { if (window._catalogRefresh) window._catalogRefresh(); } catch(e) {}
+}
+
 async function catalogShowListings(catId, stype, offset=0) {
   _catListingOffset = offset;
+  window._catalogRefresh = () => catalogShowListings(catId, stype, _catListingOffset);
   const el = document.getElementById('catalog-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
   catalogSetBreadcrumb();
@@ -3073,6 +3081,7 @@ async function lmExtend() {
     const r = await fetch(`/api/listing/${d.id}/extend`, {method:'POST'}).then(x=>x.json());
     if (r && r.ok) {
       openListing(d.id);  // перерисовать модалку со свежим статусом и сроком
+      refreshCatalogIfOpen();
     } else {
       alert('Не удалось продлить: ' + ((r && r.detail) || 'неизвестная ошибка'));
     }
@@ -3243,6 +3252,7 @@ async function lmSaveEdit() {
       window._currentListing.event = {...(d.event || {}), ...eventUpdate, ...(saved.event || {})};
     }
     renderListingModal(window._currentListing);
+    refreshCatalogIfOpen();
   } catch(e) { alert('Ошибка сохранения: ' + e.message); }
 }
 
@@ -3254,6 +3264,7 @@ async function lmToggleSold() {
     const res = await r.json();
     window._currentListing.is_sold = res.is_sold;
     renderListingModal(window._currentListing);
+    refreshCatalogIfOpen();
   } catch(e) { alert('Ошибка: ' + e.message); }
 }
 
@@ -3269,6 +3280,7 @@ async function lmDoDelete() {
     closeListingModal();
     // Убираем карточку из текущего списка если видна
     document.querySelectorAll(`[data-listing-id="${d.id}"]`).forEach(el => el.remove());
+    refreshCatalogIfOpen();
   } catch(e) { alert('Ошибка удаления: ' + e.message); }
 }
 
