@@ -244,6 +244,12 @@ class BotUser(SQLModel, table=True):
         default_factory=utcnow_naive,
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
+    # Источник первого входа: deep-link параметр /start (unixound, антикафе,
+    # канал и т.п.). Заполняется один раз при создании записи, никогда не
+    # перезаписывается. NULL — органика либо пользователь старше этой колонки.
+    first_source: Optional[str] = Field(
+        default=None, sa_column=Column(String(64))
+    )
 
 
 # ─────────────────────────────────────────────────────────

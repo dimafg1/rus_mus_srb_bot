@@ -58,3 +58,8 @@ async def init_db() -> None:
             await conn.execute(text("UPDATE BotUser SET first_seen = last_seen WHERE first_seen IS NULL"))
         except Exception:
             pass  # колонка уже есть — нормально
+        # Миграция: источник первого входа (deep-link параметр /start)
+        try:
+            await conn.execute(text("ALTER TABLE BotUser ADD COLUMN first_source VARCHAR(64)"))
+        except Exception:
+            pass  # колонка уже есть — нормально

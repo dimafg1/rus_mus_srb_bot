@@ -228,6 +228,14 @@ class TrackUserMiddleware:
             user = event.callback_query.from_user
 
         if user and not user.is_bot:
+            # Источник первого входа: deep-link параметр «/start <payload>».
+            # Попадает в запись только при INSERT (первое появление пользователя);
+            # блок on_conflict его не трогает — существующим не перезаписывается.
+            first_source = None
+            text = event.message.text if event.message else None
+            if text and text.startswith("/start "):
+                first_source = text.split(maxsplit=1)[1].strip()[:64] or None
+
             try:
                 async with SessionLocal() as s:
                     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -240,6 +248,7 @@ class TrackUserMiddleware:
                         full_name=full_name,
                         last_seen=now,
                         first_seen=now,
+                        first_source=first_source,
                     ).on_conflict_do_update(
                         index_elements=["user_id"],
                         set_={"username": username, "full_name": full_name, "last_seen": now},
