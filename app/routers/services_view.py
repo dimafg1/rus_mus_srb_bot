@@ -749,6 +749,10 @@ async def service_extend_listing(cb: CallbackQuery):
         await s.commit()
         await s.refresh(listing)
 
+    from app.analytics import log_event
+    await log_event("listing_extended", user_id=cb.from_user.id,
+                    section="services", entity_type="listing", entity_id=listing.id)
+
     management_text = "Контакты/Управление:"
     left_line = days_left_text(listing)
     if left_line:

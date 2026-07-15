@@ -960,6 +960,10 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
             # Сохраняем id для последующего сохранения flex после публикации
             await state.update_data(listing_id=l.id)
 
+        from app.analytics import log_event
+        await log_event("listing_created", user_id=cb.from_user.id,
+                        section="market", entity_type="listing", entity_id=l.id)
+
         # Убираем служебные сообщения
         await clear_bot_messages(chat_id, cb.bot)
         await _clear_user_media(chat_id, cb.bot)

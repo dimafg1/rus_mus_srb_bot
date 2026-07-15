@@ -1105,6 +1105,10 @@ async def vacancy_input_price(m: Message, state: FSMContext):
         await s.commit()
         await s.refresh(l)
 
+    from app.analytics import log_event
+    await log_event("listing_created", user_id=cb.from_user.id,
+                    section="vacancy", entity_type="listing", entity_id=l.id)
+
     # 5) собрать пост-публикационное меню (аналогично Услугам/Барахолке)
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
@@ -1231,6 +1235,10 @@ async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
         await s.flush()            # получим obj.id без доп. запроса
         listing_id = obj.id
         await s.commit()
+
+    from app.analytics import log_event
+    await log_event("listing_created", user_id=cb.from_user.id,
+                    section="vacancy", entity_type="listing", entity_id=listing_id)
 
     await state.clear()
 

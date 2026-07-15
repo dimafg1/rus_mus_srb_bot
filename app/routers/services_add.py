@@ -725,6 +725,10 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
             await s.commit()
             await s.refresh(l)
 
+            from app.analytics import log_event
+            await log_event("listing_created", user_id=cb.from_user.id,
+                            section="services", entity_type="listing", entity_id=l.id)
+
             await state.update_data(listing_id=l.id)
 
             # Низ: «Услуги» + «Главное меню»

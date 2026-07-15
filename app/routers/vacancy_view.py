@@ -445,6 +445,10 @@ async def vac_extend_listing(cb: CallbackQuery):
         await s.commit()
         await s.refresh(listing)
 
+    from app.analytics import log_event
+    await log_event("listing_extended", user_id=cb.from_user.id,
+                    section="vacancy", entity_type="listing", entity_id=listing.id)
+
     # Обновляем нижний блок управления в уже открытой карточке.
     base_text = cb.message.html_text or cb.message.text or ""
     raw_lines = base_text.splitlines()

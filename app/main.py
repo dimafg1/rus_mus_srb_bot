@@ -686,6 +686,13 @@ async def delete_user_command_with_delay(message: Message, delay: float = 2.0):
 async def cmd_start(message: Message, state: FSMContext):
     chat_id = message.chat.id
 
+    # Аналитика: событие входа (source = deep-link параметр, если был)
+    from app.analytics import log_event
+    start_source = None
+    if message.text and message.text.startswith("/start "):
+        start_source = message.text.split(maxsplit=1)[1].strip()[:64] or None
+    await log_event("user_started", user_id=message.from_user.id, source=start_source)
+
     # # 0) Сначала пытаемся удалить исходное сообщение пользователя (/start)
     # try:
     #     await message.bot.delete_message(chat_id=chat_id, message_id=message.message_id)

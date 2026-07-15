@@ -2978,6 +2978,10 @@ async def af_add_publish(cb: CallbackQuery, state: FSMContext):
                 "price_text": price_text or None,
             })
             await s.commit()
+
+        from app.analytics import log_event
+        await log_event("listing_created", user_id=owner_id,
+                        section="events", entity_type="listing", entity_id=listing_id)
     except Exception as e:
         print(f"[AFISHA] publish DB error: {e}")
         sent = await cb.message.answer("Не удалось сохранить объявление. Попробуйте позже.")

@@ -253,6 +253,37 @@ class BotUser(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────
+# AnalyticsEvent — единый поток аналитических событий.
+# Словарь типов и правила записи: app/analytics.py.
+# Открытия карточек/контакты живут в listing_views, поиск — в search_log;
+# сюда они не дублируются.
+# ─────────────────────────────────────────────────────────
+class AnalyticsEvent(SQLModel, table=True):
+    __tablename__ = "analytics_events"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    event_type: str = Field(
+        sa_column=Column(String(64), nullable=False, index=True)
+    )
+    user_id: Optional[int] = Field(
+        default=None, sa_column=Column(Integer, index=True)
+    )
+    section: Optional[str] = Field(  # market / services / vacancy / events
+        default=None, sa_column=Column(String(32))
+    )
+    entity_type: Optional[str] = Field(  # listing / campaign / ...
+        default=None, sa_column=Column(String(32))
+    )
+    entity_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    source: Optional[str] = Field(default=None, sa_column=Column(String(64)))
+    meta: Optional[str] = Field(default=None, sa_column=Column(Text))  # JSON
+    created_at: datetime = Field(
+        default_factory=utcnow_naive,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # Profile
 # ─────────────────────────────────────────────────────────
 class Profile(SQLModel, table=True):
