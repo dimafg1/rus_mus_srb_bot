@@ -495,7 +495,7 @@ def analytics_top_cards():
                        SUM(CASE WHEN lv.source='catalog' THEN 1 ELSE 0 END) AS catalog_opens,
                        COALESCE(l.title,'Без названия') AS title,
                        l.owner_id, l.contact, l.price, l.photo_file_id,
-                       l.is_sold
+                       l.is_sold, l.status
                 FROM listing_views lv
                 LEFT JOIN listing l ON l.id=lv.listing_id
                 WHERE lv.action='open'
@@ -507,7 +507,7 @@ def analytics_top_cards():
              "search_opens": r[4] or 0, "catalog_opens": r[5] or 0,
              "title": r[6], "owner_id": r[7], "contact": r[8] or "",
              "price": r[9] or "", "photo_file_id": r[10] or "",
-             "is_sold": bool(r[11])} for r in rows]
+             "is_sold": bool(r[11]), "status": r[12] or ""} for r in rows]
 
 
 @app.get("/api/analytics/sources")
@@ -1286,7 +1286,8 @@ def catalog_drill_views(cat_id: int = 0, stype: str = "", action: str = "open",
 def listings_catalog(offset: int = 0, limit: int = 24,
                      section: str = "", category_id: int = 0,
                      only_photo: bool = False,
-                     only_active: bool = False, q: str = ""):
+                     only_active: bool = False, q: str = "",
+                     activity: str = ""):
     with db() as conn:
         wheres = []
         params: list = []
@@ -1298,6 +1299,10 @@ def listings_catalog(offset: int = 0, limit: int = 24,
             wheres.append("l.photo_file_id IS NOT NULL AND l.photo_file_id!=''")
         if only_active:
             wheres.append("(l.is_sold=0 OR l.is_sold IS NULL) AND (l.status='active' OR l.status IS NULL)")
+        if activity == "active":
+            wheres.append("(l.status='active' OR l.status IS NULL)")
+        elif activity == "inactive":
+            wheres.append("l.status IS NOT NULL AND l.status!='active'")
         if q:
             wheres.append("(l.title LIKE ? OR l.descr LIKE ?)"); params += [f"%{q}%", f"%{q}%"]
         where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
@@ -1594,6 +1599,15 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 .cat-card-media-empty{display:flex;align-items:center;justify-content:center;height:100%;font-size:36px;color:#2a3060}
 .cat-card-video-badge{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.7);
   border-radius:5px;padding:2px 7px;font-size:11px;color:#fff}
+.cat-card-status{position:absolute;bottom:6px;left:8px;padding:2px 8px;border-radius:5px;
+  font-size:10px;font-weight:700;letter-spacing:.3px}
+.st-active{background:rgba(16,90,50,.9);color:#a7f3c8}
+.st-inactive{background:rgba(70,75,88,.9);color:#d7dbe2}
+.cat-card-off .cat-card-media img{filter:grayscale(.75);opacity:.55}
+.cat-card-off .cat-card-title{color:#889}
+.st-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;flex-shrink:0;vertical-align:middle}
+.st-dot-on{background:#34d399}
+.st-dot-off{background:#5b6270;outline:1px solid #808898}
 .cat-card-sold{position:absolute;top:8px;right:8px;background:#8b1a1a;
   color:#faa;border-radius:5px;padding:2px 7px;font-size:11px;font-weight:600}
 .cat-card-photos-count{position:absolute;bottom:6px;right:8px;background:rgba(0,0,0,.6);
@@ -2430,15 +2444,32 @@ async function catalogOpenCat(catId, catName, stype) {
 const CAT_LISTING_LIMIT = 24;
 let _catListingOffset = 0;
 
+let _catActivity = '';
+
+function catSetActivity(v, catId, stype) {
+  _catActivity = v;
+  catalogShowListings(catId, stype, 0);
+}
+
 async function catalogShowListings(catId, stype, offset=0) {
   _catListingOffset = offset;
   const el = document.getElementById('catalog-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
   catalogSetBreadcrumb();
   const params = new URLSearchParams({category_id: catId, offset, limit: CAT_LISTING_LIMIT});
+  if (_catActivity) params.set('activity', _catActivity);
   const data = await fetch(`/api/listings?${params}`).then(r=>r.json());
+  const activityBar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+    <span style="font-size:12px;color:#556">${data.total} объявлений</span>
+    <select onchange="catSetActivity(this.value,${catId},'${stype}')"
+      style="background:#0d1f45;color:#ccd;border:1px solid #1a2a55;border-radius:6px;padding:3px 8px;font-size:12px">
+      <option value="" ${_catActivity===''?'selected':''}>Все</option>
+      <option value="active" ${_catActivity==='active'?'selected':''}>🟢 Активные</option>
+      <option value="inactive" ${_catActivity==='inactive'?'selected':''}>⚪ Неактивные</option>
+    </select>
+  </div>`;
   if (!data.rows.length) {
-    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Нет объявлений в этой категории</div>';
+    el.innerHTML = activityBar + '<div class="empty" style="padding:30px;text-align:center">Нет объявлений</div>';
     return;
   }
   const totalPages = Math.ceil(data.total / CAT_LISTING_LIMIT);
@@ -2448,8 +2479,8 @@ async function catalogShowListings(catId, stype, offset=0) {
     <span>${curPage} / ${totalPages}</span>
     <button onclick="catalogShowListings(${catId},'${stype}',${offset+CAT_LISTING_LIMIT})" ${offset+CAT_LISTING_LIMIT>=data.total?'disabled':''}>▶</button>
   </div>` : '';
-  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${data.total} объявлений</div>
-    <div class="catalog-listings-grid">${data.rows.map(r=>catCardHtml(r)).join('')}</div>${pag}`;
+  el.innerHTML = activityBar +
+    `<div class="catalog-listings-grid">${data.rows.map(r=>catCardHtml(r)).join('')}</div>${pag}`;
 }
 
 function catCardHtml(r) {
@@ -2467,11 +2498,16 @@ function catCardHtml(r) {
     mediaHtml = `<div class="cat-card-media-empty">${hasVideo?'▶️':'📋'}</div>`;
   }
   const fmtDate = s => s ? s.slice(5).replace('-','.') : '';
-  return `<div class="cat-card" onclick="openListing(${r.id})">
+  const isActive = !r.status || r.status === 'active';
+  const statusBadge = isActive
+    ? '<span class="cat-card-status st-active">активно</span>'
+    : `<span class="cat-card-status st-inactive">${r.status==='archived'?'в архиве':esc(r.status)}</span>`;
+  return `<div class="cat-card${isActive?'':' cat-card-off'}" onclick="openListing(${r.id})">
     <div class="cat-card-media">
       ${mediaHtml}
       ${hasVideo ? `<span class="cat-card-video-badge">${r.video_type==='youtube'?'▶ YouTube':'▶ Видео'}</span>` : ''}
       ${r.is_sold ? '<span class="cat-card-sold">продано</span>' : ''}
+      ${statusBadge}
       ${photoCount > 1 ? `<span class="cat-card-photos-count">📷 ${photoCount}</span>` : ''}
     </div>
     <div class="cat-card-body">
@@ -2730,7 +2766,7 @@ function cardRowHtml(r, idx) {
   return `<div class="card-row" onclick="openListing(${r.id})" style="cursor:pointer">
     ${thumbHtml}
     <div class="card-info">
-      <div class="card-title">${idx!=null?idx+'. ':''}${esc(r.title)}</div>
+      <div class="card-title">${r.status!=null?`<span class="st-dot ${(!r.status||r.status==='active')?'st-dot-on':'st-dot-off'}" title="${(!r.status||r.status==='active')?'активно':'не активно'}"></span>`:''}${idx!=null?idx+'. ':''}${esc(r.title)}</div>
       <div class="card-meta">${esc(sectionName(r.section||r.type||''))}${r.price?' · '+esc(r.price):''}${r.contact?' · '+esc(r.contact):''} ${r.is_sold?'· <span style="color:#f88">продано</span>':''}</div>
       <div class="card-meta" style="margin-top:2px">🔍 ${r.search_opens||0} · 📂 ${r.catalog_opens||0}</div>
     </div>
