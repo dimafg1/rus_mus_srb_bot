@@ -143,6 +143,11 @@ def extend_listing(listing: Listing, *, days: int = ACTIVE_DAYS, now: Optional[d
     if base is None:
         base = default_expires_at(listing) or current
 
+    # Реактивация из глубокого карантина: продлеваем от «сейчас», иначе
+    # base + days может остаться в прошлом и объявление тут же заархивируется
+    if base < current:
+        base = current
+
     listing.status = STATUS_ACTIVE
     listing.archive_reason = None
     listing.archived_at = None

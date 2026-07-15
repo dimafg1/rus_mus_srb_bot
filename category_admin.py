@@ -690,7 +690,7 @@ def get_listing(listing_id: int):
                        COUNT(DISTINCT lv.user_id) AS unique_viewers,
                        SUM(CASE WHEN lv.source='search' THEN 1 ELSE 0 END) AS search_opens,
                        SUM(CASE WHEN lv.source='catalog' THEN 1 ELSE 0 END) AS catalog_opens,
-                       l.flex, l.category_id
+                       l.flex, l.category_id, l.expires_at, l.archive_reason
                 FROM listing l
                 LEFT JOIN city ci ON ci.id=l.city_id
                 LEFT JOIN listing_views lv ON lv.listing_id=l.id AND lv.action='open'
@@ -761,6 +761,7 @@ def get_listing(listing_id: int):
         "flex": flex_data,
         "flex_fields": flex_fields,
         "event": event,
+        "expires_at": row[19] or "", "archive_reason": row[20] or "",
     }
 
 
@@ -994,6 +995,54 @@ async def add_photo(listing_id: int, request: Request, filename: str = ""):
         conn.execute("UPDATE listing SET photo_file_id=? WHERE id=?", (",".join(photos), listing_id))
         conn.commit()
     return {"ok": True, "file_id": file_id, "photos": photos}
+
+
+@app.post("/api/listing/{listing_id}/extend")
+def extend_listing_admin(listing_id: int, days: int = 30):
+    """Продление объявления админом. Семантика — как extend_listing в
+    app/lifecycle.py: реактивация (снятие архива) + сдвиг expires_at;
+    из глубокого карантина продлеваем от «сейчас»."""
+    EXPIRABLE = {"market", "service", "vacancy"}
+    SECTION_BY_TYPE = {"market": "market", "service": "services", "vacancy": "vacancy"}
+
+    def _parse_dt(s):
+        if not s:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(str(s).replace("T", " ").split("+")[0])
+        except ValueError:
+            return None
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT type, expires_at, created_at FROM listing WHERE id=?",
+            (listing_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Listing not found")
+        ltype = (row[0] or "").strip()
+        if ltype not in EXPIRABLE:
+            raise HTTPException(400, "Этот тип объявления не продлевается")
+
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        base = _parse_dt(row[1]) or ((_parse_dt(row[2]) or now) + datetime.timedelta(days=30))
+        if base < now:
+            base = now
+        new_expires = base + datetime.timedelta(days=days)
+
+        conn.execute("""
+            UPDATE listing SET status='active', archive_reason=NULL, archived_at=NULL,
+                   archived_by=NULL, archived_by_user_id=NULL, reminded_at=NULL,
+                   expires_at=? WHERE id=?
+        """, (new_expires.isoformat(sep=" "), listing_id))
+        try:  # единый поток событий (словарь: app/analytics)
+            conn.execute("""
+                INSERT INTO analytics_events
+                    (event_type, user_id, section, entity_type, entity_id, source, meta, created_at)
+                VALUES ('listing_extended', NULL, ?, 'listing', ?, NULL, '{"by": "admin"}', ?)
+            """, (SECTION_BY_TYPE.get(ltype, ltype), listing_id, now.isoformat(sep=" ")))
+        except Exception as e:
+            print(f"[extend] analytics_events: {e}")
+    return {"ok": True, "expires_at": new_expires.isoformat(sep=" ")}
 
 
 @app.post("/api/listing/{listing_id}/add_video")
@@ -2988,7 +3037,10 @@ function renderListingModal(d) {
       <span class="listing-meta-key">Контакт</span><span class="listing-meta-val" id="lm-contact">${contact}</span>
       <span class="listing-meta-key">Раздел</span><span class="listing-meta-val">${esc(sectionName(d.type))}</span>
       <span class="listing-meta-key">Опубликовано</span><span class="listing-meta-val">${fmtDate(d.created_at)}</span>
-      ${d.status && d.status!=='active' ? `<span class="listing-meta-key">Статус</span><span class="listing-meta-val">${esc(d.status)}</span>` : ''}
+      <span class="listing-meta-key">Статус</span><span class="listing-meta-val">${(!d.status||d.status==='active')
+        ? '🟢 активно'
+        : '⚪ '+(d.status==='archived'?'в архиве':esc(d.status))+(d.archive_reason?' · '+esc(d.archive_reason):'')}</span>
+      ${d.expires_at ? `<span class="listing-meta-key">Действует до</span><span class="listing-meta-val">${fmtDate(d.expires_at)}</span>` : ''}
     </div>
     ${flexRows ? `<div class="listing-meta" id="lm-flex">${flexRows}</div>` : `<div id="lm-flex"></div>`}
     <div class="listing-stats">
@@ -3000,6 +3052,7 @@ function renderListingModal(d) {
     <div class="lm-admin-bar" id="lm-admin-bar">
       <button class="btn btn-sm" style="background:#1a3a6a;color:#7af" onclick="lmStartEdit()">✏️ Редактировать</button>
       <button class="btn btn-sm" id="lm-toggle-btn" style="background:#1a4a2a;color:#7f7" onclick="lmToggleSold()">${d.is_sold ? '🔓 Открыть' : '🔒 Скрыть'}</button>
+      ${['market','service','vacancy'].includes(d.type) ? `<button class="btn btn-sm" style="background:#3a2c0a;color:#fc6" onclick="lmExtend()">⏳ Продлить 30 дн</button>` : ''}
       <button class="btn btn-sm" style="background:#4a1a1a;color:#f77" onclick="lmConfirmDelete()">🗑 Удалить</button>
     </div>
     <div class="lm-admin-bar" id="lm-edit-bar" style="display:none">
@@ -3011,6 +3064,21 @@ function renderListingModal(d) {
       <button class="btn btn-sm" style="background:#8b0000;color:#fff;margin-right:8px" onclick="lmDoDelete()">✅ Да, удалить</button>
       <button class="btn btn-sm" style="background:#333;color:#aaa" onclick="document.getElementById('lm-delete-confirm').style.display='none'">Отмена</button>
     </div>`;
+}
+
+async function lmExtend() {
+  const d = window._currentListing;
+  if (!d) return;
+  try {
+    const r = await fetch(`/api/listing/${d.id}/extend`, {method:'POST'}).then(x=>x.json());
+    if (r && r.ok) {
+      openListing(d.id);  // перерисовать модалку со свежим статусом и сроком
+    } else {
+      alert('Не удалось продлить: ' + ((r && r.detail) || 'неизвестная ошибка'));
+    }
+  } catch(e) {
+    alert('Не удалось продлить: ' + e.message);
+  }
 }
 
 function lmStartEdit() {
