@@ -47,7 +47,14 @@ async def partner_card(cb: CallbackQuery):
                 rows.append([InlineKeyboardButton(text=b["text"], url=b["url"])])
         except Exception as e:
             print(f"[partner_view] buttons JSON error ({c.key}): {e}")
-    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")])
+    # Кнопка «Главное меню» — общая для всего бота (☰, из таблицы menu)
+    menu_btn = None
+    try:
+        from app.keyboards import get_common_menu_button
+        menu_btn = await get_common_menu_button("main_menu")
+    except Exception as e:
+        print(f"[partner_view] get_common_menu_button: {e}")
+    rows.append([menu_btn or InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     chat_id = cb.message.chat.id
