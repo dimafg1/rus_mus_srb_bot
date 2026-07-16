@@ -74,7 +74,8 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
 
     async with SessionLocal() as s:
         artists = (await s.execute(
-            select(Artist).where(Artist.status == "active").order_by(Artist.name)
+            select(Artist).where(Artist.status == "active")
+            .order_by(Artist.created_at.desc())  # новые сверху, как в релизах
         )).scalars().all()
     total = len(artists)
     page = artists[offset:offset + PAGE]
