@@ -348,22 +348,66 @@ async def release_track_play(cb: CallbackQuery):
 
 # ─────────────────────────── жалоба и модерация ───────────────────────────
 
+REPORT_REASONS = {
+    "rights": "Чужой материал (нарушение прав)",
+    "spam": "Спам или реклама",
+    "offtopic": "Не по теме раздела",
+    "dup": "Дубликат",
+    "other": "Другое",
+}
+
+
 @router.callback_query(F.data.startswith("rel:report:"))
-async def release_report(cb: CallbackQuery):
+async def release_report_ask(cb: CallbackQuery):
+    """Шаг 1 жалобы: выбор причины (отдельным сообщением под карточкой)."""
     listing_id = int(cb.data.split(":")[2])
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:repdo:{listing_id}:{code}")]
+            for code, label in REPORT_REASONS.items()]
+    rows.append([InlineKeyboardButton(text="✖ Отмена", callback_data="rel:repcancel")])
+    msg = await cb.bot.send_message(
+        cb.message.chat.id, "Что не так с этим релизом?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rel:repcancel")
+async def release_report_cancel(cb: CallbackQuery):
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await cb.answer("Отменено.")
+
+
+@router.callback_query(F.data.startswith("rel:repdo:"))
+async def release_report_send(cb: CallbackQuery):
+    """Шаг 2: жалоба с причиной уходит админам."""
+    _, _, lid_raw, reason = cb.data.split(":", 3)
+    listing_id = int(lid_raw)
+    reason_label = REPORT_REASONS.get(reason, "Другое")
     listing, meta, artist, _ = await _load_release(listing_id)
+    try:
+        await cb.message.delete()  # убираем сообщение с причинами
+    except Exception:
+        pass
     for admin_id in await _admin_ids():
         try:
-            await cb.bot.send_message(
+            msg = await cb.bot.send_message(
                 admin_id,
                 f"⚠️ Жалоба на релиз #{listing_id} "
                 f"({artist.name if artist else '?'} — {listing.title if listing else '?'})\n"
+                f"Причина: {reason_label}\n"
                 f"От: {cb.from_user.id} (@{cb.from_user.username or '—'})",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👀 Открыть", callback_data=f"rel:view:{listing_id}"),
                     InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"rel:admhide:{listing_id}"),
                 ]]),
             )
+            # уведомление тоже подчиняется железному правилу очистки чата
+            last_bot_messages.setdefault(admin_id, []).append(msg.message_id)
+            await register_bot_messages(admin_id, [msg.message_id])
         except Exception as e:
             print(f"[releases] report notify {admin_id}: {e}")
     await cb.answer("Жалоба отправлена. Спасибо!", show_alert=True)
@@ -844,12 +888,14 @@ async def publish(cb: CallbackQuery, state: FSMContext):
         if admin_id == cb.from_user.id:
             continue
         try:
-            await cb.bot.send_message(
+            msg = await cb.bot.send_message(
                 admin_id, f"🆕 Новый релиз #{listing_id}: {data['title']}",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👀 Открыть", callback_data=f"rel:view:{listing_id}"),
                     InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"rel:admhide:{listing_id}"),
                 ]]))
+            last_bot_messages.setdefault(admin_id, []).append(msg.message_id)
+            await register_bot_messages(admin_id, [msg.message_id])
         except Exception as e:
             print(f"[releases] admin notify {admin_id}: {e}")
 
