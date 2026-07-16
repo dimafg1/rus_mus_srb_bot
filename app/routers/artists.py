@@ -21,9 +21,11 @@ from app.analytics import log_event
 from app.features import is_enabled
 from app.routers.releases import (
     RELEASE_TYPES,
+    _ask_artname,
     _menu_btn,
     _send_screen,
 )
+from app.routers.utils import clear_bot_messages
 
 router = Router(name="artists")
 
@@ -62,6 +64,7 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
         nav.append(InlineKeyboardButton(text="▶️", callback_data=f"art:list:{offset + PAGE}"))
     if nav:
         rows.append(nav)
+    rows.append([InlineKeyboardButton(text="➕ Добавить исполнителя", callback_data="art:add")])
     rows.append([InlineKeyboardButton(text="🎵 Релизы", callback_data="go_releases"), _menu_btn()])
 
     text = ("🎤 <b>Исполнители сообщества</b>\n\n"
@@ -71,6 +74,17 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
                  "первого релиза — раздел «🎵 Релизы».")
     await _send_screen(cb.bot, cb.message.chat.id, text,
                        InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "art:add")
+async def artist_add(cb: CallbackQuery, state: FSMContext):
+    """Создание исполнителя без релиза: та же мини-анкета из мастера релизов,
+    но финал — карточка исполнителя (artist_flow='standalone')."""
+    await cb.answer()
+    await state.clear()
+    await state.update_data(artist_flow="standalone", new_artist=None, created_artist_id=None)
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    await _ask_artname(cb.bot, cb.message.chat.id, state)
 
 
 @router.callback_query(F.data.startswith("art:view:"))

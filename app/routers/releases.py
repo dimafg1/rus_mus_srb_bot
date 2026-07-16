@@ -636,7 +636,7 @@ async def add_pick_artist(cb: CallbackQuery, state: FSMContext):
 async def add_new_artist(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     # новый заход с экрана выбора — черновик исполнителя с чистого листа
-    await state.update_data(new_artist=None, created_artist_id=None)
+    await state.update_data(new_artist=None, created_artist_id=None, artist_flow=None)
     # убираем экран выбора исполнителя — иначе его кнопки остаются висеть
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _ask_artname(cb.bot, cb.message.chat.id, state)
@@ -644,9 +644,12 @@ async def add_new_artist(cb: CallbackQuery, state: FSMContext):
 
 async def _ask_artname(bot, chat_id: int, state: FSMContext):
     await state.set_state(ReleaseAdd.artist_name)
+    data = await state.get_data()
+    # анкета вызывается из двух мест: мастер релиза и раздел «Исполнители»
+    back_cb = "go_artists" if data.get("artist_flow") == "standalone" else "rel:add"
     await _replace_prompt(state, bot, chat_id,
                           "Название исполнителя или группы?",
-                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:add")]))
+                          InlineKeyboardMarkup(inline_keyboard=[_nav_row(back_cb)]))
 
 
 @router.message(ReleaseAdd.artist_name, F.text)
@@ -732,7 +735,29 @@ async def _create_artist_and_continue(event, state: FSMContext):
         await s.commit()
         await s.refresh(artist)
     await state.update_data(artist_id=artist.id, created_artist_id=artist.id)
+    if (await state.get_data()).get("artist_flow") == "standalone":
+        await _finish_standalone_artist(event, state, artist.id)
+        return
     await _ask_rel_type(event, state)
+
+
+async def _finish_standalone_artist(event, state: FSMContext, artist_id: int):
+    """Финал создания исполнителя из раздела «Исполнители» (без релиза)."""
+    await state.clear()
+    bot = event.bot
+    chat_id = event.message.chat.id if isinstance(event, CallbackQuery) else event.chat.id
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎤 Открыть карточку",
+                              callback_data=f"art:view:{artist_id}:list")],
+        [InlineKeyboardButton(text="🎵 Добавить релиз", callback_data="rel:add")],
+        [InlineKeyboardButton(text="⬅️ К исполнителям", callback_data="go_artists"), _menu_btn()],
+    ])
+    await _send_screen(bot, chat_id, "🎉 Исполнитель создан!", kb)
+    if isinstance(event, CallbackQuery):
+        try:
+            await event.answer()
+        except Exception:
+            pass
 
 
 @router.message(ReleaseAdd.artist_photo, F.photo)
