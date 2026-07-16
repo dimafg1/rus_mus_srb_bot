@@ -260,55 +260,6 @@ class Sell(StatesGroup):
     photo   = State()
     flex    = State()
     confirm = State()
-
-# ─────────────────── helpers ───────────────
-# async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lang="ru"):
-    # left = 3 - photo_count
-    # if photo_count == 0:
-    #     text_main = (
-    #         await get_text('sell_photo_0_main', lang)
-    #         or "Send a <b>photo</b> (up to 3). You can send all at once or one by one.\nIf you select more than three, only the first three will be attached."
-    #     )
-    #     text_tip = (
-    #         await get_text('sell_photo_0_tip', lang)
-    #         or "To upload a photo, click the 📎 to the left of the message box\n⬇️"
-    #     )
-    # elif left == 2:
-    #     text_main = (
-    #         await get_text('sell_photo_1_main', lang)
-    #         or "Photo added (1/3).\nYou can add <b>2 more</b> photos, skip this step, or cancel posting."
-    #     )
-    #     text_tip = (
-    #         await get_text('sell_photo_1_tip', lang)
-    #         or "To add more, click the 📎 again on the left\n⬇️"
-    #     )
-    # elif left == 1:
-    #     text_main = (
-    #         await get_text('sell_photo_2_main', lang)
-    #         or "Photo added (2/3).\nYou can add <b>1 more</b> photo, skip this step, or cancel posting."
-    #     )
-    #     text_tip = (
-    #         await get_text('sell_photo_2_tip', lang)
-    #         or "To add more, click the 📎 again on the left\n⬇️"
-    #     )
-    # else:
-    #     text_main = (
-    #         await get_text('sell_photo_max_main', lang)
-    #         or "Something went wrong! Maximum is 3 photos."
-    #     )
-    #     text_tip = ""
-
-    # msg = await m.answer(text_main, reply_markup=photo_keyboard(photo_count))
-    # msg2 = None
-    # last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
-    # if text_tip:
-    #     msg2 = await m.answer(text_tip)
-    #     last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
-    #     await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
-    # else:
-    #     await state.update_data(photo_prompt_msgs=[msg.message_id])
-
-# RU: Запрос фотографий — СНАЧАЛА «что уже ввели», ПОТОМ инструкция по фото.
 async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lang="ru"):
     left = 3 - photo_count
     if photo_count == 0:

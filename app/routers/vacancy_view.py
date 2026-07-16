@@ -568,67 +568,6 @@ async def vac_delete_yes(cb: CallbackQuery):
     await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer("Удалено.")
     print(f"[vacancy_view.py] handler=vac_delete_yes listing_id={lid} status=ok user_id={cb.from_user.id}")
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Закрыть/Открыть вакансию
-# ─────────────────────────────────────────────────────────────────────────────
-
-# # RU: пометить вакансию закрытой
-# @router.callback_query(F.data.startswith("vac_sold:"))
-# async def vac_mark_sold(cb: CallbackQuery):
-#     chat_id = cb.message.chat.id
-#     await clear_bot_messages(chat_id, cb.bot)
-
-#     lid = int(cb.data.split(":", 1)[1])
-#     async with SessionLocal() as s:
-#         obj = await s.get(Listing, lid)
-#         if not obj or obj.owner_id != cb.from_user.id:
-#             await cb.answer("⛔️ Недостаточно прав.", show_alert=True)
-#             _dbg("vac_mark_sold.denied", listing_id=lid, user_id=cb.from_user.id)
-#             return
-#         obj.is_sold = True
-#         s.add(obj); await s.commit()
-
-#     kb = InlineKeyboardMarkup(inline_keyboard=[
-#         [InlineKeyboardButton(text="🔎 Посмотреть объявление", callback_data=f"vac_view:{lid}:::my")],
-#         [InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")],
-#     ])
-#     await cb.message.answer("✅ Вакансия закрыта.", reply_markup=kb, parse_mode="HTML")
-#     await cb.answer("Закрыто.")
-#     _dbg("vac_mark_sold.ok", listing_id=lid, user_id=cb.from_user.id)
-
-
-# # RU: снова открыть вакансию
-# @router.callback_query(F.data.startswith("vac_reopen:"))
-# async def vac_mark_reopen(cb: CallbackQuery):
-#     chat_id = cb.message.chat.id
-#     await clear_bot_messages(chat_id, cb.bot)
-
-#     lid = int(cb.data.split(":", 1)[1])
-#     async with SessionLocal() as s:
-#         obj = await s.get(Listing, lid)
-#         if not obj or obj.owner_id != cb.from_user.id:
-#             await cb.answer("⛔️ Недостаточно прав.", show_alert=True)
-#             _dbg("vac_mark_reopen.denied", listing_id=lid, user_id=cb.from_user.id)
-#             return
-#         obj.is_sold = False
-#         s.add(obj); await s.commit()
-
-#     kb = InlineKeyboardMarkup(inline_keyboard=[
-#         [InlineKeyboardButton(text="🔎 Посмотреть объявление", callback_data=f"vac_view:{lid}:::my")],
-#         [InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")],
-#     ])
-#     await cb.message.answer("✅ Вакансия снова открыта.", reply_markup=kb, parse_mode="HTML")
-#     await cb.answer("Открыто.")
-#     _dbg("vac_mark_reopen.ok", listing_id=lid, user_id=cb.from_user.id)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Поиск вакансий
-# ─────────────────────────────────────────────────────────────────────────────
-
 class VacSearch(StatesGroup):
     """
     Состояние поиска вакансий.

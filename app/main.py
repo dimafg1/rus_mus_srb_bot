@@ -74,28 +74,22 @@ from app.routers.services_edit_photos import router as services_edit_photos_rout
 
 
 
+# Всё из routers.utils — одним блоком (раньше импортировалось трижды).
+# safe_edit_or_send отсюда НЕ импортируем: в main.py ниже своя локальная
+# версия с более широким перехватом ошибок — роутеры используют utils-версию.
 from app.routers.utils import (
     clear_bot_messages,
     register_bot_messages,
     last_bot_messages,
     sent_photo_messages,
     my_listing_messages,
-)
-# get_text берём из routers.utils (aiosqlite-версия с поддержкой default);
-# версия из app.texts здесь раньше импортировалась и тут же перекрывалась
-from app.routers.utils import get_text
-from app.keyboards import get_common_menu_button
-from app.routers.market_view import router as market_view_router
-from app.routers.utils import safe_edit_or_send
-
-from app.routers.utils import (
     last_search_query_message,
     last_search_menu_message,
     last_reply_menu_messages,
-    last_bot_messages,
-    my_listing_messages,
-    sent_photo_messages,
+    get_text,  # aiosqlite-версия с поддержкой default (не app.texts)
 )
+from app.keyboards import get_common_menu_button
+from app.routers.market_view import router as market_view_router
 from app.states import MarketSearch
 import inspect
 from app.routers import feedback
@@ -757,51 +751,6 @@ async def cmd_start(message: Message, state: FSMContext):
         f"user_id: {getattr(message.from_user, 'id', None)} | "
         f"msg_id: {getattr(message, 'message_id', None)}"
     )
-
-
-
-# @dp.callback_query(F.data.startswith("vcity:"))
-# async def vacancy_isk_city(cb: CallbackQuery, state: FSMContext):
-#     _, city_slug = cb.data.split(":", 1)
-#     city = await city_by_slug(city_slug)
-#     await safe_edit_or_send(cb, f"🤝 Ищу → {city.name}\nВыберите направление для просмотра анкет:", 
-#                                  reply_markup=vacancy_category_inline())
-#     await cb.answer()
-
-# @dp.callback_query(F.data == "vacancy:back")
-# async def vacancy_back(cb: CallbackQuery):
-#     await safe_edit_or_send(cb, "🤝 Ищу – выберите действие:", reply_markup=vacancy_main_inline_view("vcity"))
-#     await cb.answer()
-
-# @dp.callback_query(F.data.startswith("vcat:"))
-# async def vacancy_category(cb: CallbackQuery, state: FSMContext):
-#     data = cb.data.split(":", 1)[1]
-#     if data == "musicians":
-#         await safe_edit_or_send(cb, "Выберите подкатегорию для 'Музыканты':", reply_markup=musicians_sub_inline())
-#     elif data == "back":
-#         await safe_edit_or_send(cb, "Выберите направление:", reply_markup=vacancy_category_inline())
-#     else:
-#         await state.update_data(category=data)
-#         await safe_edit_or_send(cb, f"Показываем анкеты по направлению <b>{data.capitalize()}</b>...", 
-#                                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-#                                          [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
-#                                      ]))
-#     await cb.answer()
-
-# @dp.callback_query(F.data.startswith("vsub:"))
-# async def vacancy_sub_category(cb: CallbackQuery, state: FSMContext):
-#     sub = cb.data.split(":", 1)[1]
-#     await state.update_data(category=sub)
-#     await safe_edit_or_send(cb, f"Показываем анкеты по подкатегории <b>{sub.capitalize()}</b>...", 
-#                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-#                                      [InlineKeyboardButton(text="⬅️ Назад", callback_data="vacancy:back")]
-#                                  ]))
-#     await cb.answer()
-
-
-
-
-
 @dp.message(Command("myid"))
 async def get_my_id(message: Message):
     msg = await message.answer(f"Ваш Telegram ID: <code>{message.from_user.id}</code>", parse_mode="HTML")

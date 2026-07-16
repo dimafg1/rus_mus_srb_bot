@@ -21,31 +21,6 @@ from app.routers.utils import clear_bot_messages, last_bot_messages, register_bo
 from collections import defaultdict
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-# # ─────────────────────────────────────────────────────────
-# # RU: из JSON category.fields читаем флаг allow_extra_categories
-# #     поддерживаем два формата: список c {"type":"__meta","key":"allow_extra_categories","value": true}
-# #     и короткую форму {"allow_extra_categories": true}
-# # ─────────────────────────────────────────────────────────
-# def _allow_extra_from_fields_raw(raw: str) -> bool:
-#     try:
-#         txt = (raw or "").strip()
-#         if not txt:
-#             return False
-#         data = json.loads(txt)
-#         if isinstance(data, list):
-#             for f in data:
-#                 if isinstance(f, dict) and str(f.get("type") or "").startswith("__") and f.get("key") == "allow_extra_categories":
-#                     return bool(f.get("value"))
-#             return False
-#         if isinstance(data, dict):
-#             return bool(data.get("allow_extra_categories"))
-#         return False
-#     except Exception:
-#         return False
-
-
-
 _user_input_msgs = defaultdict(list)
 
 async def _remember_and_delete_user_message(msg: Message):
@@ -113,24 +88,6 @@ from collections import defaultdict
 
 
 VERSION_TAG = "SVC-EDIT-KRUMBS v2.1"  # видимая метка для подтверждения
-
-# -----------------------------------------------------------------------------
-# Вспомогательные
-# -----------------------------------------------------------------------------
-
-# Короткое RU-пояснение: удалить ранее отправленные «хвосты» под меню.
-# async def _clear_tail_messages(chat_id: int, bot):
-#     """Удалить кнопку 'Смотреть видео' и/или отправленный ранее ролик (если были)."""
-#     ids = _edit_tail_msgs.pop(chat_id, [])
-#     for mid in ids:
-#         try:
-#             await bot.delete_message(chat_id, mid)
-#             print(f"[services_edit_overview.py] TAIL-DEL ✓ | chat_id={chat_id} msg_id={mid}")
-#         except Exception as e:
-#             print(f"[services_edit_overview.py] TAIL-DEL ✗ | chat_id={chat_id} msg_id={mid} err={e}")
-
-
-# Короткое RU-пояснение: безопасно отформатировать текущее значение для вывода.
 def _fmt(v):
     """Вернуть красивое текстовое представление значения."""
     if v is None or v == "" or (isinstance(v, (list, dict)) and not v):
@@ -983,38 +940,6 @@ async def sextra_back_services(cb: CallbackQuery, state: FSMContext):
 
     await cb.answer()
     print(f"[services_edit_overview.py] handler=sextra_back_services OK chat_id={chat_id} listing_id={listing_id}")
-
-# # ─────────────────────────────────────────────────────────
-# # RU: Клик по «Доп. категории» в Услугах (минимальная реакция).
-# #     Чистим прошлое меню/сообщения, показываем короткий алерт.
-# # ─────────────────────────────────────────────────────────
-# @router.callback_query(F.data.regexp(r"^extra:s_open:(\d+)$"))
-# async def sextra_open_minimal(cb: CallbackQuery, state: FSMContext):
-#     chat_id = cb.message.chat.id
-
-#     # Зачистка интерфейса (каноны)
-#     try:
-#         await cb.message.delete()
-#     except Exception:
-#         pass
-#     try:
-#         await clear_bot_messages(chat_id, cb.message.bot)
-#     except Exception:
-#         pass
-
-#     # Извлечь id услуги
-#     m = re.match(r"^extra:s_open:(\d+)$", cb.data or "")
-#     listing_id = int(m.group(1)) if m else 0
-
-#     # Минимальная реакция: алерт (меню добавим отдельным шагом)
-#     await cb.answer("Кнопка «Доп. категории» (Услуги) — работает ✅", show_alert=True)
-
-#     print(f"[services_edit_overview.py] handler=sextra_open_minimal ✓ | chat_id={chat_id} listing_id={listing_id} data={cb.data!r}")
-
-# ─────────────────────────────────────────────────────────
-# RU: Удалить доп. категорию (слот 1 или 2) в Услугах.
-#     После удаления остаёмся в мини-меню «Доп. категории».
-# ─────────────────────────────────────────────────────────
 @router.callback_query(F.data.regexp(r"^sextra:del:(\d+):(1|2)$"))
 async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id

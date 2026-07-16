@@ -9,28 +9,6 @@ from app.models import Menu, City  # или как у вас называетс�
 from app.routers.utils import get_text
 from app.routers.utils import get_catalog_categories
 from app.routers.admin_panel import is_admin
-
-
-
-
-# # ---------- Главное меню ----------
-# def main_inline_menu():
-#     return InlineKeyboardMarkup(
-#         inline_keyboard=[
-#             [
-#                 InlineKeyboardButton(text="📂 Каталог", callback_data="go_catalog"),
-#                 InlineKeyboardButton(text="🤝 Ищу", callback_data="go_isk")
-#             ],
-#             [
-#                 InlineKeyboardButton(text="📅 Афиша", callback_data="go_events"),
-#                 InlineKeyboardButton(text="💸 Барахолка", callback_data="go_market")
-#             ],
-#             [
-#                 InlineKeyboardButton(text="❓ Помощь", callback_data="go_help")
-#             ]
-#         ]
-#     )
-
 async def get_common_menu_button(code: str, lang="ru"):
     async with SessionLocal() as session:
         result = await session.execute(

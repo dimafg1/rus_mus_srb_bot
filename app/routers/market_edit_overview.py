@@ -149,26 +149,6 @@ def _ctx(ev):
         return ev.message.chat.id, ev.message.bot, ev.message.answer
     else:
         return ev.chat.id, ev.bot, ev.answer
-    
-# def _allow_extra_for_category(cat: Category) -> bool:
-#     """Читаем из category.fields флаг allow_extra_categories (opt-in)."""
-#     try:
-#         data = json.loads(cat.fields or "{}")
-#         return bool(data.get("allow_extra_categories"))
-#     except Exception:
-#         return False
-
-# def _extra_used(lst: Listing) -> int:
-#     """Сколько слотов доп. категорий занято у объявления (0..2)."""
-#     return int(bool(lst.extra_category_id1)) + int(bool(lst.extra_category_id2))
-
-
-
-# ─────────────────────────────────────────────────────────
-# Рендер единого обзора всех полей (Барахолка)
-# RU: YouTube/URL оставляем в карточке (web-preview включён),
-#     отдельное сообщение ниже шлём ТОЛЬКО для file_id.
-# ─────────────────────────────────────────────────────────
 async def _render_overview(chat_id: int, bot, send, listing_id: int):
     await clear_bot_messages(chat_id, bot)
     await _clear_user_inputs(chat_id, bot)

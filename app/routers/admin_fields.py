@@ -11,48 +11,6 @@ from app.routers.utils import clear_bot_messages, last_bot_messages, register_bo
 
 # берём проверку админа из admin_panel (важно: admin_panel НЕ должен импортировать этот файл)
 from app.routers.admin_panel import is_admin
-
-
-# # >>> BEGIN: extra categories helpers
-# def _get_allow_extra_flag_from_fields_raw(raw: str) -> bool:
-#     """Читаем флаг разрешения доп. категорий из Category.fields (мета-запись)."""
-#     try:
-#         data = json.loads((raw or "").strip() or "[]")
-#         if isinstance(data, list):
-#             for f in data:
-#                 if isinstance(f, dict) and f.get("type") == "__meta" and f.get("key") == "allow_extra_categories":
-#                     return bool(f.get("value"))
-#         return False
-#     except Exception:
-#         return False
-
-# async def _set_allow_extra_flag(session, cat_id: int, value: bool) -> None:
-#     """Ставим/снимаем флаг allow_extra_categories в Category.fields как мета-запись."""
-#     cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one()
-#     try:
-#         data = json.loads((cat.fields or "").strip() or "[]")
-#     except Exception:
-#         data = []
-#     if not isinstance(data, list):
-#         data = []
-
-#     idx = None
-#     for i, f in enumerate(data):
-#         if isinstance(f, dict) and f.get("type") == "__meta" and f.get("key") == "allow_extra_categories":
-#             idx = i
-#             break
-
-#     if idx is None:
-#         data.insert(0, {"type": "__meta", "key": "allow_extra_categories", "value": bool(value)})
-#     else:
-#         data[idx]["value"] = bool(value)
-
-#     cat.fields = json.dumps(data, ensure_ascii=False)
-#     session.add(cat)
-#     await session.commit()
-# # <<< END: extra categories helpers
-
-
 router = Router()
 
 ROOT_CATEGORY_IDS = {30, 80}
