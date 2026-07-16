@@ -457,6 +457,7 @@ async def release_delete(cb: CallbackQuery):
 
 @router.callback_query(F.data == "rel:add")
 async def add_start(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
     await state.clear()
     async with SessionLocal() as s:
         artists = (await s.execute(
@@ -475,17 +476,22 @@ async def add_start(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("rel:art:"))
 async def add_pick_artist(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
     artist_id = int(cb.data.split(":")[2])
     await state.update_data(artist_id=artist_id, new_artist=None)
+    # убираем экран выбора исполнителя, дальше — цепочка подсказок мастера
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _ask_rel_type(cb, state)
 
 
 @router.callback_query(F.data == "rel:artnew")
 async def add_new_artist(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
     await state.set_state(ReleaseAdd.artist_name)
+    # убираем экран выбора исполнителя — иначе его кнопки остаются висеть
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
                           "Название исполнителя или группы?")
-    await cb.answer()
 
 
 @router.message(ReleaseAdd.artist_name, F.text)
@@ -520,6 +526,26 @@ async def artist_type_pick(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+async def _create_artist_and_continue(event, state: FSMContext):
+    """Создаёт исполнителя в БД СРАЗУ (не при публикации релиза!) — чтобы
+    он не терялся при сбое мастера и был виден в списке при новом заходе."""
+    data = await state.get_data()
+    na = data.get("new_artist") or {}
+    if not na.get("name"):
+        return
+    async with SessionLocal() as s:
+        artist = Artist(
+            name=na["name"], artist_type=na.get("type", "Другое"),
+            photo_file_id=na.get("photo"),
+            owner_user_id=(event.from_user.id if event.from_user else 0),
+        )
+        s.add(artist)
+        await s.commit()
+        await s.refresh(artist)
+    await state.update_data(artist_id=artist.id, new_artist=None)
+    await _ask_rel_type(event, state)
+
+
 @router.message(ReleaseAdd.artist_photo, F.photo)
 async def artist_photo_input(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -530,12 +556,13 @@ async def artist_photo_input(message: Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
-    await _ask_rel_type(message, state)
+    await _create_artist_and_continue(message, state)
 
 
 @router.callback_query(F.data == "rel:askip")
 async def artist_photo_skip(cb: CallbackQuery, state: FSMContext):
-    await _ask_rel_type(cb, state)
+    await cb.answer()
+    await _create_artist_and_continue(cb, state)
 
 
 async def _ask_rel_type(event, state: FSMContext):
@@ -641,6 +668,30 @@ async def media_video(message: Message, state: FSMContext):
             InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")]]))
 
 
+@router.message(ReleaseAdd.media, F.document)
+async def media_document(message: Message, state: FSMContext):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await _replace_prompt(
+        state, message.bot, message.chat.id,
+        "Файл пришёл как документ — Telegram не сможет играть его как музыку.\n"
+        "Пришлите как <b>аудио</b> (через скрепку → «Музыка») или как видео.",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Готово / Пропустить", callback_data="rel:mdone")]]))
+
+
+@router.message(ReleaseAdd.cover, ~F.photo)
+async def cover_wrong_type(message: Message, state: FSMContext):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await _replace_prompt(state, message.bot, message.chat.id,
+                          "Нужна именно картинка-обложка. Пришлите фото 🙂")
+
+
 @router.callback_query(F.data == "rel:mdone")
 async def media_done(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ReleaseAdd.links)
@@ -719,15 +770,11 @@ async def _confirm(event, state: FSMContext):
     data = await state.get_data()
     bot = event.bot
     chat_id = event.message.chat.id if isinstance(event, CallbackQuery) else event.chat.id
-    new_artist = data.get("new_artist")
-    if new_artist:
-        artist_line = f"{new_artist['name']} ({new_artist.get('type', '—')}) — новый"
-    else:
-        async with SessionLocal() as s:
-            a = (await s.execute(
-                select(Artist).where(Artist.id == data.get("artist_id"))
-            )).scalar_one_or_none()
-        artist_line = a.name if a else "?"
+    async with SessionLocal() as s:
+        a = (await s.execute(
+            select(Artist).where(Artist.id == data.get("artist_id"))
+        )).scalar_one_or_none()
+    artist_line = a.name if a else "не выбран — вернитесь в начало"
     parts = [
         "<b>Проверьте:</b>",
         f"Исполнитель: {artist_line}",
@@ -754,19 +801,17 @@ async def _confirm(event, state: FSMContext):
 @router.callback_query(F.data == "rel:pub")
 async def publish(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if not data.get("title") or not data.get("cover"):
+    if data.get("rel_publishing"):  # защита от двойного нажатия
+        await cb.answer()
+        return
+    if not data.get("title") or not data.get("cover") or not data.get("artist_id"):
         await cb.answer("Не хватает данных — начните заново.", show_alert=True)
         return
+    await state.update_data(rel_publishing=True)
+    await cb.answer("Публикуем…")
     cat_id = await _ensure_release_category()
     async with SessionLocal() as s:
-        artist_id = data.get("artist_id")
-        if data.get("new_artist"):
-            na = data["new_artist"]
-            artist = Artist(name=na["name"], artist_type=na.get("type", "Другое"),
-                            photo_file_id=na.get("photo"), owner_user_id=cb.from_user.id)
-            s.add(artist)
-            await s.flush()
-            artist_id = artist.id
+        artist_id = data["artist_id"]
         listing = Listing(
             city_id=RELEASES_CITY_ID, category_id=cat_id, owner_id=cb.from_user.id,
             title=data["title"],
@@ -821,4 +866,3 @@ async def publish(cb: CallbackQuery, state: FSMContext):
     kb = _release_kb(listing, meta, tracks,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
     await _send_screen(cb.bot, cb.message.chat.id, caption[:1024], kb, photo=listing.photo_file_id)
-    await cb.answer("Релиз опубликован!")
