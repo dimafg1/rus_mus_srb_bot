@@ -117,7 +117,6 @@ from app.routers.vacancy_utils import vacancy_main_menu
 from app.routers.vacancy_edit import router as vacancy_edit_router
 # from app.routers.vacancy_edit_overview import router as vacancy_edit_overview_router
 
-from app.routers.codex_review import router as codex_review_router
 
 from app.routers.utils import log
 
@@ -367,12 +366,10 @@ dp.include_router(market_edit_photos_router)
 dp.include_router(vacancy_add_router)
 dp.include_router(vacancy_view_router)
 dp.include_router(vacancy_edit_router)
-dp.include_router(codex_review_router)
 dp.include_router(events_view_router)
 dp.include_router(events_add_router)
 dp.include_router(events_admin_router)
 
-print("[routers] codex_review_router included")
 # dp.include_router(vacancy_edit_overview_router)
 
 # # ───────── FSM for forms ─────────

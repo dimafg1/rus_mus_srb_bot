@@ -1,9 +1,9 @@
 [project]
 name = "rus-mus-srb-bot"
 version = "0.1.0"
-description = ""
+description = "Telegram-бот русскоязычного музыкального сообщества Сербии: барахолка, услуги, вакансии, афиша, релизы"
 authors = [
-    {name = "Your Name",email = "you@example.com"}
+    {name = "dimafg1",email = "dimafg@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.13"
@@ -11,21 +11,17 @@ dependencies = [
     "aiogram (==3.22.0)",
     "sqlmodel (>=0.0.24,<0.0.25)",
     "pydantic-settings (>=2.9.1,<3.0.0)",
-    "alembic (>=1.15.2,<2.0.0)",
     "aiosqlite (>=0.21.0,<0.22.0)",
     "pytz (>=2025.2,<2026.0)",
     "pillow (>=11.3.0,<12.0.0)",
     "uvicorn (>=0.35.0,<0.36.0)",
     "fastapi (>=0.116.1,<0.117.0)",
     "aiohttp (>=3.12.15,<4.0.0)",
-    "openai (>=1.107.3,<2.0.0)"
+    "httpx (>=0.27,<1.0)"
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.group.dev.dependencies]
-watchdog = "^6.0.0"
 

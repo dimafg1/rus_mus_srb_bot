@@ -1,3 +1,6 @@
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+
 async def show_market_search_results(m, state, results):
     keyboard = [
         [InlineKeyboardButton(text=f"{listing.title} — {listing.price or ''}", callback_data=f"market_search_detail:{listing.id}")]
