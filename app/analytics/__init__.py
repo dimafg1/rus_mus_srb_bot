@@ -11,6 +11,7 @@
     listing_extended  — продление объявления; section + entity_id
     partner_shown     — показ партнёрской кампании (появится на шаге «кампании»)
     partner_opened    — открытие/клик кампании (появится на шаге «кампании»)
+    artist_opened     — открытие карточки исполнителя (source: list / rel<id>)
 
 События, которые ЖИВУТ В ОТДЕЛЬНЫХ МОДУЛЯХ ЭТОГО ПАКЕТА и в analytics_events
 НЕ дублируются:
@@ -37,6 +38,7 @@ KNOWN_EVENTS = {
     "listing_extended",
     "partner_shown",
     "partner_opened",
+    "artist_opened",
 }
 
 

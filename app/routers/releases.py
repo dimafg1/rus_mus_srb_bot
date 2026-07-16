@@ -233,11 +233,16 @@ def _release_caption(listing, meta, artist, tracks) -> str:
     return caption[:1020] + "…" if len(caption) > 1024 else caption
 
 
-def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool) -> InlineKeyboardMarkup:
+def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
+                artist=None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if tracks:
         rows.append([InlineKeyboardButton(
             text="▶️ Слушать в Telegram", callback_data=f"rel:listen:{listing.id}")])
+    if artist is not None:
+        rows.append([InlineKeyboardButton(
+            text="🎤 Об исполнителе",
+            callback_data=f"art:view:{artist.id}:rel{listing.id}")])
     links = json.loads(meta.links) if meta and meta.links else []
     row: list[InlineKeyboardButton] = []
     for l in links:
@@ -334,7 +339,7 @@ async def release_view(cb: CallbackQuery):
     caption = _release_caption(listing, meta, artist, tracks)
     if meta.status != "published":
         caption = "🚫 <i>Релиз скрыт</i>\n\n" + caption
-    kb = _release_kb(listing, meta, tracks,
+    kb = _release_kb(listing, meta, tracks, artist=artist,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
     await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
     links = json.loads(meta.links) if meta and meta.links else []
@@ -1127,7 +1132,7 @@ async def publish(cb: CallbackQuery, state: FSMContext):
     listing, meta, artist, tracks = await _load_release(listing_id)
     from app.routers.admin_panel import is_admin
     caption = "🎉 Опубликовано!\n\n" + _release_caption(listing, meta, artist, tracks)
-    kb = _release_kb(listing, meta, tracks,
+    kb = _release_kb(listing, meta, tracks, artist=artist,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
     await _send_screen(cb.bot, cb.message.chat.id, caption[:1024], kb, photo=listing.photo_file_id)
     links_pub = json.loads(meta.links) if meta and meta.links else []

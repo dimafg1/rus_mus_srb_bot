@@ -354,8 +354,10 @@ from app.routers.admin_panel import router as admin_panel_router
 from app.routers.admin_analytics import router as admin_analytics_router
 from app.routers.partner_view import router as partner_view_router
 from app.routers.releases import router as releases_router
+from app.routers.artists import router as artists_router
 dp.include_router(partner_view_router)
 dp.include_router(releases_router)
+dp.include_router(artists_router)
 dp.include_router(admin_panel_router)
 dp.include_router(admin_analytics_router)
 dp.include_router(admin_fields_router)
