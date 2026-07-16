@@ -19,7 +19,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlmodel import select
 
 from app.database import SessionLocal
-from app.models import Artist, Listing, ReleaseMeta
+from app.models import Artist, BotUser, Listing, ReleaseMeta
 from app.analytics import log_event
 from app.features import is_enabled
 from app.routers.releases import (
@@ -47,8 +47,9 @@ EDIT_FIELDS = {
     "city_text": ("Город", "Город базирования (например: Белград):"),
     "links": ("Ссылки", "Ссылки на соцсети и площадки — одним сообщением,\n"
                         "каждая с новой строки или через пробел:"),
-    "contact": ("Контакт", "Контакт для связи (например: @username).\n"
-                           "Он будет виден всем на карточке:"),
+    "contact": ("Контакты", "Дополнительные контакты через пробел — участники "
+                            "группы, агент (например: @drummer @manager).\n"
+                            "Контакт автора карточки остаётся всегда:"),
 }
 CLEARABLE = {"descr", "genres", "city_text", "links", "contact"}
 
@@ -292,6 +293,20 @@ async def artist_edit_field(cb: CallbackQuery, state: FSMContext):
                           InlineKeyboardMarkup(inline_keyboard=rows))
 
 
+async def _base_contact(artist_id: int) -> str | None:
+    """Базовый контакт карточки — @ник создателя. Не удаляется при редактуре."""
+    async with SessionLocal() as s:
+        artist = (await s.execute(
+            select(Artist).where(Artist.id == artist_id)
+        )).scalar_one_or_none()
+        if not artist:
+            return None
+        u = (await s.execute(
+            select(BotUser).where(BotUser.user_id == artist.owner_user_id)
+        )).scalars().first()
+    return f"@{u.username}" if u and u.username else None
+
+
 async def _save_artist_field(user_id: int, artist_id: int, field: str, value):
     async with SessionLocal() as s:
         artist = (await s.execute(
@@ -318,7 +333,11 @@ async def artist_edit_type(cb: CallbackQuery, state: FSMContext):
 async def artist_edit_clear(cb: CallbackQuery, state: FSMContext):
     await cb.answer("Очищено.")
     _, _, aid, field = cb.data.split(":")
-    if field in CLEARABLE:
+    if field == "contact":
+        # контакты не обнуляются в пустоту — остаётся базовый (@создатель)
+        await _save_artist_field(cb.from_user.id, int(aid), "contact",
+                                 await _base_contact(int(aid)))
+    elif field in CLEARABLE:
         await _save_artist_field(cb.from_user.id, int(aid), field, None)
     await state.clear()
     await _render_edit_overview(cb.bot, cb.message.chat.id, cb.from_user.id, int(aid))
@@ -341,6 +360,11 @@ async def artist_edit_text(message: Message, state: FSMContext):
         raw = text_val.replace(",", " ").split()
         links = [{"label": _link_label(u), "url": u} for u in raw if u.startswith("http")]
         value = json.dumps(links, ensure_ascii=False) if links else None
+    elif field == "contact":
+        # база (@создатель) всегда впереди, ввод только ДОБАВЛЯЕТ контакты
+        base = await _base_contact(artist_id)
+        extras = [t for t in text_val.replace(",", " ").split() if t and t != base][:5]
+        value = " ".join(([base] if base else []) + extras)[:128] or None
     elif field == "name":
         value = text_val[:128]
         if not value:

@@ -746,11 +746,16 @@ async def _create_artist_and_continue(event, state: FSMContext):
     na = data.get("new_artist") or {}
     if not na.get("name"):
         return
+    # Контакт создателя — базовый, проставляется сразу и не удаляется:
+    # у карточки всегда должен быть рабочий контакт для связи
+    base_contact = (f"@{event.from_user.username}"
+                    if event.from_user and event.from_user.username else None)
     async with SessionLocal() as s:
         artist = Artist(
             name=na["name"], artist_type=na.get("type", "Другое"),
             photo_file_id=na.get("photo"),
             owner_user_id=(event.from_user.id if event.from_user else 0),
+            contact=base_contact,
         )
         s.add(artist)
         await s.commit()
