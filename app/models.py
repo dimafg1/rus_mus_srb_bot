@@ -295,6 +295,12 @@ class Artist(SQLModel, table=True):
         default="группа", sa_column=Column(String(32), nullable=False, default="группа")
     )
     photo_file_id: Optional[str] = Field(default=None, sa_column=Column(Text))
+    # Дополнительные поля карточки (заполняются через «Редактировать»)
+    descr: Optional[str] = Field(default=None, sa_column=Column(Text))
+    genres: Optional[str] = Field(default=None, sa_column=Column(String(128)))
+    city_text: Optional[str] = Field(default=None, sa_column=Column(String(64)))
+    links: Optional[str] = Field(default=None, sa_column=Column(Text))  # JSON [{label,url}]
+    contact: Optional[str] = Field(default=None, sa_column=Column(String(128)))
     # Управляющий пользователь (несколько управляющих — вторая арка, Р-12)
     owner_user_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
     # active | hidden (скрыт модератором)

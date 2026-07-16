@@ -84,3 +84,13 @@ async def init_db() -> None:
             ))
         except Exception as e:
             print(f"[init_db] посев feature_flags: {e}")
+        # Миграция: доп. поля карточки исполнителя (Р-12)
+        for col, ddl in (
+            ("descr", "TEXT"), ("genres", "VARCHAR(128)"),
+            ("city_text", "VARCHAR(64)"), ("links", "TEXT"),
+            ("contact", "VARCHAR(128)"),
+        ):
+            try:
+                await conn.execute(text(f"ALTER TABLE artist ADD COLUMN {col} {ddl}"))
+            except Exception:
+                pass  # колонка уже есть — нормально
