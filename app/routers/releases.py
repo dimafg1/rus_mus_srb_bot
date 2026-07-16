@@ -587,7 +587,7 @@ async def add_start(cb: CallbackQuery, state: FSMContext):
 async def add_pick_artist(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     artist_id = int(cb.data.split(":")[2])
-    await state.update_data(artist_id=artist_id, new_artist=None)
+    await state.update_data(artist_id=artist_id, new_artist=None, created_artist_id=None)
     # убираем экран выбора исполнителя, дальше — цепочка подсказок мастера
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _ask_rel_type(cb, state)
@@ -596,10 +596,16 @@ async def add_pick_artist(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "rel:artnew")
 async def add_new_artist(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-    await state.set_state(ReleaseAdd.artist_name)
+    # новый заход с экрана выбора — черновик исполнителя с чистого листа
+    await state.update_data(new_artist=None, created_artist_id=None)
     # убираем экран выбора исполнителя — иначе его кнопки остаются висеть
     await clear_bot_messages(cb.message.chat.id, cb.bot)
-    await _replace_prompt(state, cb.bot, cb.message.chat.id,
+    await _ask_artname(cb.bot, cb.message.chat.id, state)
+
+
+async def _ask_artname(bot, chat_id: int, state: FSMContext):
+    await state.set_state(ReleaseAdd.artist_name)
+    await _replace_prompt(state, bot, chat_id,
                           "Название исполнителя или группы?",
                           InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:add")]))
 
@@ -613,7 +619,19 @@ async def artist_name_input(message: Message, state: FSMContext):
         pass
     if not name:
         return
-    await state.update_data(new_artist={"name": name})
+    data = await state.get_data()
+    new_artist = {**(data.get("new_artist") or {}), "name": name}
+    await state.update_data(new_artist=new_artist)
+    # если исполнитель уже создан (вернулись «Назад») — правим его в БД
+    if data.get("created_artist_id"):
+        async with SessionLocal() as s:
+            a = (await s.execute(
+                select(Artist).where(Artist.id == data["created_artist_id"])
+            )).scalar_one_or_none()
+            if a:
+                a.name = name
+                s.add(a)
+                await s.commit()
     await state.set_state(None)
     await _ask_arttype(message.bot, message.chat.id, state)
 
@@ -623,26 +641,39 @@ async def _ask_arttype(bot, chat_id: int, state: FSMContext):
     name = (data.get("new_artist") or {}).get("name", "")
     rows = [[InlineKeyboardButton(text=t, callback_data=f"rel:atype:{i}")]
             for i, t in enumerate(ARTIST_TYPES)]
-    rows.append(_nav_row("rel:artnew"))
+    rows.append(_nav_row("rel:back:artname"))
     await _replace_prompt(state, bot, chat_id,
                           f"«{name}» — это:", InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("rel:atype:"))
 async def artist_type_pick(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
     idx = int(cb.data.split(":")[2])
     data = await state.get_data()
     new_artist = data.get("new_artist") or {}
     new_artist["type"] = ARTIST_TYPES[idx] if 0 <= idx < len(ARTIST_TYPES) else "Другое"
     await state.update_data(new_artist=new_artist)
+    if data.get("created_artist_id"):  # правка уже созданного (пришли «Назад»)
+        async with SessionLocal() as s:
+            a = (await s.execute(
+                select(Artist).where(Artist.id == data["created_artist_id"])
+            )).scalar_one_or_none()
+            if a:
+                a.artist_type = new_artist["type"]
+                s.add(a)
+                await s.commit()
+    await _ask_artphoto(cb.bot, cb.message.chat.id, state)
+
+
+async def _ask_artphoto(bot, chat_id: int, state: FSMContext):
     await state.set_state(ReleaseAdd.artist_photo)
-    await _replace_prompt(state, cb.bot, cb.message.chat.id,
+    await _replace_prompt(state, bot, chat_id,
                           "Фото или логотип исполнителя?\n\nПришлите картинку — или пропустите.",
                           InlineKeyboardMarkup(inline_keyboard=[
                               [InlineKeyboardButton(text="⏭ Пропустить", callback_data="rel:askip")],
                               _nav_row("rel:back:arttype"),
                           ]))
-    await cb.answer()
 
 
 async def _create_artist_and_continue(event, state: FSMContext):
@@ -661,7 +692,7 @@ async def _create_artist_and_continue(event, state: FSMContext):
         s.add(artist)
         await s.commit()
         await s.refresh(artist)
-    await state.update_data(artist_id=artist.id, new_artist=None)
+    await state.update_data(artist_id=artist.id, created_artist_id=artist.id)
     await _ask_rel_type(event, state)
 
 
@@ -675,12 +706,27 @@ async def artist_photo_input(message: Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
+    if data.get("created_artist_id"):  # правка фото уже созданного
+        async with SessionLocal() as s:
+            a = (await s.execute(
+                select(Artist).where(Artist.id == data["created_artist_id"])
+            )).scalar_one_or_none()
+            if a:
+                a.photo_file_id = new_artist["photo"]
+                s.add(a)
+                await s.commit()
+        await _ask_rel_type(message, state)
+        return
     await _create_artist_and_continue(message, state)
 
 
 @router.callback_query(F.data == "rel:askip")
 async def artist_photo_skip(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
+    data = await state.get_data()
+    if data.get("created_artist_id"):
+        await _ask_rel_type(cb, state)
+        return
     await _create_artist_and_continue(cb, state)
 
 
@@ -688,9 +734,12 @@ async def _ask_rel_type(event, state: FSMContext):
     await state.set_state(None)
     bot = event.bot
     chat_id = event.message.chat.id if isinstance(event, CallbackQuery) else event.chat.id
+    data = await state.get_data()
+    # шаг назад: создавали исполнителя → к его фото; выбирали из списка → к списку
+    back_cb = "rel:back:artphoto" if data.get("created_artist_id") else "rel:add"
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:rtype:{code}")]
             for code, label in RELEASE_TYPES.items()]
-    rows.append(_nav_row("rel:add"))
+    rows.append(_nav_row(back_cb))
     await _replace_prompt(state, bot, chat_id, "Что выпускаем?",
                           InlineKeyboardMarkup(inline_keyboard=rows))
     if isinstance(event, CallbackQuery):
@@ -748,9 +797,13 @@ async def wiz_back(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     step = cb.data.split(":")[2]
     bot, chat_id = cb.bot, cb.message.chat.id
-    if step == "arttype":
+    if step == "artname":
+        await _ask_artname(bot, chat_id, state)
+    elif step == "arttype":
         await state.set_state(None)
         await _ask_arttype(bot, chat_id, state)
+    elif step == "artphoto":
+        await _ask_artphoto(bot, chat_id, state)
     elif step == "rtype":
         await _ask_rel_type(cb, state)
     elif step == "title":
