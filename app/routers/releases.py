@@ -760,7 +760,8 @@ async def _create_artist_and_continue(event, state: FSMContext):
         s.add(artist)
         await s.commit()
         await s.refresh(artist)
-    await state.update_data(artist_id=artist.id, created_artist_id=artist.id)
+    await state.update_data(artist_id=artist.id, created_artist_id=artist.id,
+                            no_username_hint=(base_contact is None))
     if (await state.get_data()).get("artist_flow") == "standalone":
         await _finish_standalone_artist(event, state, artist.id)
         return
@@ -769,6 +770,8 @@ async def _create_artist_and_continue(event, state: FSMContext):
 
 async def _finish_standalone_artist(event, state: FSMContext, artist_id: int):
     """Финал создания исполнителя из раздела «Исполнители» (без релиза)."""
+    data = await state.get_data()
+    no_username = data.get("no_username_hint")
     await state.clear()
     bot = event.bot
     chat_id = event.message.chat.id if isinstance(event, CallbackQuery) else event.chat.id
@@ -778,7 +781,13 @@ async def _finish_standalone_artist(event, state: FSMContext, artist_id: int):
         [InlineKeyboardButton(text="🎵 Добавить релиз", callback_data="rel:add")],
         [InlineKeyboardButton(text="⬅️ К исполнителям", callback_data="go_artists"), _menu_btn()],
     ])
-    await _send_screen(bot, chat_id, "🎉 Исполнитель создан!", kb)
+    text = "🎉 Исполнитель создан!"
+    if no_username:
+        # как в других разделах: без ника контакт вписывается вручную
+        text += ("\n\n⚠️ У вас не задан ник в Telegram, поэтому на карточке "
+                 "пока нет контакта. Откройте карточку → ✏️ Редактировать → "
+                 "Контакты и добавьте способ связи (телефон или @ник участника).")
+    await _send_screen(bot, chat_id, text, kb)
     if isinstance(event, CallbackQuery):
         try:
             await event.answer()
@@ -1182,7 +1191,11 @@ async def publish(cb: CallbackQuery, state: FSMContext):
     # показываем готовую карточку
     listing, meta, artist, tracks = await _load_release(listing_id)
     from app.routers.admin_panel import is_admin
-    caption = "🎉 Опубликовано!\n\n" + _release_caption(listing, meta, artist, tracks)
+    hint = ""
+    if data.get("no_username_hint"):
+        hint = ("\n\n⚠️ У вас нет ника в Telegram — добавьте контакт на карточку "
+                "исполнителя: Об исполнителе → ✏️ Редактировать → Контакты.")
+    caption = "🎉 Опубликовано!" + hint + "\n\n" + _release_caption(listing, meta, artist, tracks)
     kb = _release_kb(listing, meta, tracks, artist=artist,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
     await _send_screen(cb.bot, cb.message.chat.id, caption[:1024], kb, photo=listing.photo_file_id)

@@ -668,6 +668,45 @@ def _parse_video(flex_str: str) -> dict:
     return {"video_type": "telegram", "video_id": raw}
 
 
+def _video_from_url(raw: str) -> dict:
+    """URL → структура видео (та же логика, что в _parse_video)."""
+    if not raw:
+        return {}
+    yt_id = ""
+    for part in raw.split("v=")[1:]:
+        yt_id = part.split("&")[0].strip()
+        break
+    if not yt_id:
+        for part in raw.split("youtu.be/")[1:]:
+            yt_id = part.split("?")[0].strip()
+            break
+    if yt_id:
+        return {"video_type": "youtube", "video_id": yt_id, "video_url": raw}
+    return {}
+
+
+def _video_from_release(conn, listing_id: int) -> dict:
+    """Видео релиза живёт в release_meta (клип file_id или YouTube-ссылка),
+    а не во flex — админка иначе его не видит."""
+    try:
+        row = conn.execute(
+            "SELECT video_file_id, links FROM release_meta WHERE listing_id=?",
+            (listing_id,)).fetchone()
+        if not row:
+            return {}
+        if row[0]:
+            return {"video_type": "telegram", "video_id": row[0]}
+        for l in json.loads(row[1] or "[]"):
+            url = (l.get("url") or "")
+            if "youtube.com" in url or "youtu.be" in url:
+                v = _video_from_url(url)
+                if v:
+                    return v
+    except Exception as e:
+        print(f"[_video_from_release] {listing_id}: {e}")
+    return {}
+
+
 @app.get("/api/listing/{listing_id}")
 def get_listing(listing_id: int):
     with db() as conn:
@@ -761,6 +800,9 @@ def get_listing(listing_id: int):
                        "tracks": rrow[6] or 0}
     photo_ids = [p.strip() for p in (row[5] or "").split(",") if p.strip()]
     video = _parse_video(row[17] or "")
+    if not video.get("video_type") and (row[8] or "") == "release":
+        with db() as _c:
+            video = {**video, **_video_from_release(_c, listing_id)}
     try:
         flex_data = json.loads(row[17]) if row[17] else {}
     except Exception:
@@ -1308,6 +1350,8 @@ def catalog_drill_listings(cat_id: int = 0, stype: str = "", offset: int = 0, li
     for r in rows:
         photo_ids = [x.strip() for x in (r[4] or "").split(",") if x.strip()]
         video = _parse_video(r[5] or "")
+        if not video.get("video_type") and (r[8] or "") == "release":
+            video = {**video, **_video_from_release(conn, r[0])}
         result.append({"id": r[0], "title": r[1] or "", "price": r[2] or "",
                         "contact": r[3] or "", "photo_ids": photo_ids, **video,
                         "is_sold": bool(r[6]), "created_at": (r[7] or "")[:10],
@@ -1434,6 +1478,8 @@ def listings_catalog(offset: int = 0, limit: int = 24,
     for r in rows:
         photo_ids = [p.strip() for p in (r[4] or "").split(",") if p.strip()]
         video = _parse_video(r[5] or "")
+        if not video.get("video_type") and (r[8] or "") == "release":
+            video = {**video, **_video_from_release(conn, r[0])}
         result.append({
             "id": r[0], "title": r[1] or "", "price": r[2] or "",
             "contact": r[3] or "", "photo_ids": photo_ids, **video,
