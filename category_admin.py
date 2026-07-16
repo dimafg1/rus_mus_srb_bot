@@ -1245,6 +1245,50 @@ def artists_list():
     } for r in rows]}
 
 
+@app.get("/api/releases")
+def releases_list():
+    """Релизы: список для отдельной вкладки админки."""
+    with db() as conn:
+        try:
+            rows = conn.execute("""
+                SELECT l.id, l.title, rm.release_type, rm.status, rm.release_date,
+                       l.photo_file_id, l.created_at, l.owner_id, bu.username,
+                       a.id, a.name,
+                       (SELECT COUNT(*) FROM release_track rt WHERE rt.listing_id=l.id),
+                       (SELECT COUNT(*) FROM listing_views lv
+                        WHERE lv.listing_id=l.id AND lv.action='open')
+                FROM release_meta rm
+                JOIN listing l ON l.id=rm.listing_id
+                LEFT JOIN artist a ON a.id=rm.artist_id
+                LEFT JOIN BotUser bu ON bu.user_id=l.owner_id
+                WHERE rm.status != 'deleted'
+                ORDER BY rm.created_at DESC
+            """).fetchall()
+        except Exception as e:
+            return {"rows": [], "error": str(e)}
+    return {"rows": [{
+        "id": r[0], "title": r[1] or "", "rtype": r[2] or "", "status": r[3] or "",
+        "date": r[4] or "", "photo": (r[5] or "").split(",")[0].strip(),
+        "created_at": (r[6] or "")[:10], "owner_id": r[7], "username": r[8] or "",
+        "artist_id": r[9], "artist": r[10] or "—", "tracks": r[11] or 0,
+        "opens": r[12] or 0,
+    } for r in rows]}
+
+
+@app.post("/api/release/{listing_id}/toggle_status")
+def release_toggle_status(listing_id: int):
+    """Скрыть/показать релиз (release_meta.status, как «Скрыть» в боте)."""
+    with db() as conn:
+        row = conn.execute("SELECT status FROM release_meta WHERE listing_id=?",
+                           (listing_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Release not found")
+        new_status = "hidden" if (row[0] or "published") == "published" else "published"
+        conn.execute("UPDATE release_meta SET status=? WHERE listing_id=?",
+                     (new_status, listing_id))
+    return {"ok": True, "status": new_status}
+
+
 @app.get("/api/artist/{artist_id}")
 def artist_detail(artist_id: int):
     """Карточка исполнителя + его релизы (для модалки вкладки)."""
@@ -1853,6 +1897,7 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
   <button class="tab" onclick="switchTab('vacancy')" data-i18n="tab_vacancy">Вакансии</button>
   <button class="tab" onclick="switchTab('analytics')" data-i18n="tab_analytics">📊 Аналитика</button>
   <button class="tab" onclick="switchTab('catalog')" data-i18n="tab_catalog">📦 Объявления</button>
+  <button class="tab" onclick="switchTab('releases')">🎵 Релизы</button>
   <button class="tab" onclick="switchTab('artists')">🎤 Исполнители</button>
 </div>
 
@@ -1990,6 +2035,10 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 <div id="panel-catalog" class="panel">
   <div id="catalog-breadcrumb" class="catalog-breadcrumb"></div>
   <div id="catalog-content"></div>
+</div>
+
+<div id="panel-releases" class="panel">
+  <div id="releases-content"></div>
 </div>
 
 <div id="panel-artists" class="panel">
@@ -2534,7 +2583,7 @@ document.querySelectorAll('.overlay').forEach(o=>{
 });
 
 // ── tabs ──
-const ALL_TABS = ['market','services','vacancy','analytics','catalog','artists'];
+const ALL_TABS = ['market','services','vacancy','analytics','catalog','releases','artists'];
 function switchTab(section) {
   currentTab=section;
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ALL_TABS[i]===section));
@@ -2543,7 +2592,67 @@ function switchTab(section) {
   if (section==='analytics') loadAnalytics();
   else if (section==='catalog') catalogLoad(0);
   else if (section==='artists') loadArtists();
+  else if (section==='releases') loadReleases();
   else loadTree(section);
+}
+
+// ── Релизы (отдельная вкладка: это не объявления) ──
+const RTYPE_LABELS = {single:'Сингл', ep:'EP', album:'Альбом', clip:'Клип', live:'Live'};
+
+async function loadReleases() {
+  const el = document.getElementById('releases-content');
+  el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  const data = await fetch('/api/releases').then(r=>r.json());
+  const rows = data.rows || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Релизов пока нет</div>';
+    return;
+  }
+  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${rows.length} релизов</div>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:#556;font-size:11px;text-align:left">
+      <th style="padding:6px 8px"></th>
+      <th style="padding:6px 8px">Релиз</th>
+      <th style="padding:6px 8px">Исполнитель</th>
+      <th style="padding:6px 8px">Тип</th>
+      <th style="padding:6px 8px">Треков</th>
+      <th style="padding:6px 8px">Открытий</th>
+      <th style="padding:6px 8px">Автор</th>
+      <th style="padding:6px 8px">Создан</th>
+      <th style="padding:6px 8px">Статус</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr style="border-top:1px solid #0d1628">
+        <td style="padding:4px 8px">${r.photo
+          ? `<img src="/api/tg_photo/${encodeURIComponent(r.photo)}" style="width:36px;height:36px;border-radius:5px;object-fit:cover" onerror="this.remove()">`
+          : '🎵'}</td>
+        <td style="padding:7px 8px;font-weight:600">
+          <span class="st-dot ${r.status==='published'?'st-dot-on':'st-dot-off'}"></span>
+          <a style="color:#7eb8f7;cursor:pointer" onclick="openListing(${r.id})">${esc(r.title)}</a></td>
+        <td style="padding:7px 8px">${r.artist_id
+          ? `<a style="color:#9bc;cursor:pointer" onclick="openArtistCard(${r.artist_id})">🎤 ${esc(r.artist)}</a>`
+          : esc(r.artist)}</td>
+        <td style="padding:7px 8px;color:#99a">${esc(RTYPE_LABELS[r.rtype]||r.rtype)}</td>
+        <td style="padding:7px 8px;text-align:center">${r.tracks||'—'}</td>
+        <td style="padding:7px 8px;text-align:center;color:#9bc">${r.opens}</td>
+        <td style="padding:7px 8px;color:#99a">${r.username?'@'+esc(r.username):r.owner_id}</td>
+        <td style="padding:7px 8px;color:#778">${esc(r.created_at)}</td>
+        <td style="padding:7px 8px">${r.status==='published'?'<span style="color:#6ef5aa">опубликован</span>':'<span style="color:#888">скрыт</span>'}</td>
+        <td style="padding:7px 8px">
+          <button class="btn btn-sm" style="background:${r.status==='published'?'#4a2a1a':'#1a4a2a'};color:${r.status==='published'?'#fa8':'#7f7'}"
+            onclick="releaseToggle(${r.id})">${r.status==='published'?'🚫 Скрыть':'✅ Показать'}</button>
+        </td>
+      </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+async function releaseToggle(id) {
+  try {
+    const r = await fetch(`/api/release/${id}/toggle_status`, {method:'POST'}).then(x=>x.json());
+    if (r && r.ok) loadReleases();
+    else alert('Не удалось: ' + ((r&&r.detail)||'?'));
+  } catch(e) { alert('Ошибка: ' + e.message); }
 }
 
 // ── Исполнители ──
