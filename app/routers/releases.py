@@ -234,7 +234,8 @@ def _release_caption(listing, meta, artist, tracks) -> str:
 
 
 def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
-                artist=None) -> InlineKeyboardMarkup:
+                artist=None, back_cb: str = "go_releases",
+                back_label: str = "⬅️ К релизам") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if tracks:
         rows.append([InlineKeyboardButton(
@@ -255,6 +256,8 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
     if row:
         rows.append(row)
     ctl: list[InlineKeyboardButton] = []
+    if viewer_id == listing.owner_id or is_admin_user:
+        ctl.append(InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"rel:edit:{listing.id}"))
     if viewer_id == listing.owner_id:
         ctl.append(InlineKeyboardButton(text="🗑 Удалить", callback_data=f"rel:del:{listing.id}"))
     if is_admin_user and meta and meta.status == "published":
@@ -262,8 +265,19 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
     if ctl:
         rows.append(ctl)
     rows.append([InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"rel:report:{listing.id}")])
-    rows.append([InlineKeyboardButton(text="⬅️ К релизам", callback_data="go_releases"), _menu_btn()])
+    rows.append([InlineKeyboardButton(text=back_label, callback_data=back_cb), _menu_btn()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _release_back(src: str, artist=None) -> tuple[str, str]:
+    """«Назад» с карточки — ровно на шаг, туда, откуда пришли."""
+    if src == "s":
+        return "rel:sback", "⬅️ К результатам"
+    if src == "my":
+        return "rel:my", "⬅️ К моим релизам"
+    if src.startswith("a") and src[1:].isdigit():
+        return f"art:view:{src[1:]}:list", "⬅️ К исполнителю"
+    return "go_releases", "⬅️ К релизам"
 
 
 # ─────────────────────────── лента ───────────────────────────
@@ -305,14 +319,17 @@ async def releases_feed(cb: CallbackQuery, state: FSMContext):
                 text=f"🎵 {a_name} — {listing.title} ({t_label})",
                 callback_data=f"rel:view:{listing.id}")])
 
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"rel:list:{max(0, offset - PAGE)}"))
-    if offset + PAGE < total:
-        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"rel:list:{offset + PAGE}"))
-    if nav:
+    pages = max(1, (total + PAGE - 1) // PAGE)
+    if pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if offset > 0:
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"rel:list:{max(0, offset - PAGE)}"))
+        nav.append(InlineKeyboardButton(text=f"{offset // PAGE + 1}/{pages}", callback_data="rel:noop"))
+        if offset + PAGE < total:
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"rel:list:{offset + PAGE}"))
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="➕ Добавить релиз", callback_data="rel:add")])
+    rows.append([InlineKeyboardButton(text="🔍 Поиск", callback_data="rel:search"),
+                 InlineKeyboardButton(text="➕ Добавить релиз", callback_data="rel:add")])
     rows.append([InlineKeyboardButton(text="💿 Мои релизы", callback_data="rel:my"), _menu_btn()])
 
     text = "🎵 <b>Релизы сообщества</b>\n\nНовая музыка наших исполнителей: синглы, альбомы, клипы."
@@ -326,7 +343,9 @@ async def releases_feed(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("rel:view:"))
 async def release_view(cb: CallbackQuery):
-    listing_id = int(cb.data.split(":")[2])
+    parts = cb.data.split(":")
+    listing_id = int(parts[2])
+    src = parts[3] if len(parts) > 3 else ""
     listing, meta, artist, tracks = await _load_release(listing_id)
     if not listing or not meta or meta.status != "published":
         # владельцу и админу показываем и скрытые
@@ -339,8 +358,10 @@ async def release_view(cb: CallbackQuery):
     caption = _release_caption(listing, meta, artist, tracks)
     if meta.status != "published":
         caption = "🚫 <i>Релиз скрыт</i>\n\n" + caption
+    back_cb, back_label = _release_back(src, artist)
     kb = _release_kb(listing, meta, tracks, artist=artist,
-                     viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
+                     viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id),
+                     back_cb=back_cb, back_label=back_label)
     await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
     links = json.loads(meta.links) if meta and meta.links else []
     yt = _youtube_url(links)
@@ -557,7 +578,7 @@ async def my_releases(cb: CallbackQuery, state: FSMContext):
                 continue
             mark = "" if meta.status == "published" else " (скрыт)"
             rows.append([InlineKeyboardButton(
-                text=f"🎵 {l.title}{mark}", callback_data=f"rel:view:{l.id}")])
+                text=f"🎵 {l.title}{mark}", callback_data=f"rel:view:{l.id}:my")])
     rows.append([InlineKeyboardButton(text="➕ Добавить релиз", callback_data="rel:add")])
     rows.append([InlineKeyboardButton(text="⬅️ К релизам", callback_data="go_releases"), _menu_btn()])
     text = "💿 <b>Мои релизы</b>" + ("" if len(rows) > 2 else "\n\nУ вас пока нет релизов.")
@@ -1164,3 +1185,444 @@ async def publish(cb: CallbackQuery, state: FSMContext):
     yt = _youtube_url(links_pub)
     if yt:
         await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
+
+
+# ─────────────────────── поиск (fuzzy, как в вакансиях) ───────────────────────
+from app.search.fuzzy import search_items          # noqa: E402
+from app.analytics.search_log import log_search    # noqa: E402
+
+SEARCH_PAGE = 10
+
+
+class RelSearch(StatesGroup):
+    waiting_query = State()
+
+
+@router.callback_query(F.data == "rel:noop")
+async def rel_noop(cb: CallbackQuery):
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rel:search")
+async def rel_search_start(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.clear()
+    await state.set_state(RelSearch.waiting_query)
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    await _replace_prompt(state, cb.bot, cb.message.chat.id,
+                          "🔍 Введите запрос: название релиза или исполнителя (от 2 символов).",
+                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_releases")]))
+
+
+async def _render_rel_search(bot, chat_id: int, state: FSMContext, offset: int = 0):
+    data = await state.get_data()
+    results = data.get("rel_s_results") or []   # [(listing_id, label), ...]
+    q = data.get("rel_s_query") or ""
+    note = data.get("rel_s_note") or ""
+    total = len(results)
+    pages = max(1, (total + SEARCH_PAGE - 1) // SEARCH_PAGE)
+    page = results[offset:offset + SEARCH_PAGE]
+
+    await state.update_data(rel_s_offset=offset)
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:view:{lid}:s")]
+            for lid, label in page]
+    if pages > 1:
+        nav = []
+        if offset > 0:
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"rel:spage:{max(0, offset - SEARCH_PAGE)}"))
+        nav.append(InlineKeyboardButton(text=f"{offset // SEARCH_PAGE + 1}/{pages}", callback_data="rel:noop"))
+        if offset + SEARCH_PAGE < total:
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"rel:spage:{offset + SEARCH_PAGE}"))
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="rel:search")])
+    rows.append(_nav_row("go_releases"))
+    await _send_screen(bot, chat_id,
+                       f"{note}Результаты по запросу: <b>{q}</b>\nНайдено: {total}",
+                       InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.message(RelSearch.waiting_query, F.text)
+async def rel_search_do(message: Message, state: FSMContext):
+    q = (message.text or "").strip()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if len(q) < 2:
+        await _replace_prompt(state, message.bot, message.chat.id,
+                              "Минимум 2 символа. Введите запрос ещё раз:",
+                              InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_releases")]))
+        return
+
+    # собираем опубликованные релизы с именами исполнителей
+    items: list[tuple[int, str, list[str]]] = []
+    async with SessionLocal() as s:
+        metas = (await s.execute(
+            select(ReleaseMeta).where(ReleaseMeta.status == "published")
+            .order_by(ReleaseMeta.created_at.desc()).limit(1000)
+        )).scalars().all()
+        for m in metas:
+            listing = (await s.execute(
+                select(Listing).where(Listing.id == m.listing_id)
+            )).scalar_one_or_none()
+            artist = (await s.execute(
+                select(Artist).where(Artist.id == m.artist_id)
+            )).scalar_one_or_none()
+            if not listing:
+                continue
+            a_name = artist.name if artist else ""
+            items.append((
+                listing.id,
+                f"🎵 {a_name} — {listing.title}",
+                [listing.title or "", a_name, m.genre or "", listing.descr or ""],
+            ))
+
+    outcome = search_items(items, q, lambda it: it[2])
+    await log_search(user_id=message.from_user.id, section="releases",
+                     query_raw=outcome.query_raw,
+                     query_normalized=outcome.query_normalized,
+                     query_effective=outcome.query_effective,
+                     match_mode=outcome.match_mode,
+                     results_count=len(outcome.results))
+    note = ""
+    if outcome.match_mode == "corrected" and outcome.query_effective != outcome.query_normalized:
+        note = (f"🧠 Показаны результаты по запросу: <b>{outcome.query_effective}</b> "
+                f"(учтена возможная опечатка).\n\n")
+    await state.update_data(
+        rel_s_results=[(it[0], it[1]) for it in outcome.results],
+        rel_s_query=q, rel_s_note=note,
+    )
+    await _render_rel_search(message.bot, message.chat.id, state, 0)
+
+
+@router.callback_query(F.data.startswith("rel:spage:"))
+async def rel_search_page(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    offset = max(0, int(cb.data.split(":")[2]))
+    await _render_rel_search(cb.bot, cb.message.chat.id, state, offset)
+
+
+@router.callback_query(F.data == "rel:sback")
+async def rel_search_back(cb: CallbackQuery, state: FSMContext):
+    """С карточки — назад к результатам поиска (та же страница)."""
+    data = await state.get_data()
+    if not data.get("rel_s_results"):
+        # результатов в состоянии нет (например, после рестарта) — в ленту
+        await releases_feed(cb, state)  # ответит на callback сам
+        return
+    await cb.answer()
+    await _render_rel_search(cb.bot, cb.message.chat.id, state,
+                             data.get("rel_s_offset") or 0)
+
+
+# ─────────────────── редактирование релиза (по образцу услуг) ───────────────────
+
+REL_EDIT_FIELDS = {
+    "title": ("Название", "Новое название релиза?"),
+    "rtype": ("Тип", None),  # кнопками
+    "cover": ("Обложка", "Пришлите новую обложку (картинку)."),
+    "descr": ("Описание", "Пара слов о релизе:"),
+    "links": ("Ссылки", "Ссылки на площадки одним сообщением —\n"
+                        "каждая с новой строки или через пробел:"),
+    "video": ("Клип", "Пришлите новый видеоклип файлом."),
+}
+REL_CLEARABLE = {"descr", "links", "video"}
+
+
+class RelEdit(StatesGroup):
+    value = State()
+
+
+async def _can_edit_release(user_id: int, listing) -> bool:
+    from app.routers.admin_panel import is_admin
+    return listing is not None and (listing.owner_id == user_id or is_admin(user_id))
+
+
+async def _render_rel_edit(bot, chat_id: int, user_id: int, listing_id: int):
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not listing or not await _can_edit_release(user_id, listing):
+        return
+    def short(v, n=40):
+        return (str(v)[:n] + "…") if v and len(str(v)) > n else (v or "—")
+    try:
+        n_links = len(json.loads(meta.links)) if meta and meta.links else 0
+    except Exception:
+        n_links = 0
+    lines = [
+        f"✏️ <b>Релиз: {listing.title}</b>",
+        f"Исполнитель: {artist.name if artist else '—'} (меняется только пересозданием)",
+        "",
+        f"Название: {listing.title}",
+        f"Тип: {RELEASE_TYPES.get(meta.release_type, '—') if meta else '—'}",
+        f"Обложка: {'есть' if listing.photo_file_id else '—'}",
+        f"Описание: {short(listing.descr)}",
+        f"Ссылки: {n_links or '—'}",
+        f"Клип: {'есть' if meta and meta.video_file_id else '—'}",
+        f"Треки: {len(tracks) or '—'}",
+    ]
+    rows = [[InlineKeyboardButton(text=f"✏️ Править: {label}",
+                                  callback_data=f"rel:ref:{code}:{listing_id}")]
+            for code, (label, _) in REL_EDIT_FIELDS.items()]
+    rows.append([InlineKeyboardButton(text=f"🎼 Треки ({len(tracks)})",
+                                      callback_data=f"rel:rtracks:{listing_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад",
+                                      callback_data=f"rel:view:{listing_id}"), _menu_btn()])
+    await _send_screen(bot, chat_id, "\n".join(lines),
+                       InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("rel:edit:"))
+async def rel_edit(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.clear()
+    await _render_rel_edit(cb.bot, cb.message.chat.id, cb.from_user.id,
+                           int(cb.data.split(":")[2]))
+
+
+@router.callback_query(F.data.startswith("rel:ref:"))
+async def rel_edit_field(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    _, _, field, lid = cb.data.split(":")
+    listing_id = int(lid)
+    if field not in REL_EDIT_FIELDS:
+        return
+    if field == "rtype":
+        rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:retype:{listing_id}:{code}")]
+                for code, label in RELEASE_TYPES.items()]
+        rows.append([InlineKeyboardButton(text="⬅️ Назад",
+                                          callback_data=f"rel:edit:{listing_id}"), _menu_btn()])
+        await _replace_prompt(state, cb.bot, cb.message.chat.id, "Выберите тип:",
+                              InlineKeyboardMarkup(inline_keyboard=rows))
+        return
+    await state.set_state(RelEdit.value)
+    await state.update_data(redit_field=field, redit_listing_id=listing_id)
+    label, hint = REL_EDIT_FIELDS[field]
+    rows = []
+    if field in REL_CLEARABLE:
+        rows.append([InlineKeyboardButton(text="🗑 Очистить поле",
+                                          callback_data=f"rel:reclr:{listing_id}:{field}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад",
+                                      callback_data=f"rel:edit:{listing_id}"), _menu_btn()])
+    await _replace_prompt(state, cb.bot, cb.message.chat.id, hint,
+                          InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def _save_release_field(user_id: int, listing_id: int, field: str, value) -> bool:
+    async with SessionLocal() as s:
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id)
+        )).scalar_one_or_none()
+        if not listing or not await _can_edit_release(user_id, listing):
+            return False
+        meta = (await s.execute(
+            select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
+        )).scalar_one_or_none()
+        if field == "title":
+            listing.title = value
+            s.add(listing)
+        elif field == "descr":
+            listing.descr = value
+            s.add(listing)
+        elif field == "cover":
+            listing.photo_file_id = value
+            s.add(listing)
+        elif field == "rtype" and meta:
+            meta.release_type = value
+            s.add(meta)
+        elif field == "links" and meta:
+            meta.links = value
+            s.add(meta)
+        elif field == "video" and meta:
+            meta.video_file_id = (value or {}).get("file_id") if value else None
+            meta.video_file_unique_id = (value or {}).get("file_unique_id") if value else None
+            s.add(meta)
+        await s.commit()
+    return True
+
+
+@router.callback_query(F.data.startswith("rel:retype:"))
+async def rel_edit_type(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    _, _, lid, code = cb.data.split(":")
+    if code in RELEASE_TYPES:
+        await _save_release_field(cb.from_user.id, int(lid), "rtype", code)
+    await _render_rel_edit(cb.bot, cb.message.chat.id, cb.from_user.id, int(lid))
+
+
+@router.callback_query(F.data.startswith("rel:reclr:"))
+async def rel_edit_clear(cb: CallbackQuery, state: FSMContext):
+    await cb.answer("Очищено.")
+    _, _, lid, field = cb.data.split(":")
+    if field in REL_CLEARABLE:
+        await _save_release_field(cb.from_user.id, int(lid), field, None)
+    await state.clear()
+    await _render_rel_edit(cb.bot, cb.message.chat.id, cb.from_user.id, int(lid))
+
+
+@router.message(RelEdit.value, F.text)
+async def rel_edit_text(message: Message, state: FSMContext):
+    data = await state.get_data()
+    field, listing_id = data.get("redit_field"), data.get("redit_listing_id")
+    text_val = (message.text or "").strip()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if not field or not listing_id:
+        # это может быть добавление трека — обрабатывается ниже по field
+        return
+    if field in ("cover", "video", "track"):
+        return  # ждём файл, не текст
+    if field == "title":
+        value = text_val[:200]
+        if not value:
+            return
+    elif field == "links":
+        raw = text_val.replace(",", " ").split()
+        links = [{"label": _link_label(u), "url": u} for u in raw if u.startswith("http")]
+        value = json.dumps(links, ensure_ascii=False) if links else None
+    else:
+        value = text_val[:600] or None
+    await _save_release_field(message.from_user.id, listing_id, field, value)
+    await state.clear()
+    await _render_rel_edit(message.bot, message.chat.id, message.from_user.id, listing_id)
+
+
+@router.message(RelEdit.value, F.photo)
+async def rel_edit_photo(message: Message, state: FSMContext):
+    data = await state.get_data()
+    field, listing_id = data.get("redit_field"), data.get("redit_listing_id")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if field != "cover" or not listing_id:
+        return
+    await _save_release_field(message.from_user.id, listing_id, "cover",
+                              message.photo[-1].file_id)
+    await state.clear()
+    await _render_rel_edit(message.bot, message.chat.id, message.from_user.id, listing_id)
+
+
+@router.message(RelEdit.value, F.video)
+async def rel_edit_video(message: Message, state: FSMContext):
+    data = await state.get_data()
+    field, listing_id = data.get("redit_field"), data.get("redit_listing_id")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if field != "video" or not listing_id:
+        return
+    await _save_release_field(message.from_user.id, listing_id, "video",
+                              {"file_id": message.video.file_id,
+                               "file_unique_id": message.video.file_unique_id})
+    await state.clear()
+    await _render_rel_edit(message.bot, message.chat.id, message.from_user.id, listing_id)
+
+
+# ─── треки: список с удалением, добавление новых ───
+
+async def _render_rel_tracks(bot, chat_id: int, user_id: int, listing_id: int):
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not listing or not await _can_edit_release(user_id, listing):
+        return
+    rows = []
+    for t in tracks:
+        rows.append([
+            InlineKeyboardButton(text=f"{t.position}. {t.title or 'Трек ' + str(t.position)}",
+                                 callback_data="rel:noop"),
+            InlineKeyboardButton(text="🗑", callback_data=f"rel:tdel:{t.id}"),
+        ])
+    rows.append([InlineKeyboardButton(text="➕ Добавить трек",
+                                      callback_data=f"rel:tadd:{listing_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад",
+                                      callback_data=f"rel:edit:{listing_id}"), _menu_btn()])
+    await _send_screen(bot, chat_id,
+                       f"🎼 <b>Треки релиза «{listing.title}»</b>\n\n"
+                       "🗑 удаляет трек; порядок пересчитывается автоматически.",
+                       InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("rel:rtracks:"))
+async def rel_tracks(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.clear()
+    await _render_rel_tracks(cb.bot, cb.message.chat.id, cb.from_user.id,
+                             int(cb.data.split(":")[2]))
+
+
+@router.callback_query(F.data.startswith("rel:tdel:"))
+async def rel_track_delete(cb: CallbackQuery, state: FSMContext):
+    track_id = int(cb.data.split(":")[2])
+    async with SessionLocal() as s:
+        t = (await s.execute(
+            select(ReleaseTrack).where(ReleaseTrack.id == track_id)
+        )).scalar_one_or_none()
+        if not t:
+            await cb.answer("Трек не найден.", show_alert=True)
+            return
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == t.listing_id)
+        )).scalar_one_or_none()
+        if not await _can_edit_release(cb.from_user.id, listing):
+            await cb.answer("Нет прав.", show_alert=True)
+            return
+        listing_id = t.listing_id
+        await s.delete(t)
+        # пересчёт позиций
+        rest = (await s.execute(
+            select(ReleaseTrack).where(ReleaseTrack.listing_id == listing_id)
+            .order_by(ReleaseTrack.position)
+        )).scalars().all()
+        for i, tr in enumerate(rest, start=1):
+            tr.position = i
+            s.add(tr)
+        await s.commit()
+    await cb.answer("Трек удалён.")
+    await _render_rel_tracks(cb.bot, cb.message.chat.id, cb.from_user.id, listing_id)
+
+
+@router.callback_query(F.data.startswith("rel:tadd:"))
+async def rel_track_add(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    listing_id = int(cb.data.split(":")[2])
+    await state.set_state(RelEdit.value)
+    await state.update_data(redit_field="track", redit_listing_id=listing_id)
+    await _replace_prompt(state, cb.bot, cb.message.chat.id,
+                          "Пришлите аудио-трек (как музыку).",
+                          InlineKeyboardMarkup(inline_keyboard=[[
+                              InlineKeyboardButton(text="⬅️ Назад",
+                                                   callback_data=f"rel:rtracks:{listing_id}"),
+                              _menu_btn()]]))
+
+
+@router.message(RelEdit.value, F.audio)
+async def rel_track_add_audio(message: Message, state: FSMContext):
+    data = await state.get_data()
+    field, listing_id = data.get("redit_field"), data.get("redit_listing_id")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if field != "track" or not listing_id:
+        return
+    async with SessionLocal() as s:
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id)
+        )).scalar_one_or_none()
+        if not await _can_edit_release(message.from_user.id, listing):
+            return
+        tracks = (await s.execute(
+            select(ReleaseTrack).where(ReleaseTrack.listing_id == listing_id)
+        )).scalars().all()
+        a = message.audio
+        s.add(ReleaseTrack(
+            listing_id=listing_id, position=len(tracks) + 1,
+            title=(a.title or a.file_name or f"Трек {len(tracks) + 1}")[:255],
+            file_id=a.file_id, file_unique_id=a.file_unique_id,
+            duration=a.duration, file_name=a.file_name, mime_type=a.mime_type,
+        ))
+        await s.commit()
+    await state.clear()
+    await _render_rel_tracks(message.bot, message.chat.id, message.from_user.id, listing_id)

@@ -83,14 +83,17 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
     rows = [[InlineKeyboardButton(
         text=f"🎤 {a.name} · {a.artist_type}",
         callback_data=f"art:view:{a.id}:list")] for a in page]
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"art:list:{max(0, offset - PAGE)}"))
-    if offset + PAGE < total:
-        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"art:list:{offset + PAGE}"))
-    if nav:
+    pages = max(1, (total + PAGE - 1) // PAGE)
+    if pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if offset > 0:
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"art:list:{max(0, offset - PAGE)}"))
+        nav.append(InlineKeyboardButton(text=f"{offset // PAGE + 1}/{pages}", callback_data="rel:noop"))
+        if offset + PAGE < total:
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"art:list:{offset + PAGE}"))
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="➕ Добавить исполнителя", callback_data="art:add")])
+    rows.append([InlineKeyboardButton(text="🔍 Поиск", callback_data="art:search"),
+                 InlineKeyboardButton(text="➕ Добавить исполнителя", callback_data="art:add")])
     rows.append([InlineKeyboardButton(text="🎵 Релизы", callback_data="go_releases"), _menu_btn()])
 
     text = ("🎤 <b>Исполнители сообщества</b>\n\n"
@@ -170,7 +173,7 @@ async def artist_view(cb: CallbackQuery):
 
     rows = [[InlineKeyboardButton(
         text=f"🎵 {l.title} ({RELEASE_TYPES.get(m.release_type, '')})",
-        callback_data=f"rel:view:{l.id}")] for l, m in releases]
+        callback_data=f"rel:view:{l.id}:a{artist.id}")] for l, m in releases]
     # ссылки соцсетей/площадок — кнопками парами
     link_row: list[InlineKeyboardButton] = []
     try:
@@ -188,8 +191,14 @@ async def artist_view(cb: CallbackQuery):
                                           callback_data=f"art:edit:{artist.id}")])
     if is_admin(cb.from_user.id) and artist.status == "active":
         rows.append([InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"art:hide:{artist.id}")])
-    # «Назад» — ровно на один шаг: к списку или к релизу, откуда пришли
-    back_cb = "go_artists" if src == "list" else f"rel:view:{src[3:]}"
+    # «Назад» — ровно на один шаг: к списку, к результатам поиска
+    # или к релизу — туда, откуда пришли
+    if src == "list":
+        back_cb = "go_artists"
+    elif src == "search":
+        back_cb = "art:sback"
+    else:
+        back_cb = f"rel:view:{src[3:]}"
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb), _menu_btn()])
 
     await _send_screen(cb.bot, cb.message.chat.id, caption,
@@ -378,3 +387,113 @@ async def artist_hide(cb: CallbackQuery):
         s.add(artist)
         await s.commit()
     await cb.answer("Карточка скрыта.", show_alert=True)
+
+
+# ─────────────────────── поиск исполнителей (fuzzy) ───────────────────────
+from app.search.fuzzy import search_items          # noqa: E402
+from app.analytics.search_log import log_search    # noqa: E402
+from app.routers.releases import _nav_row          # noqa: E402
+
+SEARCH_PAGE = 10
+
+
+class ArtSearch(StatesGroup):
+    waiting_query = State()
+
+
+@router.callback_query(F.data == "art:search")
+async def art_search_start(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await state.clear()
+    await state.set_state(ArtSearch.waiting_query)
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    await _replace_prompt(state, cb.bot, cb.message.chat.id,
+                          "🔍 Введите запрос: название исполнителя, жанр или город "
+                          "(от 2 символов).",
+                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_artists")]))
+
+
+async def _render_art_search(bot, chat_id: int, state: FSMContext, offset: int = 0):
+    data = await state.get_data()
+    results = data.get("art_s_results") or []   # [(artist_id, label), ...]
+    q = data.get("art_s_query") or ""
+    note = data.get("art_s_note") or ""
+    total = len(results)
+    pages = max(1, (total + SEARCH_PAGE - 1) // SEARCH_PAGE)
+    page = results[offset:offset + SEARCH_PAGE]
+
+    await state.update_data(art_s_offset=offset)
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"art:view:{aid}:search")]
+            for aid, label in page]
+    if pages > 1:
+        nav = []
+        if offset > 0:
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"art:spage:{max(0, offset - SEARCH_PAGE)}"))
+        nav.append(InlineKeyboardButton(text=f"{offset // SEARCH_PAGE + 1}/{pages}", callback_data="rel:noop"))
+        if offset + SEARCH_PAGE < total:
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"art:spage:{offset + SEARCH_PAGE}"))
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="art:search")])
+    rows.append(_nav_row("go_artists"))
+    await _send_screen(bot, chat_id,
+                       f"{note}Результаты по запросу: <b>{q}</b>\nНайдено: {total}",
+                       InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.message(ArtSearch.waiting_query, F.text)
+async def art_search_do(message: Message, state: FSMContext):
+    q = (message.text or "").strip()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if len(q) < 2:
+        await _replace_prompt(state, message.bot, message.chat.id,
+                              "Минимум 2 символа. Введите запрос ещё раз:",
+                              InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_artists")]))
+        return
+
+    async with SessionLocal() as s:
+        artists = (await s.execute(
+            select(Artist).where(Artist.status == "active")
+            .order_by(Artist.created_at.desc()).limit(1000)
+        )).scalars().all()
+    items = [(a.id, f"🎤 {a.name} · {a.artist_type}",
+              [a.name or "", a.genres or "", a.city_text or "", a.descr or ""])
+             for a in artists]
+
+    outcome = search_items(items, q, lambda it: it[2])
+    await log_search(user_id=message.from_user.id, section="artists",
+                     query_raw=outcome.query_raw,
+                     query_normalized=outcome.query_normalized,
+                     query_effective=outcome.query_effective,
+                     match_mode=outcome.match_mode,
+                     results_count=len(outcome.results))
+    note = ""
+    if outcome.match_mode == "corrected" and outcome.query_effective != outcome.query_normalized:
+        note = (f"🧠 Показаны результаты по запросу: <b>{outcome.query_effective}</b> "
+                f"(учтена возможная опечатка).\n\n")
+    await state.update_data(
+        art_s_results=[(it[0], it[1]) for it in outcome.results],
+        art_s_query=q, art_s_note=note,
+    )
+    await _render_art_search(message.bot, message.chat.id, state, 0)
+
+
+@router.callback_query(F.data.startswith("art:spage:"))
+async def art_search_page(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    offset = max(0, int(cb.data.split(":")[2]))
+    await _render_art_search(cb.bot, cb.message.chat.id, state, offset)
+
+
+@router.callback_query(F.data == "art:sback")
+async def art_search_back(cb: CallbackQuery, state: FSMContext):
+    """С карточки исполнителя — назад к результатам поиска."""
+    data = await state.get_data()
+    if not data.get("art_s_results"):
+        await artists_feed(cb, state)  # ответит на callback сам
+        return
+    await cb.answer()
+    await _render_art_search(cb.bot, cb.message.chat.id, state,
+                             data.get("art_s_offset") or 0)
