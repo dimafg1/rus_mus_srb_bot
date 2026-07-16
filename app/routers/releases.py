@@ -198,9 +198,14 @@ def _release_caption(listing, meta, artist, tracks) -> str:
         lines.append("<b>Трек-лист:</b>")
         for t in tracks:
             lines.append(f"{t.position}. {t.title or 'Трек ' + str(t.position)}")
-    # YouTube в тексте не дублируем: ссылка живёт кнопкой под карточкой
-    # (клик по кнопке открывает плеер сразу, без окна подтверждения,
-    # которое Telegram показывает для ссылок с подменённым текстом)
+    # YouTube — ГОЛЫМ адресом в тексте, как в барахолке/услугах: только так
+    # клик открывает видео сразу. Окно «Перейти по ссылке?» Telegram
+    # показывает для ссылок с подменённым текстом и для URL-кнопок.
+    links = json.loads(meta.links) if meta and meta.links else []
+    yt = _youtube_url(links)
+    if yt:
+        lines.append("")
+        lines.append(f"▶️ {yt}")
     caption = "\n".join(lines)
     return caption[:1020] + "…" if len(caption) > 1024 else caption
 
@@ -213,6 +218,8 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool) -
     links = json.loads(meta.links) if meta and meta.links else []
     row: list[InlineKeyboardButton] = []
     for l in links:
+        if l.get("label") == "YouTube":
+            continue  # YouTube живёт голой ссылкой в тексте — открывается без подтверждений
         row.append(InlineKeyboardButton(text=f"🎧 {l['label']}", url=l["url"]))
         if len(row) == 2:
             rows.append(row)
