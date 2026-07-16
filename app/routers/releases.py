@@ -18,11 +18,14 @@ published/hidden/deleted, без 30-дневных сроков) + release_track
   (clear_bot_messages) и регистрирует новые (register_bot_messages).
 """
 import json
+import urllib.parse
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo,
+)
 from sqlmodel import select
 
 from app.database import SessionLocal
@@ -133,6 +136,32 @@ def _youtube_url(links: list[dict]) -> str | None:
     return None
 
 
+async def _send_release_yt_button(bot, chat_id: int, video_url: str, listing_id: int):
+    """TWA-кнопка «▶️ Смотреть видео» отдельным сообщением под карточкой —
+    образец: app/routers/services_view.py::_send_yt_button. Открывает
+    страницу-плеер внутри Telegram, без окна подтверждения."""
+    try:
+        from app.routers.services_view import WEBAPP_BASE
+        if not video_url or not WEBAPP_BASE:
+            return
+        low = video_url.lower()
+        if ("youtube.com" not in low) and ("youtu.be" not in low):
+            return
+        twa_url = (f"{WEBAPP_BASE}/media/video_yt.html"
+                   f"?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing_id}")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="▶️ Смотреть видео", web_app=WebAppInfo(url=twa_url))]
+        ])
+        try:
+            m = await bot.send_message(chat_id, " ", reply_markup=kb)
+        except Exception:
+            m = await bot.send_message(chat_id, "•", reply_markup=kb)
+        last_bot_messages.setdefault(chat_id, []).append(m.message_id)
+        await register_bot_messages(chat_id, [m.message_id])
+    except Exception as e:
+        print(f"[releases] _send_release_yt_button: {e}")
+
+
 async def _admin_ids() -> list[int]:
     try:
         from app.routers.admin_panel import ADMIN_IDS
@@ -198,14 +227,8 @@ def _release_caption(listing, meta, artist, tracks) -> str:
         lines.append("<b>Трек-лист:</b>")
         for t in tracks:
             lines.append(f"{t.position}. {t.title or 'Трек ' + str(t.position)}")
-    # YouTube — ГОЛЫМ адресом в тексте, как в барахолке/услугах: только так
-    # клик открывает видео сразу. Окно «Перейти по ссылке?» Telegram
-    # показывает для ссылок с подменённым текстом и для URL-кнопок.
-    links = json.loads(meta.links) if meta and meta.links else []
-    yt = _youtube_url(links)
-    if yt:
-        lines.append("")
-        lines.append(f"▶️ {yt}")
+    # YouTube в тексте не показываем: как в Услугах, под карточкой идёт
+    # отдельная TWA-кнопка «▶️ Смотреть видео» (см. _send_release_yt_button)
     caption = "\n".join(lines)
     return caption[:1020] + "…" if len(caption) > 1024 else caption
 
@@ -314,6 +337,10 @@ async def release_view(cb: CallbackQuery):
     kb = _release_kb(listing, meta, tracks,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
     await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
+    links = json.loads(meta.links) if meta and meta.links else []
+    yt = _youtube_url(links)
+    if yt:
+        await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
     await log_listing_view(listing_id=listing.id, user_id=cb.from_user.id,
                            section="releases", action="open", source="catalog")
     await cb.answer()
@@ -1103,3 +1130,7 @@ async def publish(cb: CallbackQuery, state: FSMContext):
     kb = _release_kb(listing, meta, tracks,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
     await _send_screen(cb.bot, cb.message.chat.id, caption[:1024], kb, photo=listing.photo_file_id)
+    links_pub = json.loads(meta.links) if meta and meta.links else []
+    yt = _youtube_url(links_pub)
+    if yt:
+        await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
