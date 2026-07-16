@@ -134,6 +134,16 @@ text = await get_text("market_welcome", lang=lang)
 flex_block = await render_flex_block(session, listing, lang=lang)
 ```
 
+**Железное правило чата (обязательно для каждого нового экрана/раздела):**
+перед показом нового экрана удалять предыдущие сообщения бота, а каждое
+отправленное сообщение регистрировать и в памяти, и в БД (переживает рестарт):
+```python
+await clear_bot_messages(chat_id, bot)               # чистка: БД-слой + кэши
+msg = await bot.send_message(...)
+last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+await register_bot_messages(chat_id, [msg.message_id])  # БД-слой (BotMessage)
+```
+
 **Безопасное редактирование сообщения (избегает ошибки "message not modified"):**
 ```python
 await safe_edit_or_send(bot, message, text, reply_markup=kb)
