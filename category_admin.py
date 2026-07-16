@@ -1245,6 +1245,43 @@ def artists_list():
     } for r in rows]}
 
 
+@app.get("/api/artist/{artist_id}")
+def artist_detail(artist_id: int):
+    """Карточка исполнителя + его релизы (для модалки вкладки)."""
+    with db() as conn:
+        a = conn.execute("""
+            SELECT a.id, a.name, a.artist_type, a.status, a.owner_user_id,
+                   a.created_at, a.genres, a.city_text, a.descr, a.contact,
+                   a.links, a.photo_file_id, bu.username
+            FROM artist a LEFT JOIN BotUser bu ON bu.user_id=a.owner_user_id
+            WHERE a.id=?""", (artist_id,)).fetchone()
+        if not a:
+            raise HTTPException(404, "Artist not found")
+        rel_rows = conn.execute("""
+            SELECT l.id, l.title, rm.release_type, rm.status, l.photo_file_id,
+                   (SELECT COUNT(*) FROM listing_views lv
+                    WHERE lv.listing_id=l.id AND lv.action='open') AS opens,
+                   l.created_at
+            FROM release_meta rm JOIN listing l ON l.id=rm.listing_id
+            WHERE rm.artist_id=? AND rm.status != 'deleted'
+            ORDER BY rm.created_at DESC""", (artist_id,)).fetchall()
+        try:
+            links = json.loads(a[10]) if a[10] else []
+        except Exception:
+            links = []
+    return {
+        "id": a[0], "name": a[1] or "", "type": a[2] or "", "status": a[3] or "",
+        "owner_id": a[4], "created_at": (a[5] or "")[:10],
+        "genres": a[6] or "", "city": a[7] or "", "descr": a[8] or "",
+        "contact": a[9] or "", "links": links, "photo_file_id": a[11] or "",
+        "username": a[12] or "",
+        "releases": [{"id": r[0], "title": r[1] or "", "rtype": r[2] or "",
+                      "status": r[3] or "", "photo": (r[4] or "").split(",")[0].strip(),
+                      "opens": r[5] or 0, "created_at": (r[6] or "")[:10]}
+                     for r in rel_rows],
+    }
+
+
 @app.post("/api/artist/{artist_id}/toggle_status")
 def artist_toggle_status(artist_id: int):
     """Скрыть/показать карточку исполнителя."""
@@ -2534,12 +2571,15 @@ async function loadArtists() {
     </tr></thead>
     <tbody>${rows.map(a => `
       <tr style="border-top:1px solid #0d1628">
-        <td style="padding:7px 8px;font-weight:600;color:#dde">
-          <span class="st-dot ${a.status==='active'?'st-dot-on':'st-dot-off'}"></span>🎤 ${esc(a.name)}</td>
+        <td style="padding:7px 8px;font-weight:600">
+          <span class="st-dot ${a.status==='active'?'st-dot-on':'st-dot-off'}"></span>
+          <a style="color:#7eb8f7;cursor:pointer" onclick="openArtistCard(${a.id})">🎤 ${esc(a.name)}</a></td>
         <td style="padding:7px 8px;color:#99a">${esc(a.type)}</td>
         <td style="padding:7px 8px;color:#778">${esc([a.genres,a.city].filter(Boolean).join(' · ')||'—')}</td>
         <td style="padding:7px 8px;color:#99a">${a.username?'@'+esc(a.username):a.owner_id}</td>
-        <td style="padding:7px 8px;text-align:center">${a.releases}</td>
+        <td style="padding:7px 8px;text-align:center">${a.releases
+          ? `<a style="color:#7eb8f7;cursor:pointer;font-weight:700" onclick="openArtistReleases(${a.id})">${a.releases}</a>`
+          : '0'}</td>
         <td style="padding:7px 8px;text-align:center;color:#9bc">${a.opens}</td>
         <td style="padding:7px 8px;color:#778">${esc(a.created_at)}</td>
         <td style="padding:7px 8px">${a.status==='active'?'<span style="color:#6ef5aa">активен</span>':'<span style="color:#888">скрыт</span>'}</td>
@@ -2549,6 +2589,59 @@ async function loadArtists() {
         </td>
       </tr>`).join('')}</tbody>
   </table>`;
+}
+
+function _artistReleaseRows(releases) {
+  if (!releases.length) return '<div class="empty" style="padding:16px;text-align:center">Релизов нет</div>';
+  return releases.map(r => `
+    <div class="card-row" onclick="openListing(${r.id})" style="cursor:pointer">
+      ${r.photo ? `<img class="card-thumb" src="/api/tg_photo/${encodeURIComponent(r.photo)}"
+          onerror="this.outerHTML='<div class=\\'card-thumb-empty\\'>🎵</div>'">`
+        : '<div class="card-thumb-empty">🎵</div>'}
+      <div class="card-info">
+        <div class="card-title"><span class="st-dot ${r.status==='published'?'st-dot-on':'st-dot-off'}"></span>${esc(r.title)}</div>
+        <div class="card-meta">${esc(sectionName('release'))} · ${esc(r.rtype)} · ${esc(r.created_at)}
+          ${r.status!=='published'?'· <span style="color:#888">скрыт</span>':''}</div>
+      </div>
+      <div class="card-stats"><b style="font-size:16px">${r.opens}</b> откр.</div>
+    </div>`).join('');
+}
+
+async function openArtistCard(id) {
+  const el = document.getElementById('drill-content');
+  document.getElementById('drill-title').textContent = '…';
+  el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  document.getElementById('modal-drill').classList.add('open');
+  const a = await fetch(`/api/artist/${id}`).then(r=>r.json());
+  document.getElementById('drill-title').textContent = `🎤 ${a.name}`;
+  const meta = [
+    ['Тип', a.type], ['Жанры', a.genres], ['Город', a.city],
+    ['Контакты', a.contact], ['Описание', a.descr],
+    ['Владелец', a.username ? '@'+a.username : a.owner_id],
+    ['Создан', a.created_at],
+    ['Статус', a.status==='active' ? '🟢 активен' : '⚪ скрыт'],
+    ['Ссылки', (a.links||[]).map(l=>`<a href="${l.url}" target="_blank">${esc(l.label)}</a>`).join(' · ')],
+  ].filter(([,v])=>v).map(([k,v]) =>
+    `<span class="listing-meta-key">${k}</span><span class="listing-meta-val">${k==='Ссылки'?v:esc(String(v))}</span>`).join('');
+  el.innerHTML = `
+    <div style="display:flex;gap:14px;margin-bottom:14px">
+      ${a.photo_file_id ? `<img src="/api/tg_photo/${encodeURIComponent(a.photo_file_id)}"
+        style="width:110px;height:110px;object-fit:cover;border-radius:10px;flex-shrink:0"
+        onerror="this.remove()">` : ''}
+      <div class="listing-meta" style="flex:1">${meta}</div>
+    </div>
+    <div style="font-size:12px;color:#556;margin:8px 0">Релизы (${a.releases.length}):</div>
+    ${_artistReleaseRows(a.releases)}`;
+}
+
+async function openArtistReleases(id) {
+  const el = document.getElementById('drill-content');
+  document.getElementById('drill-title').textContent = '…';
+  el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  document.getElementById('modal-drill').classList.add('open');
+  const a = await fetch(`/api/artist/${id}`).then(r=>r.json());
+  document.getElementById('drill-title').textContent = `${a.releases.length} релизов — ${a.name}`;
+  el.innerHTML = _artistReleaseRows(a.releases);
 }
 
 async function artistToggle(id) {
