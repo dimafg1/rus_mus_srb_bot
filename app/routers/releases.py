@@ -198,11 +198,9 @@ def _release_caption(listing, meta, artist, tracks) -> str:
         lines.append("<b>Трек-лист:</b>")
         for t in tracks:
             lines.append(f"{t.position}. {t.title or 'Трек ' + str(t.position)}")
-    links = json.loads(meta.links) if meta and meta.links else []
-    yt = _youtube_url(links)
-    if yt:
-        lines.append("")
-        lines.append(f'▶️ <a href="{yt}">Смотреть на YouTube</a>')
+    # YouTube в тексте не дублируем: ссылка живёт кнопкой под карточкой
+    # (клик по кнопке открывает плеер сразу, без окна подтверждения,
+    # которое Telegram показывает для ссылок с подменённым текстом)
     caption = "\n".join(lines)
     return caption[:1020] + "…" if len(caption) > 1024 else caption
 

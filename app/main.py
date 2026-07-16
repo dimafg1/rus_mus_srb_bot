@@ -198,6 +198,13 @@ class DropStaleCallbackMiddleware:
         event: Update,
         data: Dict[str, Any],
     ) -> Any:
+        if event.callback_query:
+            # Диагностика «нажатий дважды»: фиксируем каждое нажатие
+            self._log.info(
+                "callback data=%r update_id=%s from=%s",
+                event.callback_query.data, event.update_id,
+                event.callback_query.from_user.id if event.callback_query.from_user else None,
+            )
         if event.callback_query and event.update_id <= self._threshold:
             self._log.warning(
                 "Dropped stale callback_query data=%r update_id=%s",
