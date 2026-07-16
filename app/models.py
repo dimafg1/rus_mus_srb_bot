@@ -278,6 +278,77 @@ class FeatureFlag(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────
+# Музыкальный слой: Исполнители и Релизы (журнал решений Р-11/Р-12).
+# Artist — постоянная сущность музыкального проекта (не Услуга!):
+# минимальная версия из арки релизов; полноценный раздел — вторая арка.
+# Релиз живёт в listing (type='release', карточка/фото/автор общие)
+# + release_meta (свой жизненный цикл: без сроков и продлений)
+# + release_track (треки альбома по одному, порядок и имена правятся).
+# ─────────────────────────────────────────────────────────
+class Artist(SQLModel, table=True):
+    __tablename__ = "artist"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    name: str = Field(sa_column=Column(String(128), nullable=False))
+    # соло | группа | дуэт | проект | dj | другое
+    artist_type: str = Field(
+        default="группа", sa_column=Column(String(32), nullable=False, default="группа")
+    )
+    photo_file_id: Optional[str] = Field(default=None, sa_column=Column(Text))
+    # Управляющий пользователь (несколько управляющих — вторая арка, Р-12)
+    owner_user_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    # active | hidden (скрыт модератором)
+    status: str = Field(
+        default="active", sa_column=Column(String(16), nullable=False, default="active")
+    )
+    created_at: datetime = Field(
+        default_factory=utcnow_naive,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class ReleaseMeta(SQLModel, table=True):
+    __tablename__ = "release_meta"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    listing_id: int = Field(sa_column=Column(Integer, unique=True, index=True, nullable=False))
+    artist_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    # single | ep | album | clip | live
+    release_type: str = Field(sa_column=Column(String(16), nullable=False))
+    release_date: Optional[str] = Field(default=None, sa_column=Column(String(32)))
+    genre: Optional[str] = Field(default=None, sa_column=Column(String(64)))
+    recorded_at: Optional[str] = Field(default=None, sa_column=Column(String(128)))  # «где записано»
+    # Ссылки на площадки: JSON [{"label": "Spotify", "url": "..."}].
+    # YouTube-ссылка дополнительно кладётся в текст карточки → встроенный плеер.
+    links: Optional[str] = Field(default=None, sa_column=Column(Text))
+    # Прикреплённый клип (видео целиком; аудио живёт в release_track)
+    video_file_id: Optional[str] = Field(default=None, sa_column=Column(Text))
+    video_file_unique_id: Optional[str] = Field(default=None, sa_column=Column(String(64)))
+    # Свой жизненный цикл (НЕ listing.status): published | hidden | deleted
+    status: str = Field(
+        default="published", sa_column=Column(String(16), nullable=False, default="published")
+    )
+    created_at: datetime = Field(
+        default_factory=utcnow_naive,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class ReleaseTrack(SQLModel, table=True):
+    __tablename__ = "release_track"
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    listing_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    position: int = Field(sa_column=Column(Integer, nullable=False))
+    title: Optional[str] = Field(default=None, sa_column=Column(String(255)))
+    file_id: str = Field(sa_column=Column(Text, nullable=False))
+    file_unique_id: Optional[str] = Field(default=None, sa_column=Column(String(64)))
+    duration: Optional[int] = Field(default=None, sa_column=Column(Integer))  # секунды
+    file_name: Optional[str] = Field(default=None, sa_column=Column(String(255)))
+    mime_type: Optional[str] = Field(default=None, sa_column=Column(String(64)))
+
+
+# ─────────────────────────────────────────────────────────
 # Campaign — партнёрские кампании (Strategy v2, слой 2 §5).
 # UNIXOUND — обычная кампания, не хардкод. Ротация: app/campaigns.py.
 # Показы/клики — события partner_shown / partner_opened в analytics_events.

@@ -76,5 +76,11 @@ async def init_db() -> None:
                     "INSERT OR IGNORE INTO feature_flags (key, enabled, audience, updated_at) "
                     "VALUES (:key, 0, 'all', datetime('now'))"
                 ), {"key": key})
+            # Релизы: включены сразу (бот до публичного запуска),
+            # флаг — аварийный рубильник (Р-11)
+            await conn.execute(text(
+                "INSERT OR IGNORE INTO feature_flags (key, enabled, audience, updated_at) "
+                "VALUES ('releases_enabled', 1, 'all', datetime('now'))"
+            ))
         except Exception as e:
             print(f"[init_db] посев feature_flags: {e}")
