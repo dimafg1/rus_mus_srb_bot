@@ -616,16 +616,16 @@ async def cover_input(message: Message, state: FSMContext):
     except Exception:
         pass
     await state.set_state(ReleaseAdd.media)
-    await state.update_data(tracks=[], video=None)
+    await state.update_data(tracks=[], video=None, links=[])
     await _replace_prompt(
         state, message.bot, message.chat.id,
-        "Теперь сам релиз — можно прямо в Telegram:\n\n"
-        "🎧 пришлите аудио-треки по одному (в порядке альбома)\n"
-        "🎬 или один видеоклип\n\n"
-        "Большой клип удобнее дать ссылкой на YouTube на следующем шаге.\n"
-        "Когда закончите — нажмите «Готово».",
+        "Теперь сам релиз — присылайте сюда всё, что есть:\n\n"
+        "🎧 аудио-треки по одному (в порядке альбома)\n"
+        "🎬 видеоклип\n"
+        "🔗 ссылки на площадки — YouTube, Spotify, Яндекс и др.\n\n"
+        "Можно вперемешку. Когда закончите — нажмите «Готово».",
         InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Готово / Пропустить", callback_data="rel:mdone")]]))
+            InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")]]))
 
 
 @router.message(ReleaseAdd.media, F.audio)
@@ -692,45 +692,39 @@ async def cover_wrong_type(message: Message, state: FSMContext):
                           "Нужна именно картинка-обложка. Пришлите фото 🙂")
 
 
-@router.callback_query(F.data == "rel:mdone")
-async def media_done(cb: CallbackQuery, state: FSMContext):
-    await state.set_state(ReleaseAdd.links)
-    await _replace_prompt(
-        state, cb.bot, cb.message.chat.id,
-        "Ссылки на площадки?\n\nПришлите одним сообщением — каждая ссылка с новой "
-        "строки или через пробел (YouTube, Spotify, Яндекс, Bandcamp…).",
-        InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="⏭ Без ссылок", callback_data="rel:lskip")]]))
-    await cb.answer()
-
-
-@router.message(ReleaseAdd.links, F.text)
-async def links_input(message: Message, state: FSMContext):
+@router.message(ReleaseAdd.media, F.text)
+async def media_links(message: Message, state: FSMContext):
+    """Ссылки принимаются прямо на шаге медиа — вперемешку с файлами."""
     raw = message.text.replace(",", " ").split()
-    links = [{"label": _link_label(u), "url": u} for u in raw if u.startswith("http")]
+    new_links = [{"label": _link_label(u), "url": u} for u in raw if u.startswith("http")]
     try:
         await message.delete()
     except Exception:
         pass
-    if not links:
-        await _replace_prompt(state, message.bot, message.chat.id,
-                              "Не увидел ссылок (нужны адреса, начинающиеся с http…). "
-                              "Попробуйте ещё раз или пропустите.",
-                              InlineKeyboardMarkup(inline_keyboard=[[
-                                  InlineKeyboardButton(text="⏭ Без ссылок", callback_data="rel:lskip")]]))
-        return
-    await state.update_data(links=links)
-    await _ask_descr(message, state)
-
-
-@router.callback_query(F.data == "rel:lskip")
-async def links_skip(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if not (data.get("tracks") or data.get("video")):
-        await cb.answer("Нужна хотя бы одна ссылка ИЛИ файл — иначе слушать нечего 🙂",
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")]])
+    if not new_links:
+        await _replace_prompt(state, message.bot, message.chat.id,
+                              "Это не похоже на ссылку (нужен адрес с http…). "
+                              "Присылайте треки, клип или ссылки — либо жмите «Готово».", kb)
+        return
+    links = (data.get("links") or []) + new_links
+    await state.update_data(links=links)
+    got = ", ".join(l["label"] for l in new_links)
+    await _replace_prompt(
+        state, message.bot, message.chat.id,
+        f"Ссылка принята: {got} ✔️ (всего: {len(links)})\n\n"
+        "Присылайте ещё треки/клип/ссылки или жмите «Готово».", kb)
+
+
+@router.callback_query(F.data == "rel:mdone")
+async def media_done(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not (data.get("tracks") or data.get("video") or data.get("links")):
+        await cb.answer("Нужен хотя бы один трек, клип или ссылка — иначе слушать нечего 🙂",
                         show_alert=True)
         return
-    await state.update_data(links=[])
     await _ask_descr(cb, state)
 
 
