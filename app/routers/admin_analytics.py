@@ -312,6 +312,9 @@ def _section_label(value: str | None) -> str:
         "vacancies": "Вакансии",
         "events": "Афиша",
         "afisha": "Афиша",
+        "release": "Релизы",
+        "releases": "Релизы",
+        "artists": "Исполнители",
         None: "не указан",
         "": "не указан",
     }
@@ -864,7 +867,8 @@ async def admin_analytics_cities(cb: CallbackQuery) -> None:
 
     lines = ["🏙 <b>Аналитика по городам</b>", ""]
     section_labels = {"market": "Барахолка", "service": "Услуги",
-                      "vacancy": "Вакансии", "events": "Афиша"}
+                      "vacancy": "Вакансии", "events": "Афиша",
+                      "release": "Релизы"}
     for r in rows:
         name = _safe_text((r["name"] or "").rstrip(".").strip())
         total   = int(r["total"] or 0)

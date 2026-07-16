@@ -742,6 +742,23 @@ def get_listing(listing_id: int):
                 "venue": em[2] or "", "city_text": em[3] or "",
                 "price_text": em[4] or "", "status": em[5] or "",
             }
+        # Данные релиза: тип/статус/исполнитель/треки лежат в release_meta
+        release = None
+        rrow = conn.execute(
+            "SELECT rm.release_type, rm.status, rm.links, rm.release_date, rm.recorded_at, "
+            "a.name, (SELECT COUNT(*) FROM release_track rt WHERE rt.listing_id=rm.listing_id) "
+            "FROM release_meta rm LEFT JOIN artist a ON a.id=rm.artist_id "
+            "WHERE rm.listing_id=?", (listing_id,)
+        ).fetchone()
+        if rrow:
+            try:
+                n_links = len(json.loads(rrow[2])) if rrow[2] else 0
+            except Exception:
+                n_links = 0
+            release = {"rtype": rrow[0] or "", "status": rrow[1] or "",
+                       "links": n_links, "date": rrow[3] or "",
+                       "recorded": rrow[4] or "", "artist": rrow[5] or "",
+                       "tracks": rrow[6] or 0}
     photo_ids = [p.strip() for p in (row[5] or "").split(",") if p.strip()]
     video = _parse_video(row[17] or "")
     try:
@@ -761,6 +778,7 @@ def get_listing(listing_id: int):
         "flex": flex_data,
         "flex_fields": flex_fields,
         "event": event,
+        "release": release,
         "expires_at": row[19] or "", "archive_reason": row[20] or "",
     }
 
@@ -1155,8 +1173,46 @@ async def tg_photo(file_id: str, request: Request):
     )
 
 
-SECTION_ROOTS = {"market": 30, "service": 80, "vacancy": 90, "events": 100}
-SECTION_NAMES = {"market": "Барахолка", "service": "Услуги", "vacancy": "Вакансии", "events": "Афиша"}
+SECTION_ROOTS = {"market": 30, "service": 80, "vacancy": 90, "events": 100, "release": 393}
+SECTION_NAMES = {"market": "Барахолка", "service": "Услуги", "vacancy": "Вакансии", "events": "Афиша", "release": "Релизы"}
+
+
+@app.get("/api/artists")
+def artists_list():
+    """Исполнители: список для вкладки админки."""
+    with db() as conn:
+        try:
+            rows = conn.execute("""
+                SELECT a.id, a.name, a.artist_type, a.status, a.owner_user_id,
+                       a.created_at, a.genres, a.city_text, bu.username,
+                       (SELECT COUNT(*) FROM release_meta rm
+                        WHERE rm.artist_id=a.id AND rm.status='published') AS releases,
+                       (SELECT COUNT(*) FROM analytics_events ae
+                        WHERE ae.event_type='artist_opened' AND ae.entity_id=a.id) AS opens
+                FROM artist a
+                LEFT JOIN BotUser bu ON bu.user_id=a.owner_user_id
+                ORDER BY a.created_at DESC
+            """).fetchall()
+        except Exception as e:
+            return {"rows": [], "error": str(e)}
+    return {"rows": [{
+        "id": r[0], "name": r[1] or "", "type": r[2] or "", "status": r[3] or "",
+        "owner_id": r[4], "created_at": (r[5] or "")[:10],
+        "genres": r[6] or "", "city": r[7] or "", "username": r[8] or "",
+        "releases": r[9] or 0, "opens": r[10] or 0,
+    } for r in rows]}
+
+
+@app.post("/api/artist/{artist_id}/toggle_status")
+def artist_toggle_status(artist_id: int):
+    """Скрыть/показать карточку исполнителя."""
+    with db() as conn:
+        row = conn.execute("SELECT status FROM artist WHERE id=?", (artist_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Artist not found")
+        new_status = "hidden" if (row[0] or "active") == "active" else "active"
+        conn.execute("UPDATE artist SET status=? WHERE id=?", (new_status, artist_id))
+    return {"ok": True, "status": new_status}
 
 
 @app.get("/api/catalog/sections")
@@ -1714,6 +1770,7 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
   <button class="tab" onclick="switchTab('vacancy')" data-i18n="tab_vacancy">Вакансии</button>
   <button class="tab" onclick="switchTab('analytics')" data-i18n="tab_analytics">📊 Аналитика</button>
   <button class="tab" onclick="switchTab('catalog')" data-i18n="tab_catalog">📦 Объявления</button>
+  <button class="tab" onclick="switchTab('artists')">🎤 Исполнители</button>
 </div>
 
 <div id="panel-market"  class="panel active"><div class="toolbar">
@@ -1850,6 +1907,10 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 <div id="panel-catalog" class="panel">
   <div id="catalog-breadcrumb" class="catalog-breadcrumb"></div>
   <div id="catalog-content"></div>
+</div>
+
+<div id="panel-artists" class="panel">
+  <div id="artists-content"></div>
 </div>
 
 <!-- Listing detail modal -->
@@ -2390,7 +2451,7 @@ document.querySelectorAll('.overlay').forEach(o=>{
 });
 
 // ── tabs ──
-const ALL_TABS = ['market','services','vacancy','analytics','catalog'];
+const ALL_TABS = ['market','services','vacancy','analytics','catalog','artists'];
 function switchTab(section) {
   currentTab=section;
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ALL_TABS[i]===section));
@@ -2398,12 +2459,63 @@ function switchTab(section) {
   document.getElementById(`panel-${section}`).classList.add('active');
   if (section==='analytics') loadAnalytics();
   else if (section==='catalog') catalogLoad(0);
+  else if (section==='artists') loadArtists();
   else loadTree(section);
 }
 
+// ── Исполнители ──
+async function loadArtists() {
+  const el = document.getElementById('artists-content');
+  el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  const data = await fetch('/api/artists').then(r=>r.json());
+  const rows = data.rows || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Исполнителей пока нет</div>';
+    return;
+  }
+  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${rows.length} исполнителей</div>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:#556;font-size:11px;text-align:left">
+      <th style="padding:6px 8px">Исполнитель</th>
+      <th style="padding:6px 8px">Тип</th>
+      <th style="padding:6px 8px">Жанры · Город</th>
+      <th style="padding:6px 8px">Владелец</th>
+      <th style="padding:6px 8px">Релизов</th>
+      <th style="padding:6px 8px">Открытий</th>
+      <th style="padding:6px 8px">Создан</th>
+      <th style="padding:6px 8px">Статус</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead>
+    <tbody>${rows.map(a => `
+      <tr style="border-top:1px solid #0d1628">
+        <td style="padding:7px 8px;font-weight:600;color:#dde">
+          <span class="st-dot ${a.status==='active'?'st-dot-on':'st-dot-off'}"></span>🎤 ${esc(a.name)}</td>
+        <td style="padding:7px 8px;color:#99a">${esc(a.type)}</td>
+        <td style="padding:7px 8px;color:#778">${esc([a.genres,a.city].filter(Boolean).join(' · ')||'—')}</td>
+        <td style="padding:7px 8px;color:#99a">${a.username?'@'+esc(a.username):a.owner_id}</td>
+        <td style="padding:7px 8px;text-align:center">${a.releases}</td>
+        <td style="padding:7px 8px;text-align:center;color:#9bc">${a.opens}</td>
+        <td style="padding:7px 8px;color:#778">${esc(a.created_at)}</td>
+        <td style="padding:7px 8px">${a.status==='active'?'<span style="color:#6ef5aa">активен</span>':'<span style="color:#888">скрыт</span>'}</td>
+        <td style="padding:7px 8px">
+          <button class="btn btn-sm" style="background:${a.status==='active'?'#4a2a1a':'#1a4a2a'};color:${a.status==='active'?'#fa8':'#7f7'}"
+            onclick="artistToggle(${a.id})">${a.status==='active'?'🚫 Скрыть':'✅ Показать'}</button>
+        </td>
+      </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+async function artistToggle(id) {
+  try {
+    const r = await fetch(`/api/artist/${id}/toggle_status`, {method:'POST'}).then(x=>x.json());
+    if (r && r.ok) loadArtists();
+    else alert('Не удалось: ' + ((r&&r.detail)||'?'));
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+
 // ── Catalog tree browser ──
-const SECTION_ICONS = {market:'🛒', service:'🎵', vacancy:'💼', events:'🎭'};
-const SECTION_NAMES_JS = {market:'Барахолка', service:'Услуги', vacancy:'Вакансии', events:'Афиша'};
+const SECTION_ICONS = {market:'🛒', service:'💼', vacancy:'🤝', events:'🎭', release:'🎵'};
+const SECTION_NAMES_JS = {market:'Барахолка', service:'Услуги', vacancy:'Вакансии', events:'Афиша', release:'Релизы'};
 // breadcrumb stack: [{label, action}]
 let _catStack = [];
 
@@ -2588,9 +2700,10 @@ function trend(cur, prev) {
   return `<span style="color:#556">→0</span>`;
 }
 const SECTION_LABELS = {market:'Барахолка',services:'Услуги',service:'Услуги',
+  release:'Релизы',releases:'Релизы',artists:'Исполнители',
   vacancy:'Вакансии',vacancies:'Вакансии',events:'Афиша',afisha:'Афиша','':(v)=>v||'—'};
 function sectionName(s){ return SECTION_LABELS[s] || s || '—'; }
-const SOURCE_LABELS = {search:'поиск',catalog:'каталог',my:'мои объявления',
+const SOURCE_LABELS = {search:'поиск',catalog:'каталог',my:'мои объявления',track:'трек',
   calendar:'календарь',calendar_city:'календарь/город',direct:'прямой переход','':(v)=>v||'—'};
 function sourceName(s){ return SOURCE_LABELS[s] || s || '—'; }
 
@@ -3049,6 +3162,12 @@ function renderListingModal(d) {
         ? '🟢 активно'
         : '⚪ '+(d.status==='archived'?'в архиве':esc(d.status))+(d.archive_reason?' · '+esc(d.archive_reason):'')}</span>
       ${d.expires_at ? `<span class="listing-meta-key">Действует до</span><span class="listing-meta-val">${fmtDate(d.expires_at)}</span>` : ''}
+      ${d.release ? `
+      <span class="listing-meta-key">Исполнитель</span><span class="listing-meta-val">🎤 ${esc(d.release.artist||'—')}</span>
+      <span class="listing-meta-key">Тип релиза</span><span class="listing-meta-val">${esc(d.release.rtype||'—')}${d.release.date?' · '+esc(d.release.date):''}</span>
+      <span class="listing-meta-key">Статус релиза</span><span class="listing-meta-val">${d.release.status==='published'?'🟢 опубликован':'⚪ '+esc(d.release.status||'—')}</span>
+      <span class="listing-meta-key">Треков / ссылок</span><span class="listing-meta-val">${d.release.tracks} / ${d.release.links}</span>
+      ${d.release.recorded ? `<span class="listing-meta-key">Записано</span><span class="listing-meta-val">${esc(d.release.recorded)}</span>` : ''}` : ''}
     </div>
     ${flexRows ? `<div class="listing-meta" id="lm-flex">${flexRows}</div>` : `<div id="lm-flex"></div>`}
     <div class="listing-stats">
