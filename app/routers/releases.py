@@ -72,10 +72,19 @@ class ReleaseAdd(StatesGroup):
     descr = State()
 
 
+class ReleaseReport(StatesGroup):
+    other_text = State()
+
+
 # ─────────────────────────── helpers ───────────────────────────
 
 def _menu_btn() -> InlineKeyboardButton:
     return InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")
+
+
+def _nav_row(back_cb: str) -> list[InlineKeyboardButton]:
+    """Железобетонное правило: на каждом экране «Назад» (один шаг) + меню."""
+    return [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb), _menu_btn()]
 
 
 async def _send_screen(bot, chat_id: int, text: str, kb=None, photo=None):
@@ -363,7 +372,7 @@ async def release_report_ask(cb: CallbackQuery):
     listing_id = int(cb.data.split(":")[2])
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:repdo:{listing_id}:{code}")]
             for code, label in REPORT_REASONS.items()]
-    rows.append([InlineKeyboardButton(text="✖ Отмена", callback_data="rel:repcancel")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="rel:repcancel"), _menu_btn()])
     msg = await cb.bot.send_message(
         cb.message.chat.id, "Что не так с этим релизом?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -382,24 +391,84 @@ async def release_report_cancel(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("rel:repdo:"))
-async def release_report_send(cb: CallbackQuery):
-    """Шаг 2: жалоба с причиной уходит админам."""
+async def release_report_send(cb: CallbackQuery, state: FSMContext):
+    """Шаг 2: жалоба с причиной уходит админам. «Другое» — просим описать."""
     _, _, lid_raw, reason = cb.data.split(":", 3)
     listing_id = int(lid_raw)
+
+    if reason == "other":
+        await cb.answer()
+        await state.set_state(ReleaseReport.other_text)
+        await state.update_data(report_listing_id=listing_id)
+        try:
+            await cb.message.edit_text(
+                "Опишите своими словами, что не так:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"rel:repback:{listing_id}"),
+                     _menu_btn()]]))
+        except Exception:
+            pass
+        return
+
+
+@router.callback_query(F.data.startswith("rel:repback:"))
+async def release_report_back(cb: CallbackQuery, state: FSMContext):
+    """«Назад» из «Другое» — возвращаем список причин на том же сообщении."""
+    await cb.answer()
+    await state.clear()
+    listing_id = int(cb.data.split(":")[2])
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:repdo:{listing_id}:{code}")]
+            for code, label in REPORT_REASONS.items()]
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="rel:repcancel"), _menu_btn()])
+    try:
+        await cb.message.edit_text("Что не так с этим релизом?",
+                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        pass
+
     reason_label = REPORT_REASONS.get(reason, "Другое")
     listing, meta, artist, _ = await _load_release(listing_id)
     try:
         await cb.message.delete()  # убираем сообщение с причинами
     except Exception:
         pass
+    await _notify_report(cb.bot, cb.from_user, listing_id, listing, artist, reason_label)
+    await cb.answer("Жалоба отправлена. Спасибо!", show_alert=True)
+
+
+@router.message(ReleaseReport.other_text, F.text)
+async def release_report_other(message: Message, state: FSMContext):
+    data = await state.get_data()
+    listing_id = data.get("report_listing_id")
+    text = message.text.strip()[:400]
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await state.clear()
+    if not listing_id:
+        return
+    listing, meta, artist, _ = await _load_release(listing_id)
+    await _notify_report(message.bot, message.from_user, listing_id, listing, artist,
+                         f"Другое: {text}")
+    msg = await message.bot.send_message(
+        message.chat.id, "Жалоба отправлена. Спасибо!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ К релизу", callback_data=f"rel:view:{listing_id}"),
+             _menu_btn()]]))
+    last_bot_messages.setdefault(message.chat.id, []).append(msg.message_id)
+    await register_bot_messages(message.chat.id, [msg.message_id])
+
+
+async def _notify_report(bot, from_user, listing_id, listing, artist, reason_label):
     for admin_id in await _admin_ids():
         try:
-            msg = await cb.bot.send_message(
+            msg = await bot.send_message(
                 admin_id,
                 f"⚠️ Жалоба на релиз #{listing_id} "
                 f"({artist.name if artist else '?'} — {listing.title if listing else '?'})\n"
                 f"Причина: {reason_label}\n"
-                f"От: {cb.from_user.id} (@{cb.from_user.username or '—'})",
+                f"От: {from_user.id} (@{from_user.username or '—'})",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👀 Открыть", callback_data=f"rel:view:{listing_id}"),
                     InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"rel:admhide:{listing_id}"),
@@ -410,7 +479,6 @@ async def release_report_send(cb: CallbackQuery):
             await register_bot_messages(admin_id, [msg.message_id])
         except Exception as e:
             print(f"[releases] report notify {admin_id}: {e}")
-    await cb.answer("Жалоба отправлена. Спасибо!", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("rel:admhide:"))
@@ -511,11 +579,10 @@ async def add_start(cb: CallbackQuery, state: FSMContext):
     rows = [[InlineKeyboardButton(text=f"🎤 {a.name}", callback_data=f"rel:art:{a.id}")]
             for a in artists]
     rows.append([InlineKeyboardButton(text="➕ Создать нового исполнителя", callback_data="rel:artnew")])
-    rows.append([InlineKeyboardButton(text="✖ Отмена", callback_data="go_releases")])
+    rows.append(_nav_row("go_releases"))
     await _send_screen(cb.bot, cb.message.chat.id,
                        "Чей это релиз?\n\nВыберите вашего исполнителя или создайте нового.",
                        InlineKeyboardMarkup(inline_keyboard=rows))
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("rel:art:"))
@@ -535,7 +602,8 @@ async def add_new_artist(cb: CallbackQuery, state: FSMContext):
     # убираем экран выбора исполнителя — иначе его кнопки остаются висеть
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
-                          "Название исполнителя или группы?")
+                          "Название исполнителя или группы?",
+                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:add")]))
 
 
 @router.message(ReleaseAdd.artist_name, F.text)
@@ -548,10 +616,17 @@ async def artist_name_input(message: Message, state: FSMContext):
     if not name:
         return
     await state.update_data(new_artist={"name": name})
+    await state.set_state(None)
+    await _ask_arttype(message.bot, message.chat.id, state)
+
+
+async def _ask_arttype(bot, chat_id: int, state: FSMContext):
+    data = await state.get_data()
+    name = (data.get("new_artist") or {}).get("name", "")
     rows = [[InlineKeyboardButton(text=t, callback_data=f"rel:atype:{i}")]
             for i, t in enumerate(ARTIST_TYPES)]
-    await state.set_state(None)
-    await _replace_prompt(state, message.bot, message.chat.id,
+    rows.append(_nav_row("rel:artnew"))
+    await _replace_prompt(state, bot, chat_id,
                           f"«{name}» — это:", InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -565,8 +640,10 @@ async def artist_type_pick(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ReleaseAdd.artist_photo)
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
                           "Фото или логотип исполнителя?\n\nПришлите картинку — или пропустите.",
-                          InlineKeyboardMarkup(inline_keyboard=[[
-                              InlineKeyboardButton(text="⏭ Пропустить", callback_data="rel:askip")]]))
+                          InlineKeyboardMarkup(inline_keyboard=[
+                              [InlineKeyboardButton(text="⏭ Пропустить", callback_data="rel:askip")],
+                              _nav_row("rel:back:arttype"),
+                          ]))
     await cb.answer()
 
 
@@ -615,6 +692,7 @@ async def _ask_rel_type(event, state: FSMContext):
     chat_id = event.message.chat.id if isinstance(event, CallbackQuery) else event.chat.id
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:rtype:{code}")]
             for code, label in RELEASE_TYPES.items()]
+    rows.append(_nav_row("rel:add"))
     await _replace_prompt(state, bot, chat_id, "Что выпускаем?",
                           InlineKeyboardMarkup(inline_keyboard=rows))
     if isinstance(event, CallbackQuery):
@@ -624,6 +702,69 @@ async def _ask_rel_type(event, state: FSMContext):
             pass
 
 
+async def _ask_title(bot, chat_id: int, state: FSMContext):
+    await state.set_state(ReleaseAdd.rel_title)
+    await _replace_prompt(state, bot, chat_id,
+                          "Название релиза?\n\n(без имени исполнителя — только название)",
+                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:back:rtype")]))
+
+
+async def _ask_cover(bot, chat_id: int, state: FSMContext):
+    await state.set_state(ReleaseAdd.cover)
+    await _replace_prompt(state, bot, chat_id,
+                          "Обложка релиза?\n\nПришлите картинку — обложка обязательна.",
+                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:back:title")]))
+
+
+async def _ask_media(bot, chat_id: int, state: FSMContext):
+    await state.set_state(ReleaseAdd.media)
+    data = await state.get_data()
+    n_tracks = len(data.get("tracks") or [])
+    n_links = len(data.get("links") or [])
+    status = ""
+    if n_tracks or data.get("video") or n_links:
+        parts = []
+        if n_tracks:
+            parts.append(f"треков: {n_tracks}")
+        if data.get("video"):
+            parts.append("клип: есть")
+        if n_links:
+            parts.append(f"ссылок: {n_links}")
+        status = "\n\nУже принято — " + ", ".join(parts) + "."
+    await _replace_prompt(
+        state, bot, chat_id,
+        "Теперь сам релиз — присылайте сюда всё, что есть:\n\n"
+        "🎧 аудио-треки по одному (в порядке альбома)\n"
+        "🎬 видеоклип\n"
+        "🔗 ссылки на площадки — YouTube, Spotify, Яндекс и др.\n\n"
+        "Можно вперемешку. Когда закончите — нажмите «Готово»." + status,
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
+            _nav_row("rel:back:cover"),
+        ]))
+
+
+@router.callback_query(F.data.startswith("rel:back:"))
+async def wiz_back(cb: CallbackQuery, state: FSMContext):
+    """«Назад» — ровно один шаг по цепочке мастера."""
+    await cb.answer()
+    step = cb.data.split(":")[2]
+    bot, chat_id = cb.bot, cb.message.chat.id
+    if step == "arttype":
+        await state.set_state(None)
+        await _ask_arttype(bot, chat_id, state)
+    elif step == "rtype":
+        await _ask_rel_type(cb, state)
+    elif step == "title":
+        await _ask_title(bot, chat_id, state)
+    elif step == "cover":
+        await _ask_cover(bot, chat_id, state)
+    elif step == "media":
+        await _ask_media(bot, chat_id, state)
+    elif step == "descr":
+        await _ask_descr(cb, state)
+
+
 @router.callback_query(F.data.startswith("rel:rtype:"))
 async def rel_type_pick(cb: CallbackQuery, state: FSMContext):
     code = cb.data.split(":")[2]
@@ -631,9 +772,7 @@ async def rel_type_pick(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     await state.update_data(rel_type=code)
-    await state.set_state(ReleaseAdd.rel_title)
-    await _replace_prompt(state, cb.bot, cb.message.chat.id,
-                          "Название релиза?\n\n(без имени исполнителя — только название)")
+    await _ask_title(cb.bot, cb.message.chat.id, state)
     await cb.answer()
 
 
@@ -647,9 +786,7 @@ async def rel_title_input(message: Message, state: FSMContext):
     if not title:
         return
     await state.update_data(title=title)
-    await state.set_state(ReleaseAdd.cover)
-    await _replace_prompt(state, message.bot, message.chat.id,
-                          "Обложка релиза?\n\nПришлите картинку — обложка обязательна.")
+    await _ask_cover(message.bot, message.chat.id, state)
 
 
 @router.message(ReleaseAdd.cover, F.photo)
@@ -659,17 +796,8 @@ async def cover_input(message: Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
-    await state.set_state(ReleaseAdd.media)
-    await state.update_data(tracks=[], video=None, links=[])
-    await _replace_prompt(
-        state, message.bot, message.chat.id,
-        "Теперь сам релиз — присылайте сюда всё, что есть:\n\n"
-        "🎧 аудио-треки по одному (в порядке альбома)\n"
-        "🎬 видеоклип\n"
-        "🔗 ссылки на площадки — YouTube, Spotify, Яндекс и др.\n\n"
-        "Можно вперемешку. Когда закончите — нажмите «Готово».",
-        InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")]]))
+    # медиа-данные НЕ сбрасываем: пользователь мог вернуться «Назад» к обложке
+    await _ask_media(message.bot, message.chat.id, state)
 
 
 @router.message(ReleaseAdd.media, F.audio)
@@ -693,8 +821,10 @@ async def media_audio(message: Message, state: FSMContext):
     await _replace_prompt(
         state, message.bot, message.chat.id,
         f"Принято треков: {len(tracks)} ✔️\n\nПрисылайте следующий или жмите «Готово».",
-        InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")]]))
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
+            _nav_row("rel:back:cover"),
+        ]))
 
 
 @router.message(ReleaseAdd.media, F.video)
@@ -708,8 +838,10 @@ async def media_video(message: Message, state: FSMContext):
     await _replace_prompt(
         state, message.bot, message.chat.id,
         "Клип принят ✔️\n\nЖмите «Готово».",
-        InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")]]))
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
+            _nav_row("rel:back:cover"),
+        ]))
 
 
 @router.message(ReleaseAdd.media, F.document)
@@ -722,8 +854,10 @@ async def media_document(message: Message, state: FSMContext):
         state, message.bot, message.chat.id,
         "Файл пришёл как документ — Telegram не сможет играть его как музыку.\n"
         "Пришлите как <b>аудио</b> (через скрепку → «Музыка») или как видео.",
-        InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Готово / Пропустить", callback_data="rel:mdone")]]))
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
+            _nav_row("rel:back:cover"),
+        ]))
 
 
 @router.message(ReleaseAdd.cover, ~F.photo)
@@ -733,7 +867,8 @@ async def cover_wrong_type(message: Message, state: FSMContext):
     except Exception:
         pass
     await _replace_prompt(state, message.bot, message.chat.id,
-                          "Нужна именно картинка-обложка. Пришлите фото 🙂")
+                          "Нужна именно картинка-обложка. Пришлите фото 🙂",
+                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:back:title")]))
 
 
 @router.message(ReleaseAdd.media, F.text)
@@ -746,8 +881,10 @@ async def media_links(message: Message, state: FSMContext):
     except Exception:
         pass
     data = await state.get_data()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
+        _nav_row("rel:back:cover"),
+    ])
     if not new_links:
         await _replace_prompt(state, message.bot, message.chat.id,
                               "Это не похоже на ссылку (нужен адрес с http…). "
@@ -778,8 +915,10 @@ async def _ask_descr(event, state: FSMContext):
     chat_id = event.message.chat.id if isinstance(event, CallbackQuery) else event.chat.id
     await _replace_prompt(state, bot, chat_id,
                           "Пара слов о релизе? (по желанию)",
-                          InlineKeyboardMarkup(inline_keyboard=[[
-                              InlineKeyboardButton(text="⏭ Пропустить", callback_data="rel:dskip")]]))
+                          InlineKeyboardMarkup(inline_keyboard=[
+                              [InlineKeyboardButton(text="⏭ Пропустить", callback_data="rel:dskip")],
+                              _nav_row("rel:back:media"),
+                          ]))
     if isinstance(event, CallbackQuery):
         try:
             await event.answer()
@@ -826,7 +965,7 @@ async def _confirm(event, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Публикую — я автор или представитель",
                               callback_data="rel:pub")],
-        [InlineKeyboardButton(text="✖ Отмена", callback_data="go_releases")],
+        _nav_row("rel:back:descr"),
     ])
     await _replace_prompt(state, bot, chat_id, "\n".join(parts), kb)
     if isinstance(event, CallbackQuery):
