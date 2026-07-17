@@ -262,6 +262,8 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
         ctl.append(InlineKeyboardButton(text="🗑 Удалить", callback_data=f"rel:del:{listing.id}"))
     if is_admin_user and meta and meta.status == "published":
         ctl.append(InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"rel:admhide:{listing.id}"))
+    if is_admin_user and meta and meta.status == "hidden":
+        ctl.append(InlineKeyboardButton(text="✅ Показать", callback_data=f"rel:admshow:{listing.id}"))
     if ctl:
         rows.append(ctl)
     rows.append([InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"rel:report:{listing.id}")])
@@ -557,6 +559,26 @@ async def release_admin_hide(cb: CallbackQuery):
         s.add(meta)
         await s.commit()
     await cb.answer("Релиз скрыт.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("rel:admshow:"))
+async def release_admin_show(cb: CallbackQuery):
+    from app.routers.admin_panel import is_admin
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Только для администратора.", show_alert=True)
+        return
+    listing_id = int(cb.data.split(":")[2])
+    async with SessionLocal() as s:
+        meta = (await s.execute(
+            select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
+        )).scalar_one_or_none()
+        if not meta:
+            await cb.answer("Не найден.", show_alert=True)
+            return
+        meta.status = "published"
+        s.add(meta)
+        await s.commit()
+    await cb.answer("Релиз снова опубликован.", show_alert=True)
 
 
 # ─────────────────────────── мои релизы ───────────────────────────

@@ -136,10 +136,15 @@ async def artist_view(cb: CallbackQuery):
         ):
             await cb.answer("Карточка недоступна.", show_alert=True)
             return
+        # админ и владелец карточки видят и скрытые релизы (с пометкой) —
+        # иначе скрытое из бота не найти и не вернуть
+        can_see_hidden = is_admin(cb.from_user.id) or artist.owner_user_id == cb.from_user.id
+        q = select(ReleaseMeta).where(ReleaseMeta.artist_id == artist_id,
+                                      ReleaseMeta.status != "deleted")
+        if not can_see_hidden:
+            q = q.where(ReleaseMeta.status == "published")
         metas = (await s.execute(
-            select(ReleaseMeta).where(ReleaseMeta.artist_id == artist_id,
-                                      ReleaseMeta.status == "published")
-            .order_by(ReleaseMeta.created_at.desc())
+            q.order_by(ReleaseMeta.created_at.desc())
         )).scalars().all()
         releases = []
         for m in metas:
@@ -173,7 +178,8 @@ async def artist_view(cb: CallbackQuery):
     caption = caption[:1020] + "…" if len(caption) > 1024 else caption
 
     rows = [[InlineKeyboardButton(
-        text=f"🎵 {l.title} ({RELEASE_TYPES.get(m.release_type, '')})",
+        text=f"🎵 {l.title} ({RELEASE_TYPES.get(m.release_type, '')})"
+             + (" 🚫 скрыт" if m.status != "published" else ""),
         callback_data=f"rel:view:{l.id}:a{artist.id}")] for l, m in releases]
     # ссылки соцсетей/площадок — кнопками парами
     link_row: list[InlineKeyboardButton] = []
@@ -192,6 +198,8 @@ async def artist_view(cb: CallbackQuery):
                                           callback_data=f"art:edit:{artist.id}")])
     if is_admin(cb.from_user.id) and artist.status == "active":
         rows.append([InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"art:hide:{artist.id}")])
+    if is_admin(cb.from_user.id) and artist.status == "hidden":
+        rows.append([InlineKeyboardButton(text="✅ Показать", callback_data=f"art:show:{artist.id}")])
     # «Назад» — ровно на один шаг: к списку, к результатам поиска
     # или к релизу — туда, откуда пришли
     if src == "list":
@@ -411,6 +419,26 @@ async def artist_hide(cb: CallbackQuery):
         s.add(artist)
         await s.commit()
     await cb.answer("Карточка скрыта.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("art:show:"))
+async def artist_show(cb: CallbackQuery):
+    from app.routers.admin_panel import is_admin
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Только для администратора.", show_alert=True)
+        return
+    artist_id = int(cb.data.split(":")[2])
+    async with SessionLocal() as s:
+        artist = (await s.execute(
+            select(Artist).where(Artist.id == artist_id)
+        )).scalar_one_or_none()
+        if not artist:
+            await cb.answer("Не найден.", show_alert=True)
+            return
+        artist.status = "active"
+        s.add(artist)
+        await s.commit()
+    await cb.answer("Карточка снова видна всем.", show_alert=True)
 
 
 # ─────────────────────── поиск исполнителей (fuzzy) ───────────────────────
