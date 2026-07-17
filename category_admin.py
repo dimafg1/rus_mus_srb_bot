@@ -799,6 +799,16 @@ def get_listing(listing_id: int):
                        "links": n_links, "date": rrow[3] or "",
                        "recorded": rrow[4] or "", "artist": rrow[5] or "",
                        "tracks": rrow[6] or 0, "artist_id": rrow[7]}
+            trows = conn.execute(
+                "SELECT id, position, title, duration FROM release_track "
+                "WHERE listing_id=? ORDER BY position", (listing_id,)).fetchall()
+            release["tracks_list"] = [
+                {"id": t[0], "position": t[1], "title": t[2] or "", "duration": t[3] or 0}
+                for t in trows]
+            try:
+                release["links_urls"] = [l.get("url") for l in json.loads(rrow[2] or "[]")]
+            except Exception:
+                release["links_urls"] = []
     photo_ids = [p.strip() for p in (row[5] or "").split(",") if p.strip()]
     video = _parse_video(row[17] or "")
     if not video.get("video_type") and (row[8] or "") == "release":
@@ -1340,6 +1350,183 @@ def artist_toggle_status(artist_id: int):
         new_status = "hidden" if (row[0] or "active") == "active" else "active"
         conn.execute("UPDATE artist SET status=? WHERE id=?", (new_status, artist_id))
     return {"ok": True, "status": new_status}
+
+
+# ── Полноценное редактирование музыкального слоя из админки ──
+
+_ADMIN_LINK_LABELS = {
+    "youtube.com": "YouTube", "youtu.be": "YouTube", "spotify.com": "Spotify",
+    "music.yandex": "Яндекс Музыка", "music.apple": "Apple Music",
+    "bandcamp.com": "Bandcamp", "soundcloud.com": "SoundCloud",
+    "vk.com": "VK Музыка", "vk.ru": "VK Музыка", "instagram.com": "Instagram",
+    "facebook.com": "Facebook", "t.me": "Telegram",
+}
+
+
+def _links_json_from_text(text_val: str | None) -> str | None:
+    """Строки/пробелы с URL → JSON [{label,url}] (метка по домену)."""
+    if not text_val or not text_val.strip():
+        return None
+    links = []
+    for u in text_val.replace(",", " ").split():
+        if not u.startswith("http"):
+            continue
+        label = "Ссылка"
+        for dom, lb in _ADMIN_LINK_LABELS.items():
+            if dom in u.lower():
+                label = lb
+                break
+        links.append({"label": label, "url": u})
+    return json.dumps(links, ensure_ascii=False) if links else None
+
+
+class ArtistPatch(BaseModel):
+    name: str | None = None
+    type: str | None = None
+    genres: str | None = None
+    city: str | None = None
+    descr: str | None = None
+    contact: str | None = None
+    links_text: str | None = None
+
+
+@app.patch("/api/artist/{artist_id}")
+def artist_patch(artist_id: int, body: ArtistPatch):
+    sets, vals = [], []
+    if body.name is not None and body.name.strip():
+        sets.append("name=?"); vals.append(body.name.strip()[:128])
+    if body.type is not None and body.type.strip():
+        sets.append("artist_type=?"); vals.append(body.type.strip()[:32])
+    for col, v, lim in (("genres", body.genres, 128), ("city_text", body.city, 64),
+                        ("descr", body.descr, 600), ("contact", body.contact, 128)):
+        if v is not None:
+            sets.append(f"{col}=?"); vals.append(v.strip()[:lim] or None)
+    if body.links_text is not None:
+        sets.append("links=?"); vals.append(_links_json_from_text(body.links_text))
+    if not sets:
+        return {"ok": True}
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM artist WHERE id=?", (artist_id,)).fetchone():
+            raise HTTPException(404, "Artist not found")
+        conn.execute(f"UPDATE artist SET {', '.join(sets)} WHERE id=?", vals + [artist_id])
+    return {"ok": True}
+
+
+@app.post("/api/artist/{artist_id}/photo")
+async def artist_photo_upload(artist_id: int, request: Request, filename: str = ""):
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    file_id = await _tg_upload("photo", filename, data)
+    with db() as conn:
+        conn.execute("UPDATE artist SET photo_file_id=? WHERE id=?", (file_id, artist_id))
+    return {"ok": True, "file_id": file_id}
+
+
+class ReleasePatch(BaseModel):
+    rtype: str | None = None
+    date: str | None = None
+    recorded: str | None = None
+    links_text: str | None = None
+    artist_id: int | None = None
+
+
+@app.patch("/api/release/{listing_id}")
+def release_patch(listing_id: int, body: ReleasePatch):
+    sets, vals = [], []
+    if body.rtype is not None and body.rtype in ("single", "ep", "album", "clip", "live"):
+        sets.append("release_type=?"); vals.append(body.rtype)
+    if body.date is not None:
+        sets.append("release_date=?"); vals.append(body.date.strip()[:32] or None)
+    if body.recorded is not None:
+        sets.append("recorded_at=?"); vals.append(body.recorded.strip()[:128] or None)
+    if body.links_text is not None:
+        sets.append("links=?"); vals.append(_links_json_from_text(body.links_text))
+    with db() as conn:
+        if body.artist_id is not None:
+            if not conn.execute("SELECT 1 FROM artist WHERE id=?", (body.artist_id,)).fetchone():
+                raise HTTPException(404, "Artist not found")
+            sets.append("artist_id=?"); vals.append(body.artist_id)
+        if not sets:
+            return {"ok": True}
+        if not conn.execute("SELECT 1 FROM release_meta WHERE listing_id=?", (listing_id,)).fetchone():
+            raise HTTPException(404, "Release not found")
+        conn.execute(f"UPDATE release_meta SET {', '.join(sets)} WHERE listing_id=?",
+                     vals + [listing_id])
+    return {"ok": True}
+
+
+class TrackPatch(BaseModel):
+    title: str
+
+
+@app.patch("/api/release_track/{track_id}")
+def track_patch(track_id: int, body: TrackPatch):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM release_track WHERE id=?", (track_id,)).fetchone():
+            raise HTTPException(404, "Track not found")
+        conn.execute("UPDATE release_track SET title=? WHERE id=?",
+                     (body.title.strip()[:255] or None, track_id))
+    return {"ok": True}
+
+
+@app.delete("/api/release_track/{track_id}")
+def track_delete(track_id: int):
+    with db() as conn:
+        row = conn.execute("SELECT listing_id FROM release_track WHERE id=?",
+                           (track_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Track not found")
+        conn.execute("DELETE FROM release_track WHERE id=?", (track_id,))
+        rest = conn.execute("SELECT id FROM release_track WHERE listing_id=? "
+                            "ORDER BY position", (row[0],)).fetchall()
+        for i, (tid,) in enumerate(rest, start=1):
+            conn.execute("UPDATE release_track SET position=? WHERE id=?", (i, tid))
+    return {"ok": True}
+
+
+async def _tg_upload_audio(filename: str, data: bytes) -> dict:
+    """Загрузка аудио в Telegram (как _tg_upload, но sendAudio → весь объект)."""
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio",
+            data={"chat_id": UPLOAD_CHAT_ID, "disable_notification": "true"},
+            files={"audio": (filename or "track.mp3", data)},
+        )
+        resp = r.json()
+        if not resp.get("ok"):
+            raise HTTPException(502, f"Telegram: {resp.get('description', 'upload failed')}")
+        msg = resp["result"]
+        try:
+            await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                data={"chat_id": UPLOAD_CHAT_ID, "message_id": msg["message_id"]},
+            )
+        except Exception:
+            pass
+        return msg["audio"]
+
+
+@app.post("/api/release/{listing_id}/track")
+async def track_add(listing_id: int, request: Request, filename: str = ""):
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    audio = await _tg_upload_audio(filename, data)
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM release_meta WHERE listing_id=?",
+                            (listing_id,)).fetchone():
+            raise HTTPException(404, "Release not found")
+        n = conn.execute("SELECT COUNT(*) FROM release_track WHERE listing_id=?",
+                         (listing_id,)).fetchone()[0] or 0
+        conn.execute(
+            "INSERT INTO release_track (listing_id, position, title, file_id, "
+            "file_unique_id, duration, file_name, mime_type) VALUES (?,?,?,?,?,?,?,?)",
+            (listing_id, n + 1,
+             (audio.get("title") or audio.get("file_name") or filename or f"Трек {n+1}")[:255],
+             audio["file_id"], audio.get("file_unique_id"), audio.get("duration"),
+             audio.get("file_name"), audio.get("mime_type")))
+    return {"ok": True}
 
 
 @app.get("/api/catalog/sections")
@@ -2743,8 +2930,88 @@ async function openArtistCard(id) {
         onerror="this.remove()">` : ''}
       <div class="listing-meta" style="flex:1">${meta}</div>
     </div>
+    <button class="btn btn-sm" style="background:#1a3a6a;color:#7af;margin-bottom:10px"
+      onclick="openArtistEdit(${a.id})">✏️ Редактировать</button>
     <div style="font-size:12px;color:#556;margin:8px 0">Релизы (${a.releases.length}):</div>
     ${_artistReleaseRows(a.releases)}`;
+}
+
+const ARTIST_TYPES_JS = ['Сольный исполнитель','Группа','Дуэт','Проект','DJ','Другое'];
+
+async function openArtistEdit(id) {
+  const el = document.getElementById('drill-content');
+  const a = await fetch(`/api/artist/${id}`).then(r=>r.json());
+  document.getElementById('drill-title').textContent = `✏️ ${a.name}`;
+  const typeOpts = ARTIST_TYPES_JS.map(t =>
+    `<option ${t===a.type?'selected':''}>${t}</option>`).join('');
+  el.innerHTML = `
+    <div class="listing-meta">
+      <span class="listing-meta-key">Название</span>
+      <span class="listing-meta-val"><input id="ae-name" class="lm-edit-input" value="${esc(a.name)}"></span>
+      <span class="listing-meta-key">Тип</span>
+      <span class="listing-meta-val"><select id="ae-type" class="lm-edit-input">${typeOpts}</select></span>
+      <span class="listing-meta-key">Жанры</span>
+      <span class="listing-meta-val"><input id="ae-genres" class="lm-edit-input" value="${esc(a.genres)}"></span>
+      <span class="listing-meta-key">Город</span>
+      <span class="listing-meta-val"><input id="ae-city" class="lm-edit-input" value="${esc(a.city)}"></span>
+      <span class="listing-meta-key">Контакты</span>
+      <span class="listing-meta-val"><input id="ae-contact" class="lm-edit-input" value="${esc(a.contact)}"></span>
+      <span class="listing-meta-key">Описание</span>
+      <span class="listing-meta-val"><textarea id="ae-descr" class="lm-edit-input" rows="4">${esc(a.descr)}</textarea></span>
+      <span class="listing-meta-key">Ссылки</span>
+      <span class="listing-meta-val"><textarea id="ae-links" class="lm-edit-input" rows="3"
+        placeholder="по одной ссылке на строку">${esc((a.links||[]).map(l=>l.url).join('\n'))}</textarea></span>
+      <span class="listing-meta-key">Фото</span>
+      <span class="listing-meta-val">
+        <button class="btn btn-sm" style="background:#1a3a6a;color:#7af"
+          onclick="document.getElementById('ae-photo').click()">🖼 ${a.photo_file_id?'Заменить':'Загрузить'}</button>
+        <span id="ae-photo-status" style="color:#9bc;font-size:12px;margin-left:6px"></span>
+        <input type="file" id="ae-photo" accept="image/*" style="display:none"
+          onchange="artistPhotoUpload(this, ${a.id})">
+      </span>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-sm" style="background:#1a4a2a;color:#7f7" onclick="artistEditSave(${a.id})">💾 Сохранить</button>
+      <button class="btn btn-sm" style="background:#333;color:#aaa" onclick="openArtistCard(${a.id})">✕ Отмена</button>
+    </div>`;
+}
+
+async function artistPhotoUpload(input, id) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const st = document.getElementById('ae-photo-status');
+  if (st) st.textContent = '⏳…';
+  try {
+    const r = await fetch(`/api/artist/${id}/photo?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST', headers: {'Content-Type':'application/octet-stream'}, body: file,
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.status);
+    if (st) st.textContent = '✔️';
+  } catch(e) {
+    if (st) st.textContent = '';
+    alert('Ошибка загрузки: ' + e.message);
+  }
+  input.value = '';
+}
+
+async function artistEditSave(id) {
+  const body = {
+    name: document.getElementById('ae-name').value,
+    type: document.getElementById('ae-type').value,
+    genres: document.getElementById('ae-genres').value,
+    city: document.getElementById('ae-city').value,
+    contact: document.getElementById('ae-contact').value,
+    descr: document.getElementById('ae-descr').value,
+    links_text: document.getElementById('ae-links').value,
+  };
+  try {
+    const r = await fetch(`/api/artist/${id}`, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.status);
+    await openArtistCard(id);
+    if (currentTab === 'artists') loadArtists();
+  } catch(e) { alert('Ошибка сохранения: ' + e.message); }
 }
 
 async function openArtistReleases(id) {
@@ -3541,6 +3808,92 @@ function lmStartEdit() {
       <input type="file" id="lm-file-video" accept="video/*" style="display:none" onchange="lmUploadMedia(this, 'video')">`;
     photosWrap.after(bar);
   }
+  if (d.release) lmRenderReleaseEdit(d);
+}
+
+// ── Редактирование полей релиза (тип, дата, ссылки, исполнитель, треки) ──
+async function lmRenderReleaseEdit(d) {
+  const host = document.getElementById('lm-flex');
+  if (!host) return;
+  let artistOptions = `<option value="">—</option>`;
+  try {
+    const arts = await fetch('/api/artists').then(r=>r.json());
+    artistOptions = (arts.rows||[]).map(a =>
+      `<option value="${a.id}" ${a.id===d.release.artist_id?'selected':''}>🎤 ${esc(a.name)}</option>`).join('');
+  } catch(e) {}
+  const typeOptions = Object.entries(RTYPE_LABELS).map(([code,label]) =>
+    `<option value="${code}" ${code===d.release.rtype?'selected':''}>${label}</option>`).join('');
+  host.innerHTML = `
+  <div style="border:1px solid #1a2a55;border-radius:8px;padding:10px;margin:10px 0">
+    <div style="font-size:11px;color:#667;margin-bottom:8px">ДАННЫЕ РЕЛИЗА</div>
+    <div class="listing-meta">
+      <span class="listing-meta-key">Исполнитель</span>
+      <span class="listing-meta-val"><select id="lm-rel-artist" class="lm-edit-input">${artistOptions}</select></span>
+      <span class="listing-meta-key">Тип</span>
+      <span class="listing-meta-val"><select id="lm-rel-rtype" class="lm-edit-input">${typeOptions}</select></span>
+      <span class="listing-meta-key">Дата</span>
+      <span class="listing-meta-val"><input id="lm-rel-date" class="lm-edit-input" value="${esc(d.release.date||'')}"></span>
+      <span class="listing-meta-key">Записано</span>
+      <span class="listing-meta-val"><input id="lm-rel-recorded" class="lm-edit-input" value="${esc(d.release.recorded||'')}" placeholder="студия (по желанию)"></span>
+      <span class="listing-meta-key">Ссылки</span>
+      <span class="listing-meta-val"><textarea id="lm-rel-links" class="lm-edit-input" rows="3"
+        placeholder="по одной ссылке на строку">${esc((d.release.links_urls||[]).join('\n'))}</textarea></span>
+    </div>
+    <div style="font-size:11px;color:#667;margin:10px 0 6px">ТРЕКИ</div>
+    <div id="lm-rel-tracks">${lmTrackRowsHtml(d)}</div>
+    <button class="btn btn-sm" style="background:#1a3a6a;color:#7af;margin-top:6px"
+      onclick="document.getElementById('lm-file-track').click()">➕ Добавить трек (аудио)</button>
+    <span id="lm-track-status" style="color:#9bc;font-size:12px;margin-left:8px"></span>
+    <input type="file" id="lm-file-track" accept="audio/*" style="display:none" onchange="lmUploadTrack(this)">
+  </div>`;
+}
+
+function lmTrackRowsHtml(d) {
+  const tracks = d.release.tracks_list || [];
+  if (!tracks.length) return '<div style="color:#556;font-size:12px">Треков нет</div>';
+  return tracks.map(t => `
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+      <span style="color:#667;font-size:12px;width:18px">${t.position}.</span>
+      <input class="lm-edit-input" style="flex:1" data-track-id="${t.id}" value="${esc(t.title)}">
+      <button class="btn btn-sm" style="background:#4a1a1a;color:#f77" onclick="lmTrackDelete(${t.id})">🗑</button>
+    </div>`).join('');
+}
+
+async function lmTrackDelete(trackId) {
+  if (!confirm('Удалить трек?')) return;
+  const d = window._currentListing;
+  try {
+    const r = await fetch(`/api/release_track/${trackId}`, {method:'DELETE'});
+    if (!r.ok) throw new Error((await r.json()).detail || r.status);
+    const fresh = await fetch(`/api/listing/${d.id}`).then(x=>x.json());
+    d.release = fresh.release;
+    window._currentListing = d;
+    document.getElementById('lm-rel-tracks').innerHTML = lmTrackRowsHtml(d);
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+
+async function lmUploadTrack(input) {
+  const d = window._currentListing;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const status = document.getElementById('lm-track-status');
+  if (status) status.textContent = '⏳ Загрузка…';
+  try {
+    const r = await fetch(`/api/release/${d.id}/track?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST', headers: {'Content-Type':'application/octet-stream'}, body: file,
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.detail || r.status);
+    const fresh = await fetch(`/api/listing/${d.id}`).then(x=>x.json());
+    d.release = fresh.release;
+    window._currentListing = d;
+    document.getElementById('lm-rel-tracks').innerHTML = lmTrackRowsHtml(d);
+    if (status) status.textContent = '✔️';
+  } catch(e) {
+    if (status) status.textContent = '';
+    alert('Ошибка загрузки: ' + e.message);
+  }
+  input.value = '';
 }
 
 async function lmUploadMedia(input, kind) {
@@ -3615,11 +3968,42 @@ async function lmSaveEdit() {
     ...(eventUpdate ? {event: eventUpdate} : {}),
   };
   try {
+    // Поля релиза: тип, дата, «записано», ссылки, исполнитель, названия треков
+    if (d.release) {
+      const relBody = {
+        rtype: document.getElementById('lm-rel-rtype')?.value,
+        date: document.getElementById('lm-rel-date')?.value ?? '',
+        recorded: document.getElementById('lm-rel-recorded')?.value ?? '',
+        links_text: document.getElementById('lm-rel-links')?.value ?? '',
+      };
+      const aSel = document.getElementById('lm-rel-artist');
+      if (aSel && aSel.value) relBody.artist_id = parseInt(aSel.value);
+      const rr = await fetch(`/api/release/${d.id}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(relBody)
+      });
+      if (!rr.ok) throw new Error((await rr.json()).detail || rr.status);
+      for (const inp of document.querySelectorAll('[data-track-id]')) {
+        const orig = (d.release.tracks_list || []).find(t => t.id == inp.dataset.trackId);
+        if (orig && inp.value.trim() !== orig.title) {
+          await fetch(`/api/release_track/${inp.dataset.trackId}`, {
+            method: 'PATCH', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({title: inp.value.trim()})
+          });
+        }
+      }
+    }
     const r = await fetch(`/api/listing/${d.id}`, {
       method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
     });
     const saved = await r.json();
     if (!r.ok) throw new Error(saved.detail || r.status);
+    if (d.release) {
+      openListing(d.id);         // перечитать всё с сервера, включая мету
+      refreshCatalogIfOpen();
+      if (currentTab === 'releases') loadReleases();
+      return;
+    }
     // Обновляем локальный объект и перерисовываем
     Object.assign(window._currentListing, {
       title: body.title, descr: body.descr, price: body.price, contact: body.contact,
