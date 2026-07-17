@@ -298,10 +298,14 @@ async def releases_feed(cb: CallbackQuery, state: FSMContext):
         except ValueError:
             offset = 0
 
+    from app.routers.admin_panel import is_admin
+    admin = is_admin(cb.from_user.id)
     async with SessionLocal() as s:
+        q = select(ReleaseMeta).where(ReleaseMeta.status != "deleted")
+        if not admin:  # админ видит все релизы, скрытые — с красным кружком
+            q = q.where(ReleaseMeta.status == "published")
         metas = (await s.execute(
-            select(ReleaseMeta).where(ReleaseMeta.status == "published")
-            .order_by(ReleaseMeta.created_at.desc())
+            q.order_by(ReleaseMeta.created_at.desc())
         )).scalars().all()
         total = len(metas)
         page = metas[offset:offset + PAGE]
@@ -317,8 +321,9 @@ async def releases_feed(cb: CallbackQuery, state: FSMContext):
                 continue
             a_name = artist.name if artist else "?"
             t_label = RELEASE_TYPES.get(m.release_type, "")
+            mark = "🔴 " if m.status != "published" else ""
             rows.append([InlineKeyboardButton(
-                text=f"🎵 {a_name} — {listing.title} ({t_label})",
+                text=f"{mark}🎵 {a_name} — {listing.title} ({t_label})",
                 callback_data=f"rel:view:{listing.id}")])
 
     pages = max(1, (total + PAGE - 1) // PAGE)
