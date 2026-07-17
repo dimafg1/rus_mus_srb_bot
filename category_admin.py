@@ -785,7 +785,8 @@ def get_listing(listing_id: int):
         release = None
         rrow = conn.execute(
             "SELECT rm.release_type, rm.status, rm.links, rm.release_date, rm.recorded_at, "
-            "a.name, (SELECT COUNT(*) FROM release_track rt WHERE rt.listing_id=rm.listing_id) "
+            "a.name, (SELECT COUNT(*) FROM release_track rt WHERE rt.listing_id=rm.listing_id), "
+            "rm.artist_id "
             "FROM release_meta rm LEFT JOIN artist a ON a.id=rm.artist_id "
             "WHERE rm.listing_id=?", (listing_id,)
         ).fetchone()
@@ -797,7 +798,7 @@ def get_listing(listing_id: int):
             release = {"rtype": rrow[0] or "", "status": rrow[1] or "",
                        "links": n_links, "date": rrow[3] or "",
                        "recorded": rrow[4] or "", "artist": rrow[5] or "",
-                       "tracks": rrow[6] or 0}
+                       "tracks": rrow[6] or 0, "artist_id": rrow[7]}
     photo_ids = [p.strip() for p in (row[5] or "").split(",") if p.strip()]
     video = _parse_video(row[17] or "")
     if not video.get("video_type") and (row[8] or "") == "release":
@@ -976,6 +977,9 @@ def delete_listing(listing_id: int):
             raise HTTPException(404, "Listing not found")
         conn.execute("DELETE FROM listing WHERE id=?", (listing_id,))
         conn.execute("DELETE FROM listing_views WHERE listing_id=?", (listing_id,))
+        # Релизы: подчищаем мету и треки, чтобы не оставлять сирот
+        conn.execute("DELETE FROM release_meta WHERE listing_id=?", (listing_id,))
+        conn.execute("DELETE FROM release_track WHERE listing_id=?", (listing_id,))
         conn.commit()
     return {"ok": True}
 
@@ -3401,7 +3405,16 @@ function renderListingModal(d) {
     ${d.descr ? `<div class="listing-descr" id="lm-descr">${esc(d.descr)}</div>` : `<div class="listing-descr" id="lm-descr" style="display:none"></div>`}
     ${ev ? `<div class="listing-meta" id="lm-event" style="border-left:3px solid #7af;padding-left:10px">${eventRows}</div>` : ''}
     <div class="listing-meta">
-      ${d.category ? `<span class="listing-meta-key">Категория</span><span class="listing-meta-val">${esc(d.category)}</span>` : ''}
+      ${d.release ? `
+      <span class="listing-meta-key">Раздел</span><span class="listing-meta-val">${esc(sectionName(d.type))}</span>
+      <span class="listing-meta-key">Исполнитель</span><span class="listing-meta-val">${d.release.artist?`<a style="color:#7eb8f7;cursor:pointer" onclick="openArtistCard(${d.release.artist_id||0})">🎤 ${esc(d.release.artist)}</a>`:'—'}</span>
+      <span class="listing-meta-key">Тип релиза</span><span class="listing-meta-val">${esc(RTYPE_LABELS[d.release.rtype]||d.release.rtype||'—')}${d.release.date?' · '+esc(d.release.date):''}</span>
+      <span class="listing-meta-key">Контакт</span><span class="listing-meta-val" id="lm-contact">${contact}</span>
+      <span class="listing-meta-key">Опубликовано</span><span class="listing-meta-val">${fmtDate(d.created_at)}</span>
+      <span class="listing-meta-key">Статус релиза</span><span class="listing-meta-val">${d.release.status==='published'?'🟢 опубликован':'⚪ '+(d.release.status==='hidden'?'скрыт':esc(d.release.status||'—'))}</span>
+      <span class="listing-meta-key">Треков / ссылок</span><span class="listing-meta-val">${d.release.tracks} / ${d.release.links}</span>
+      ${d.release.recorded ? `<span class="listing-meta-key">Записано</span><span class="listing-meta-val">${esc(d.release.recorded)}</span>` : ''}`
+      : `${d.category ? `<span class="listing-meta-key">Категория</span><span class="listing-meta-val">${esc(d.category)}</span>` : ''}
       ${d.city ? `<span class="listing-meta-key">Город</span><span class="listing-meta-val">${esc(d.city)}</span>` : ''}
       <span class="listing-meta-key">Контакт</span><span class="listing-meta-val" id="lm-contact">${contact}</span>
       <span class="listing-meta-key">Раздел</span><span class="listing-meta-val">${esc(sectionName(d.type))}</span>
@@ -3409,13 +3422,7 @@ function renderListingModal(d) {
       <span class="listing-meta-key">Статус</span><span class="listing-meta-val">${(!d.status||d.status==='active')
         ? '🟢 активно'
         : '⚪ '+(d.status==='archived'?'в архиве':esc(d.status))+(d.archive_reason?' · '+esc(d.archive_reason):'')}</span>
-      ${d.expires_at ? `<span class="listing-meta-key">Действует до</span><span class="listing-meta-val">${fmtDate(d.expires_at)}</span>` : ''}
-      ${d.release ? `
-      <span class="listing-meta-key">Исполнитель</span><span class="listing-meta-val">🎤 ${esc(d.release.artist||'—')}</span>
-      <span class="listing-meta-key">Тип релиза</span><span class="listing-meta-val">${esc(d.release.rtype||'—')}${d.release.date?' · '+esc(d.release.date):''}</span>
-      <span class="listing-meta-key">Статус релиза</span><span class="listing-meta-val">${d.release.status==='published'?'🟢 опубликован':'⚪ '+esc(d.release.status||'—')}</span>
-      <span class="listing-meta-key">Треков / ссылок</span><span class="listing-meta-val">${d.release.tracks} / ${d.release.links}</span>
-      ${d.release.recorded ? `<span class="listing-meta-key">Записано</span><span class="listing-meta-val">${esc(d.release.recorded)}</span>` : ''}` : ''}
+      ${d.expires_at ? `<span class="listing-meta-key">Действует до</span><span class="listing-meta-val">${fmtDate(d.expires_at)}</span>` : ''}`}
     </div>
     ${flexRows ? `<div class="listing-meta" id="lm-flex">${flexRows}</div>` : `<div id="lm-flex"></div>`}
     <div class="listing-stats">
@@ -3426,7 +3433,9 @@ function renderListingModal(d) {
     </div>
     <div class="lm-admin-bar" id="lm-admin-bar">
       <button class="btn btn-sm" style="background:#1a3a6a;color:#7af" onclick="lmStartEdit()">✏️ Редактировать</button>
-      <button class="btn btn-sm" id="lm-toggle-btn" style="background:#1a4a2a;color:#7f7" onclick="lmToggleSold()">${d.is_sold ? '🔓 Открыть' : '🔒 Скрыть'}</button>
+      ${d.release
+        ? `<button class="btn btn-sm" id="lm-toggle-btn" style="background:${d.release.status==='published'?'#4a2a1a':'#1a4a2a'};color:${d.release.status==='published'?'#fa8':'#7f7'}" onclick="lmToggleRelease()">${d.release.status==='published' ? '🚫 Скрыть релиз' : '✅ Показать релиз'}</button>`
+        : `<button class="btn btn-sm" id="lm-toggle-btn" style="background:#1a4a2a;color:#7f7" onclick="lmToggleSold()">${d.is_sold ? '🔓 Открыть' : '🔒 Скрыть'}</button>`}
       ${['market','service','vacancy'].includes(d.type) ? `<button class="btn btn-sm" style="background:#3a2c0a;color:#fc6" onclick="lmExtend()">⏳ Продлить 30 дн</button>` : ''}
       <button class="btn btn-sm" style="background:#4a1a1a;color:#f77" onclick="lmConfirmDelete()">🗑 Удалить</button>
     </div>
@@ -3466,10 +3475,14 @@ function lmStartEdit() {
     `<div class="lm-field-group"><label class="lm-field-label">Название</label>
      <input id="lm-inp-title" class="lm-edit-input" value="${esc(d.title||'')}"></div>`;
   const priceEl = document.getElementById('lm-price');
-  priceEl.style.display = '';
-  priceEl.innerHTML =
-    `<div class="lm-field-group"><label class="lm-field-label">Цена</label>
-     <input id="lm-inp-price" class="lm-edit-input" value="${esc(d.price||'')}"></div>`;
+  if (d.release) {
+    priceEl.style.display = 'none';  // у релизов нет цены — это не объявление
+  } else {
+    priceEl.style.display = '';
+    priceEl.innerHTML =
+      `<div class="lm-field-group"><label class="lm-field-label">Цена</label>
+       <input id="lm-inp-price" class="lm-edit-input" value="${esc(d.price||'')}"></div>`;
+  }
   const descrEl = document.getElementById('lm-descr');
   descrEl.style.display = '';
   descrEl.innerHTML =
@@ -3621,6 +3634,19 @@ async function lmSaveEdit() {
     renderListingModal(window._currentListing);
     refreshCatalogIfOpen();
   } catch(e) { alert('Ошибка сохранения: ' + e.message); }
+}
+
+async function lmToggleRelease() {
+  const d = window._currentListing;
+  if (!d || !d.release) return;
+  try {
+    const r = await fetch(`/api/release/${d.id}/toggle_status`, {method:'POST'}).then(x=>x.json());
+    if (r && r.ok) {
+      openListing(d.id);           // перерисовать модалку со свежим статусом
+      refreshCatalogIfOpen();
+      if (currentTab === 'releases') loadReleases();
+    } else alert('Не удалось: ' + ((r&&r.detail)||'?'));
+  } catch(e) { alert('Ошибка: ' + e.message); }
 }
 
 async function lmToggleSold() {
