@@ -614,9 +614,9 @@ async def my_releases(cb: CallbackQuery, state: FSMContext):
             )).scalar_one_or_none()
             if not meta or meta.status == "deleted":
                 continue
-            mark = "" if meta.status == "published" else " (скрыт)"
+            mark = "" if meta.status == "published" else "🔴 "
             rows.append([InlineKeyboardButton(
-                text=f"🎵 {l.title}{mark}", callback_data=f"rel:view:{l.id}:my")])
+                text=f"{mark}🎵 {l.title}", callback_data=f"rel:view:{l.id}:my")])
     rows.append([InlineKeyboardButton(text="➕ Добавить релиз", callback_data="rel:add")])
     rows.append([InlineKeyboardButton(text="⬅️ К релизам", callback_data="go_releases"), _menu_btn()])
     text = "💿 <b>Мои релизы</b>" + ("" if len(rows) > 2 else "\n\nУ вас пока нет релизов.")

@@ -86,8 +86,7 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
     page = artists[offset:offset + PAGE]
 
     rows = [[InlineKeyboardButton(
-        text=f"🎤 {a.name} · {a.artist_type}"
-             + (" 🚫 скрыт" if a.status != "active" else ""),
+        text=("🔴 " if a.status != "active" else "") + f"🎤 {a.name} · {a.artist_type}",
         callback_data=f"art:view:{a.id}:list")] for a in page]
     pages = max(1, (total + PAGE - 1) // PAGE)
     if pages > 1:
@@ -192,8 +191,8 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
     caption = caption[:1020] + "…" if len(caption) > 1024 else caption
 
     rows = [[InlineKeyboardButton(
-        text=f"🎵 {l.title} ({RELEASE_TYPES.get(m.release_type, '')})"
-             + (" 🚫 скрыт" if m.status != "published" else ""),
+        text=("🔴 " if m.status != "published" else "")
+             + f"🎵 {l.title} ({RELEASE_TYPES.get(m.release_type, '')})",
         callback_data=f"rel:view:{l.id}:a{artist.id}")] for l, m in releases]
     # ссылки соцсетей/площадок — кнопками парами
     link_row: list[InlineKeyboardButton] = []
