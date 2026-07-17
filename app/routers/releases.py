@@ -567,7 +567,7 @@ async def release_admin_hide(cb: CallbackQuery):
         meta.status = "hidden"
         s.add(meta)
         await s.commit()
-    await cb.answer("Релиз скрыт.", show_alert=True)
+    await cb.answer()
     await _show_release_card(cb, listing_id)  # сразу свежий статус и кнопки
 
 
@@ -588,7 +588,7 @@ async def release_admin_show(cb: CallbackQuery):
         meta.status = "published"
         s.add(meta)
         await s.commit()
-    await cb.answer("Релиз снова опубликован.", show_alert=True)
+    await cb.answer()
     await _show_release_card(cb, listing_id)
 
 

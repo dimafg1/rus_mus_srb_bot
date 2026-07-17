@@ -431,7 +431,7 @@ async def artist_hide(cb: CallbackQuery):
         artist.status = "hidden"
         s.add(artist)
         await s.commit()
-    await cb.answer("Карточка скрыта.", show_alert=True)
+    await cb.answer()
     await _show_artist_card(cb, artist_id, "list")  # сразу свежий статус и кнопки
 
 
@@ -452,7 +452,7 @@ async def artist_show(cb: CallbackQuery):
         artist.status = "active"
         s.add(artist)
         await s.commit()
-    await cb.answer("Карточка снова видна всем.", show_alert=True)
+    await cb.answer()
     await _show_artist_card(cb, artist_id, "list")
 
 
