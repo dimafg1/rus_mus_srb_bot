@@ -348,6 +348,16 @@ async def release_view(cb: CallbackQuery):
     parts = cb.data.split(":")
     listing_id = int(parts[2])
     src = parts[3] if len(parts) > 3 else ""
+    await _show_release_card(cb, listing_id, src)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+async def _show_release_card(cb: CallbackQuery, listing_id: int, src: str = ""):
+    """Рендер карточки релиза. Вызывается и после Скрыть/Показать,
+    чтобы экран сразу отражал новый статус."""
     listing, meta, artist, tracks = await _load_release(listing_id)
     if not listing or not meta or meta.status != "published":
         # владельцу и админу показываем и скрытые
@@ -371,7 +381,6 @@ async def release_view(cb: CallbackQuery):
         await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
     await log_listing_view(listing_id=listing.id, user_id=cb.from_user.id,
                            section="releases", action="open", source="catalog")
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("rel:listen:"))
@@ -559,6 +568,7 @@ async def release_admin_hide(cb: CallbackQuery):
         s.add(meta)
         await s.commit()
     await cb.answer("Релиз скрыт.", show_alert=True)
+    await _show_release_card(cb, listing_id)  # сразу свежий статус и кнопки
 
 
 @router.callback_query(F.data.startswith("rel:admshow:"))
@@ -579,6 +589,7 @@ async def release_admin_show(cb: CallbackQuery):
         s.add(meta)
         await s.commit()
     await cb.answer("Релиз снова опубликован.", show_alert=True)
+    await _show_release_card(cb, listing_id)
 
 
 # ─────────────────────────── мои релизы ───────────────────────────

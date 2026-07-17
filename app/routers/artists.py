@@ -73,16 +73,21 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
         except ValueError:
             offset = 0
 
+    from app.routers.admin_panel import is_admin
+    admin = is_admin(cb.from_user.id)
     async with SessionLocal() as s:
+        q = select(Artist)
+        if not admin:  # админ видит и скрытых (с пометкой) — иначе их не найти
+            q = q.where(Artist.status == "active")
         artists = (await s.execute(
-            select(Artist).where(Artist.status == "active")
-            .order_by(Artist.created_at.desc())  # новые сверху, как в релизах
+            q.order_by(Artist.created_at.desc())  # новые сверху, как в релизах
         )).scalars().all()
     total = len(artists)
     page = artists[offset:offset + PAGE]
 
     rows = [[InlineKeyboardButton(
-        text=f"🎤 {a.name} · {a.artist_type}",
+        text=f"🎤 {a.name} · {a.artist_type}"
+             + (" 🚫 скрыт" if a.status != "active" else ""),
         callback_data=f"art:view:{a.id}:list")] for a in page]
     pages = max(1, (total + PAGE - 1) // PAGE)
     if pages > 1:
@@ -122,7 +127,16 @@ async def artist_view(cb: CallbackQuery):
     parts = cb.data.split(":")
     artist_id = int(parts[2])
     src = parts[3] if len(parts) > 3 else "list"
+    await _show_artist_card(cb, artist_id, src)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
+
+async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"):
+    """Рендер карточки исполнителя. Вызывается и после Скрыть/Показать,
+    чтобы экран сразу отражал новый статус."""
     from app.routers.admin_panel import is_admin
     async with SessionLocal() as s:
         artist = (await s.execute(
@@ -215,7 +229,6 @@ async def artist_view(cb: CallbackQuery):
                        photo=artist.photo_file_id)
     await log_event("artist_opened", user_id=cb.from_user.id,
                     entity_type="artist", entity_id=artist.id, source=src[:16])
-    await cb.answer()
 
 
 # ─────────────────────── редактирование карточки ───────────────────────
@@ -419,6 +432,7 @@ async def artist_hide(cb: CallbackQuery):
         s.add(artist)
         await s.commit()
     await cb.answer("Карточка скрыта.", show_alert=True)
+    await _show_artist_card(cb, artist_id, "list")  # сразу свежий статус и кнопки
 
 
 @router.callback_query(F.data.startswith("art:show:"))
@@ -439,6 +453,7 @@ async def artist_show(cb: CallbackQuery):
         s.add(artist)
         await s.commit()
     await cb.answer("Карточка снова видна всем.", show_alert=True)
+    await _show_artist_card(cb, artist_id, "list")
 
 
 # ─────────────────────── поиск исполнителей (fuzzy) ───────────────────────
