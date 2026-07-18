@@ -236,7 +236,9 @@ bot = Bot(
     token=settings.bot_token,
     default=DefaultBotProperties(parse_mode="HTML"),
 )
-dp = Dispatcher()
+# FSM в SQLite: шаг мастера и введённые данные переживают рестарт бота
+from app.fsm_storage import SQLiteFsmStorage
+dp = Dispatcher(storage=SQLiteFsmStorage())
 
 
 # ── Глобальный обработчик ошибок: полный трейсбек + контекст в лог ──────────

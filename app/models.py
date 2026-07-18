@@ -215,6 +215,25 @@ class BotMessage(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────
+# FsmState (состояние мастеров aiogram: переживает рестарт бота)
+# ─────────────────────────────────────────────────────────
+class FsmState(SQLModel, table=True):
+    # Ключ "bot_id:chat_id:user_id:destiny" из aiogram StorageKey
+    key: str = Field(sa_column=Column(String(255), primary_key=True))
+
+    # Имя состояния FSM, например "Sell:descr"; None — состояния нет
+    state: Optional[str] = Field(default=None, sa_column=Column(String(255)))
+
+    # Данные мастера (title, descr, photos и т.д.) как JSON-строка
+    data: str = Field(default="{}", sa_column=Column(Text, nullable=False))
+
+    updated_at: datetime = Field(
+        default_factory=utcnow_naive,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # BotUser (трекинг пользователей: ник, id, время последнего захода)
 # ─────────────────────────────────────────────────────────
 class BotUser(SQLModel, table=True):

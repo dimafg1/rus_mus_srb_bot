@@ -1,0 +1,113 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from aiogram.fsm.storage.base import StorageKey
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlmodel import SQLModel
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from app.fsm_storage import SQLiteFsmStorage
+from app.models import FsmState  # noqa: F401 — регистрирует таблицу в metadata
+
+
+KEY = StorageKey(bot_id=1, chat_id=100, user_id=100)
+OTHER_KEY = StorageKey(bot_id=1, chat_id=200, user_id=200)
+
+
+class FsmStorageTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        db_path = Path(self._tmp.name) / "fsm_test.db"
+        self.engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        async with self.engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        self.session_factory = async_sessionmaker(
+            self.engine, class_=AsyncSession, expire_on_commit=False
+        )
+
+    async def asyncTearDown(self):
+        await self.engine.dispose()
+        self._tmp.cleanup()
+
+    def _storage(self) -> SQLiteFsmStorage:
+        return SQLiteFsmStorage(session_factory=self.session_factory)
+
+    async def test_state_and_data_roundtrip(self):
+        storage = self._storage()
+        await storage.set_state(KEY, "Sell:descr")
+        await storage.set_data(KEY, {"title": "BD 770 PRO", "photos": ["f1", "f2"]})
+
+        self.assertEqual(await storage.get_state(KEY), "Sell:descr")
+        self.assertEqual(
+            await storage.get_data(KEY),
+            {"title": "BD 770 PRO", "photos": ["f1", "f2"]},
+        )
+
+    async def test_restart_mid_wizard_restores_state_and_data(self):
+        # «Рестарт»: первый экземпляр пишет, второй (с пустым кэшем) читает из БД.
+        first = self._storage()
+        await first.set_state(KEY, "Sell:price")
+        await first.set_data(KEY, {"title": "Заголовок", "descr": "Описание", "photos": ["fid"]})
+
+        second = self._storage()
+        self.assertEqual(await second.get_state(KEY), "Sell:price")
+        self.assertEqual(
+            await second.get_data(KEY),
+            {"title": "Заголовок", "descr": "Описание", "photos": ["fid"]},
+        )
+
+    async def test_clear_survives_restart(self):
+        # FSMContext.clear() → set_state(None) + set_data({}); после рестарта пусто.
+        first = self._storage()
+        await first.set_state(KEY, "Sell:photo")
+        await first.set_data(KEY, {"title": "x"})
+        await first.set_state(KEY, None)
+        await first.set_data(KEY, {})
+
+        second = self._storage()
+        self.assertIsNone(await second.get_state(KEY))
+        self.assertEqual(await second.get_data(KEY), {})
+
+    async def test_keys_are_isolated(self):
+        storage = self._storage()
+        await storage.set_state(KEY, "Sell:title")
+        await storage.set_data(KEY, {"title": "a"})
+
+        self.assertIsNone(await storage.get_state(OTHER_KEY))
+        self.assertEqual(await storage.get_data(OTHER_KEY), {})
+
+    async def test_get_data_returns_copy_not_shared_reference(self):
+        storage = self._storage()
+        await storage.set_data(KEY, {"photos": ["f1"]})
+
+        snapshot = await storage.get_data(KEY)
+        snapshot["photos"].append("mutated")
+        snapshot["extra"] = True
+
+        fresh = self._storage()
+        self.assertEqual(await fresh.get_data(KEY), {"photos": ["f1"]})
+
+    async def test_update_data_merges_and_persists(self):
+        # update_data из BaseStorage должен опираться на наши get/set.
+        first = self._storage()
+        await first.set_data(KEY, {"title": "a"})
+        merged = await first.update_data(KEY, {"descr": "b"})
+        self.assertEqual(merged, {"title": "a", "descr": "b"})
+
+        second = self._storage()
+        self.assertEqual(await second.get_data(KEY), {"title": "a", "descr": "b"})
+
+    async def test_cyrillic_stored_readably(self):
+        storage = self._storage()
+        await storage.set_data(KEY, {"title": "Синтезатор"})
+        async with self.session_factory() as s:
+            from sqlalchemy import select
+            row = (await s.execute(select(FsmState))).scalars().first()
+        self.assertIn("Синтезатор", row.data)
+        self.assertEqual(json.loads(row.data)["title"], "Синтезатор")
+
+
+if __name__ == "__main__":
+    unittest.main()
