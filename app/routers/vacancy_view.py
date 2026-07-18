@@ -45,7 +45,7 @@ from app.search.fuzzy import search_items
 
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
-from app.lifecycle import days_left_text, should_show_extend_button, extend_listing, archive_as_closed, is_active
+from app.lifecycle import days_left_text, should_show_extend_button, extend_listing, archive_as_closed, is_active, can_owner_reactivate
 from app.routers.utils import build_contact_url, escape_html
 
 
@@ -485,6 +485,10 @@ async def vac_extend_listing(cb: CallbackQuery):
             return
         if listing.owner_id != cb.from_user.id:
             await cb.answer("Продлить может только автор вакансии.", show_alert=True)
+            return
+
+        if not can_owner_reactivate(listing):
+            await cb.answer("Эту вакансию нельзя вернуть: она снята с публикации.", show_alert=True)
             return
 
         extend_listing(listing)

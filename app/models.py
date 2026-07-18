@@ -33,6 +33,13 @@ class Category(SQLModel, table=True):
         sa_column=Column(Integer, ForeignKey("category.id", ondelete="SET NULL"), index=True, nullable=True)
     )
     fields: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    # Порядок в списках (правится drag-and-drop в веб-админке). Историческая
+    # колонка добавлялась ALTER-ом из category_admin.py; в модели она нужна,
+    # чтобы чистая БД из init_db() не падала на ORDER BY order_num.
+    order_num: Optional[int] = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=True, server_default="0"),
+    )
 
 # ─────────────────────────────────────────────────────────
 # Item (анкета для каталога)

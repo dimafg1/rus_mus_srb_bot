@@ -955,8 +955,26 @@ async def preview_and_confirm(m: Message, state: FSMContext):
 
 
 # ---------- Публикация объявления (без изменений основного сценария) ----------
+from collections import defaultdict as _dd
+_market_publish_locks: dict[int, asyncio.Lock] = _dd(asyncio.Lock)
+
+
 @router.callback_query(Sell.confirm, F.data == "sell_ok")
 async def sell_ok(cb: CallbackQuery, state: FSMContext):
+    """Не допускаем параллельную публикацию двойным нажатием кнопки."""
+    lock = _market_publish_locks[cb.from_user.id]
+    if lock.locked():
+        await cb.answer("Публикуем, пожалуйста, подождите.")
+        return
+    async with lock:
+        # Второй update мог попасть в диспетчер до смены состояния первым update.
+        if await state.get_state() != Sell.confirm.state:
+            await cb.answer("Объявление уже опубликовано.")
+            return
+        await _sell_ok_locked(cb, state)
+
+
+async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
 
     # Подчистим временные кеши альбома только текущего пользователя.
@@ -999,8 +1017,12 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
             await s.commit()
             await s.refresh(l)
 
-            # Сохраняем id для последующего сохранения flex после публикации
+            # Сохраняем id для последующего сохранения flex после публикации.
+            # Состояние снимаем сразу после commit: повторный клик по старой
+            # кнопке «Опубликовать» не создаст дубль (данные в FSM остаются —
+            # они нужны мастеру доп. полей).
             await state.update_data(listing_id=l.id)
+            await state.set_state(None)
 
         from app.analytics import log_event
         await log_event("listing_created", user_id=cb.from_user.id,

@@ -99,6 +99,44 @@ class FsmStorageTests(unittest.IsolatedAsyncioTestCase):
         second = self._storage()
         self.assertEqual(await second.get_data(KEY), {"title": "a", "descr": "b"})
 
+    async def test_concurrent_set_state_and_set_data_both_persist(self):
+        # Гонка: параллельные set_state и set_data не должны затирать друг друга в БД.
+        import asyncio
+        storage = self._storage()
+        await asyncio.gather(
+            storage.set_state(KEY, "Sell:photo"),
+            storage.set_data(KEY, {"title": "x", "photos": ["f1"]}),
+        )
+
+        fresh = self._storage()  # читает только из БД
+        self.assertEqual(await fresh.get_state(KEY), "Sell:photo")
+        self.assertEqual(await fresh.get_data(KEY), {"title": "x", "photos": ["f1"]})
+
+    async def test_concurrent_update_data_keeps_both_updates(self):
+        # Гонка: два параллельных update_data — оба обновления должны выжить.
+        import asyncio
+        storage = self._storage()
+        await storage.set_data(KEY, {"base": 1})
+        await asyncio.gather(
+            storage.update_data(KEY, {"a": "A"}),
+            storage.update_data(KEY, {"b": "B"}),
+        )
+
+        fresh = self._storage()
+        self.assertEqual(await fresh.get_data(KEY), {"base": 1, "a": "A", "b": "B"})
+
+    async def test_concurrent_burst_all_keys_survive(self):
+        # Шквал параллельных обновлений (как альбом из 10 фото) — ни одно не теряется.
+        import asyncio
+        storage = self._storage()
+        await asyncio.gather(*[
+            storage.update_data(KEY, {f"k{i}": i}) for i in range(10)
+        ])
+
+        fresh = self._storage()
+        data = await fresh.get_data(KEY)
+        self.assertEqual(data, {f"k{i}": i for i in range(10)})
+
     async def test_cyrillic_stored_readably(self):
         storage = self._storage()
         await storage.set_data(KEY, {"title": "Синтезатор"})

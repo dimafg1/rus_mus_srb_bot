@@ -2578,8 +2578,27 @@ async def af_add_cancel(cb: CallbackQuery, state: FSMContext):
     print(f"[AFISHA][CANCEL] | chat_id={chat_id}")
 
 # Превью: «Опубликовать»
+import asyncio as _asyncio
+from collections import defaultdict as _dd
+_event_publish_locks: dict[int, _asyncio.Lock] = _dd(_asyncio.Lock)
+
+
 @router.callback_query(StateFilter(AfishaAddStates.preview), F.data == "af:add:publish")
 async def af_add_publish(cb: CallbackQuery, state: FSMContext):
+    """Не допускаем параллельную публикацию двойным нажатием кнопки."""
+    lock = _event_publish_locks[cb.from_user.id]
+    if lock.locked():
+        await cb.answer("Публикуем, пожалуйста, подождите.")
+        return
+    async with lock:
+        # Второй update мог попасть в диспетчер до очистки FSM первым update.
+        if await state.get_state() != AfishaAddStates.preview.state:
+            await cb.answer("Событие уже опубликовано.")
+            return
+        await _af_add_publish_locked(cb, state)
+
+
+async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await _delete_draft(cb.bot, chat_id, state)
     try:

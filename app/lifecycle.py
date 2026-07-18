@@ -133,20 +133,35 @@ def needs_expiry_reminder(listing: Listing, *, now: Optional[datetime] = None) -
     return True
 
 
+def can_owner_reactivate(listing: Listing) -> bool:
+    """Может ли владелец сам вернуть/продлить объявление.
+
+    Активное — можно продлевать; архивное — только если истекло само или
+    закрыто владельцем. Снятое админом (admin_removed) или снятое с
+    публикации (unpublished) старой кнопкой не возвращается.
+    """
+    if is_active(listing):
+        return True
+    return is_archived(listing) and listing.archive_reason in (REASON_EXPIRED, REASON_CLOSED)
+
+
 def extend_listing(listing: Listing, *, days: int = ACTIVE_DAYS, now: Optional[datetime] = None) -> None:
     if not is_expirable(listing):
         return
 
     current = _safe_dt(now) or utcnow()
-    base = _safe_dt(listing.expires_at)
 
-    if base is None:
-        base = default_expires_at(listing) or current
-
-    # Реактивация из глубокого карантина: продлеваем от «сейчас», иначе
-    # base + days может остаться в прошлом и объявление тут же заархивируется
-    if base < current:
+    if is_archived(listing):
+        # Реактивация из архива (закрыто владельцем или истекло): срок строго
+        # от «сейчас». Иначе цикл «закрыть → вернуть» накручивал бы
+        # остаток + 30 дней при каждом обороте.
         base = current
+    else:
+        base = _safe_dt(listing.expires_at)
+        if base is None:
+            base = default_expires_at(listing) or current
+        if base < current:
+            base = current
 
     listing.status = STATUS_ACTIVE
     listing.archive_reason = None

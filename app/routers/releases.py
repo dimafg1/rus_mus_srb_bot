@@ -1613,8 +1613,15 @@ async def publish(cb: CallbackQuery, state: FSMContext):
 
 async def _publish_locked(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if data.get("rel_publishing"):  # защита от двойного нажатия
-        await cb.answer()
+    if data.get("rel_publishing"):
+        # Защита от двойного нажатия и от дубля после рестарта посреди
+        # публикации (FSM теперь переживает рестарт). Не молчим: говорим,
+        # как проверить результат и как выйти из этого состояния.
+        await cb.answer(
+            "Публикация уже выполнялась. Проверьте раздел «Мои релизы»: "
+            "если релиза там нет — начните добавление заново.",
+            show_alert=True,
+        )
         return
     if not data.get("title") or not data.get("cover") or not data.get("artist_id"):
         await cb.answer("Не хватает данных — начните заново.", show_alert=True)

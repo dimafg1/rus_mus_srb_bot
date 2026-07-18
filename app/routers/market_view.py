@@ -53,6 +53,7 @@ from app.lifecycle import (
     extend_listing,
     archive_as_closed,
     is_active,
+    can_owner_reactivate,
 )
 
 import urllib.parse
@@ -1308,6 +1309,10 @@ async def market_extend_listing(cb: CallbackQuery):
 
         if listing.owner_id != cb.from_user.id:
             await cb.answer("Продлить может только автор объявления.", show_alert=True)
+            return
+
+        if not can_owner_reactivate(listing):
+            await cb.answer("Это объявление нельзя вернуть: оно снято с публикации.", show_alert=True)
             return
 
         extend_listing(listing)

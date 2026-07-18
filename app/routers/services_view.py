@@ -46,7 +46,7 @@ from app.routers.utils_category_title import format_category_title
 from app.routers.utils_kb import grid3
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
-from app.lifecycle import days_left_text, should_show_extend_button, extend_listing, archive_as_closed, is_active
+from app.lifecycle import days_left_text, should_show_extend_button, extend_listing, archive_as_closed, is_active, can_owner_reactivate
 from app.db_path import config_value
 
 
@@ -791,6 +791,10 @@ async def service_extend_listing(cb: CallbackQuery):
             return
         if listing.owner_id != cb.from_user.id:
             await cb.answer("Продлить может только автор услуги.", show_alert=True)
+            return
+
+        if not can_owner_reactivate(listing):
+            await cb.answer("Эту услугу нельзя вернуть: она снята с публикации.", show_alert=True)
             return
 
         extend_listing(listing)
