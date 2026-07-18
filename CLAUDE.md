@@ -38,6 +38,14 @@ app/
     admin_fields.py    — управление полями категорий из бота
     admin_analytics.py — аналитика (DAU/WAU/MAU и др.)
     feedback.py        — обратная связь
+    releases.py        — 🎵 Релизы: мастер, лента, карточка, поиск,
+                         редактирование, модерация (Р-11)
+    artists.py         — 🎤 Исполнители: лента, карточка, редактирование (Р-12)
+    partner_view.py    — карточка партнёрской кампании (UNIXOUND)
+  features.py          — выключатели функций (feature_flags, is_enabled)
+  campaigns.py         — партнёрские кампании: выбор и ротация
+  analytics/           — пакет аналитики: __init__.log_event (analytics_events),
+                         search_log.py, listing_views.py
   web/
     app.py             — FastAPI веб-приложение (отдельный процесс)
     contact_redirect.py — редирект /go/contact/{id} для отслеживания контактов
@@ -65,6 +73,16 @@ dev.db                 — рабочая БД (SQLite, WAL-режим)
 | `listing_views` | Аналитика просмотров объявлений |
 | `ContactView` | Воронка — кто написал продавцу |
 | `events_meta` | Мета-данные событий афиши |
+| `artist` | Исполнители (постоянные карточки, без сроков): имя, тип, фото, доп. поля, `owner_user_id`, `status` active/hidden. Контакт создателя — базовый, неудаляемый |
+| `release_meta` | Релизы: `listing_id` (listing.type='release'), `artist_id`, тип, ссылки JSON, клип file_id, свой статус published/hidden/deleted (30-дневный цикл НЕ применяется) |
+| `release_track` | Треки альбомов по одному: позиция, название, file_id + file_unique_id |
+| `campaign` | Партнёрские кампании (UNIXOUND — обычная кампания, не хардкод) |
+| `feature_flags` | Выключатели функций: audience all/admins/список id, кэш 30 с |
+| `analytics_events` | Единый поток событий (словарь — app/analytics/__init__.py) |
+
+`BotUser.first_source` — deep-link источник первого входа, ставится один раз.
+Медиа релизов живёт в Telegram по file_id (пересылка без лимита размера);
+скрытое админу помечается 🔴. Перед деплоем: `python scripts/smoke_check.py`.
 
 ## i18n (многоязычность)
 
