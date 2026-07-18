@@ -19,7 +19,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
 
 from app.database import SessionLocal
 from app.models import City, Category, Listing
@@ -240,7 +240,7 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
             await cb.answer("Город не найден.", show_alert=True)
             return
         cats = (await s.execute(
-            select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(Category.name)
+            select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
 
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city.slug)
@@ -283,7 +283,7 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
             await cb.answer("Город или категория больше недоступны.", show_alert=True)
             return
         cats = (await s.execute(
-            select(Category).where(Category.parent_id == cat_id).order_by(Category.name)
+            select(Category).where(Category.parent_id == cat_id).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
 
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city.slug)
@@ -491,6 +491,28 @@ async def _send_photo_prompt(m: Message, photo_count: int, state: FSMContext, la
     if header:
         text_main = f"{header}\n{text_main}"
 
+    # RU: Плашка «Возврат» (Назад / Главное меню) — СВЕРХУ, над всем шагом,
+    #     как на остальных шагах мастера (железное правило навигации).
+    nav_kb = await _services_return_kb(lang)
+    nav_text = (await get_text('return_to_menu', lang)) or "Возврат"
+    nav_msg = await m.answer(nav_text, reply_markup=nav_kb)
+    last_bot_messages.setdefault(m.chat.id, []).append(nav_msg.message_id)
+    await register_bot_messages(m.chat.id, [nav_msg.message_id])
+
+    # RU: показать уже загруженные фото, чтобы пользователь видел, что уже сохранено.
+    preview_ids: list[int] = []
+    photos_so_far = (data.get("photos", []) or [])[:photo_count]
+    if photos_so_far:
+        if len(photos_so_far) == 1:
+            p_msg = await m.answer_photo(photos_so_far[0])
+            preview_ids = [p_msg.message_id]
+        else:
+            media = [InputMediaPhoto(media=fid) for fid in photos_so_far]
+            p_msgs = await m.bot.send_media_group(m.chat.id, media)
+            preview_ids = [pm.message_id for pm in p_msgs]
+        last_bot_messages.setdefault(m.chat.id, []).extend(preview_ids)
+        await register_bot_messages(m.chat.id, preview_ids)
+
     # ── Отправка и сохранение message_id для последующего удаления
     msg = await m.answer(text_main, reply_markup=_photo_skip_kb(), parse_mode="HTML")
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
@@ -501,9 +523,9 @@ async def _send_photo_prompt(m: Message, photo_count: int, state: FSMContext, la
         msg2 = await m.answer(text_tip)
         last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
         await register_bot_messages(m.chat.id, [msg2.message_id])
-        await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
+        await state.update_data(photo_prompt_msgs=[nav_msg.message_id] + preview_ids + [msg.message_id, msg2.message_id])
     else:
-        await state.update_data(photo_prompt_msgs=[msg.message_id])
+        await state.update_data(photo_prompt_msgs=[nav_msg.message_id] + preview_ids + [msg.message_id])
 
     print(f"[services_add.py] _send_photo_prompt ✓ | chat_id={m.chat.id} user_id={m.from_user.id} count={photo_count}")
 
@@ -967,7 +989,7 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
     # Возврат к списку категорий
     async with SessionLocal() as s:
         cats = (await s.execute(
-            select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(Category.name)
+            select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
     rows = []
     for c in cats:

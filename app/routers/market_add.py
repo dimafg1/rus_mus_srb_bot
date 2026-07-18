@@ -10,7 +10,7 @@ from aiogram.types import (
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
 from datetime import datetime
 from app.models import utcnow_naive
 from app.lifecycle import ensure_expires_at
@@ -138,13 +138,13 @@ async def sell_nav_keyboard(lang="ru"):
 
 
 # --- Универсальная функция для вопроса с меню ---
-async def send_with_nav(m, text, parse_mode=None):
+async def send_with_nav(m, text, parse_mode=None, reply_markup=None):
     nav_markup = await sell_nav_keyboard()
     nav_text = await get_text('return_to_menu', 'ru') or "Return"
     nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
     last_bot_messages.setdefault(m.chat.id, []).append(nav_msg.message_id)
     await register_bot_messages(m.chat.id, [nav_msg.message_id])
-    msg = await m.answer(text, parse_mode=parse_mode)
+    msg = await m.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
     await register_bot_messages(m.chat.id, [msg.message_id])
     return nav_msg, msg
@@ -343,6 +343,28 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lan
     # — порядок: helper → пустая строка → инструкция —
     text_main = f"{helper}\n\n{text_main}"
 
+    # RU: Плашка «Возврат» (Назад / Главное меню) — СВЕРХУ, над всем шагом,
+    #     как на остальных шагах мастера (железное правило навигации).
+    nav_markup = await sell_nav_keyboard(lang)
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
+    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
+    last_bot_messages.setdefault(m.chat.id, []).append(nav_msg.message_id)
+    await register_bot_messages(m.chat.id, [nav_msg.message_id])
+
+    # RU: показать уже загруженные фото, чтобы пользователь видел, что уже сохранено.
+    preview_ids: list[int] = []
+    photos_so_far = (data.get("photos", []) or [])[:photo_count]
+    if photos_so_far:
+        if len(photos_so_far) == 1:
+            p_msg = await m.answer_photo(photos_so_far[0])
+            preview_ids = [p_msg.message_id]
+        else:
+            media = [InputMediaPhoto(media=fid) for fid in photos_so_far]
+            p_msgs = await m.bot.send_media_group(m.chat.id, media)
+            preview_ids = [pm.message_id for pm in p_msgs]
+        last_bot_messages.setdefault(m.chat.id, []).extend(preview_ids)
+        await register_bot_messages(m.chat.id, preview_ids)
+
     msg = await m.answer(
         text_main,
         reply_markup=photo_keyboard(photo_count),
@@ -357,9 +379,9 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lan
         msg2 = await m.answer(text_tip)
         last_bot_messages.setdefault(m.chat.id, []).append(msg2.message_id)
         await register_bot_messages(m.chat.id, [msg2.message_id])
-        await state.update_data(photo_prompt_msgs=[msg.message_id, msg2.message_id])
+        await state.update_data(photo_prompt_msgs=[nav_msg.message_id] + preview_ids + [msg.message_id, msg2.message_id])
     else:
-        await state.update_data(photo_prompt_msgs=[msg.message_id])
+        await state.update_data(photo_prompt_msgs=[nav_msg.message_id] + preview_ids + [msg.message_id])
 
     print(
         f"[market_add.py] send_photo_prompt ✓ | chat_id={m.chat.id} | user_id={m.from_user.id} | "
@@ -422,6 +444,7 @@ async def sell_city(cb: CallbackQuery, state: FSMContext):
         equip_root = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
         subcats = (await s.execute(
             select(Category).where(Category.parent_id == equip_root.id)
+            .order_by(sql_text("order_num"), Category.name)  # как при просмотре
         )).scalars().all()
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city_slug)
     fmt = []
@@ -456,7 +479,7 @@ async def sell_cat(cb: CallbackQuery, state: FSMContext):
     cat_id = int(cat_id)
     async with SessionLocal() as s:
         cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
-        subcats = (await s.execute(select(Category).where(Category.parent_id == cat_id))).scalars().all()
+        subcats = (await s.execute(select(Category).where(Category.parent_id == cat_id).order_by(sql_text("order_num"), Category.name))).scalars().all()
     if subcats:
         fmt = []
         for sc in subcats:
@@ -500,6 +523,58 @@ async def sell_extras_done(cb: CallbackQuery, state: FSMContext):
     print(f"FUNC: sell_extras_done | chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id}")
 
 
+# RU: Клавиатура «Пропустить» под шагом описания (кнопка вместо ввода «-»).
+def descr_skip_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить", callback_data="sell_descr_skip")]
+    ])
+
+
+# RU: Рендер шага «Описание» — читает уже сохранённый заголовок из FSM.
+#     Общий для перехода вперёд (после Title) и кнопки «Назад» (из Price).
+async def _render_descr_step(target, state: FSMContext):
+    data = await state.get_data()
+    title = data.get("title") or ""
+
+    template = await get_text('sell_ask_descr', 'ru') or "Short description (or tap Skip):"
+
+    from html import escape as _esc
+    helper = (
+        "<b>Вы уже ввели</b>\n"
+        f"• Заголовок: <i>{_esc(title) or '—'}</i>"
+    )
+    await send_with_nav(target, f"{helper}\n\n{template}", parse_mode="HTML", reply_markup=descr_skip_keyboard())
+
+
+# RU: Рендер шага «Стоимость» — читает уже сохранённые заголовок и описание из FSM.
+#     Общий для перехода вперёд (после Descr) и кнопки «Назад» (из Photo).
+async def _render_price_step(target, state: FSMContext):
+    data = await state.get_data()
+    title = data.get("title") or ""
+    descr = data.get("descr") or ""
+    # первые 3 строки описания + «…» если длиннее
+    lines = descr.splitlines() if descr else []
+    descr_short = "\n".join(lines[:3]) + ("\n…" if len(lines) > 3 else "")
+
+    template = (await get_text('sell_ask_price', 'ru')) or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
+
+    from html import escape as _esc
+    helper = (
+        "<b>Вы уже ввели</b>\n"
+        f"• Заголовок: <i>{_esc(title) or '—'}</i>\n"
+        f"• Описание: <i>{_esc(descr_short) or '—'}</i>"
+    )
+    await send_with_nav(target, f"{helper}\n\n{template}", parse_mode="HTML")
+
+
+# RU: Общий шаг перехода Описание → Стоимость: и по тексту, и по кнопке «Пропустить».
+async def _advance_from_descr(m_for_answer, chat_id: int, bot, state: FSMContext, descr_text: str | None):
+    await clear_bot_messages(chat_id, bot)
+    await state.update_data(descr=descr_text)
+    await state.set_state(Sell.price)
+    await _render_price_step(m_for_answer, state)
+
+
 # ─────────────── шаг 3 – title ─────────────
 # RU: Шаг «Заголовок» — сохраняем, удаляем сообщение пользователя,
 #     выводим СНАЧАЛА «что уже ввели», ПОТОМ инструкцию для описания.
@@ -515,18 +590,9 @@ async def sell_title(m: Message, state: FSMContext):
     title = (m.text or "").strip()
     await state.update_data(title=title)
     await state.set_state(Sell.descr)
+    await _render_descr_step(m, state)
 
-    template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
-
-    # — СНАЧАЛА «что уже ввели», затем инструкция —
-    from html import escape as _esc
-    helper = (
-        "<b>Вы уже ввели</b>\n"
-        f"• Заголовок: <i>{_esc(title) or '—'}</i>"
-    )
-    msg = await send_with_nav(m, f"{helper}\n\n{template}", parse_mode="HTML")
-
-    print(f"[market_add.py] sell_title ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=title | msg_id={getattr(msg,'message_id','-')}")
+    print(f"[market_add.py] sell_title ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=title")
 
 
 # ─────────────── шаг 4 – descr ─────────────
@@ -536,35 +602,26 @@ async def sell_title(m: Message, state: FSMContext):
 @router.message(Sell.descr)
 async def sell_descr(m: Message, state: FSMContext):
     chat_id = m.chat.id
-    await clear_bot_messages(chat_id, m.bot)
     try:
         await m.delete()
     except Exception:
         pass
 
     text = (m.text or "").strip()
-    await state.update_data(descr=None if text == "-" else text)
-    await state.set_state(Sell.price)
+    descr_text = None if text == "-" else (text or None)
+    await _advance_from_descr(m, chat_id, m.bot, state, descr_text)
 
-    data = await state.get_data()
-    title = data.get("title") or ""
-    descr = "" if text == "-" else (text or "")
-    # первые 3 строки описания + «…» если длиннее
-    lines = descr.splitlines() if descr else []
-    descr_short = "\n".join(lines[:3]) + ("\n…" if len(lines) > 3 else "")
+    print(f"[market_add.py] sell_descr ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=descr")
 
-    template = (await get_text('sell_ask_price', 'ru')) or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
 
-    # — СНАЧАЛА «что уже ввели», затем инструкция —
-    from html import escape as _esc
-    helper = (
-        "<b>Вы уже ввели</b>\n"
-        f"• Заголовок: <i>{_esc(title) or '—'}</i>\n"
-        f"• Описание: <i>{_esc(descr_short) or '—'}</i>"
-    )
-    msg = await send_with_nav(m, f"{helper}\n\n{template}", parse_mode="HTML")
+# RU: Клик по кнопке «Пропустить» на шаге описания — то же самое, что ввод «-».
+@router.callback_query(Sell.descr, F.data == "sell_descr_skip")
+async def sell_descr_skip(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    await _advance_from_descr(cb.message, chat_id, cb.bot, state, None)
+    await cb.answer()
 
-    print(f"[market_add.py] sell_descr ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=descr | msg_id={getattr(msg,'message_id','-')}")
+    print(f"[market_add.py] sell_descr_skip ✓ | chat_id={chat_id} | user_id={cb.from_user.id} | field=descr")
 
 # ─────────────── шаг 5 – price ─────────────
 # RU: Шаг «Стоимость» — сохраняем, удаляем сообщение, переходим к фото.
@@ -1139,7 +1196,7 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
         city_slug = data.get("city_slug")
         async with SessionLocal() as s:
             root = (await s.execute(select(Category).where(Category.slug == "equip"))).scalar_one()
-            subs = (await s.execute(select(Category).where(Category.parent_id == root.id))).scalars().all()
+            subs = (await s.execute(select(Category).where(Category.parent_id == root.id).order_by(sql_text("order_num"), Category.name))).scalars().all()
         fmt = []
         for sc in subs:
             title = await format_category_title(sc.id, (sc.name or "").strip(), SessionLocal)
@@ -1165,14 +1222,12 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
     elif cur_state == Sell.price.state:
         # назад из Price → Descr
         await state.set_state(Sell.descr)
-        template = await get_text('sell_ask_descr', 'ru') or "Short description (or '-' to skip):"
-        await send_with_nav(cb.message, template, parse_mode="HTML")
+        await _render_descr_step(cb.message, state)
 
     elif cur_state == Sell.photo.state:
         # назад из Photo → Price
         await state.set_state(Sell.price)
-        template = await get_text('sell_ask_price', 'ru') or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
-        await send_with_nav(cb.message, template, parse_mode="HTML")
+        await _render_price_step(cb.message, state)
 
     elif cur_state == Sell.confirm.state:
         await state.set_state(Sell.photo)

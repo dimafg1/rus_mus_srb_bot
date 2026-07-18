@@ -43,7 +43,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
 
 from app.database import SessionLocal
 from app.models import City, Category, Listing
@@ -147,7 +147,7 @@ async def _vacancy_categories_kb_add(city_slug: str, parent_id: int | None) -> I
     pid = parent_id if parent_id is not None else VACANCY_ROOT_CATEGORY_ID
     async with SessionLocal() as s:
         cats = (await s.execute(
-            select(Category).where(Category.parent_id == pid).order_by(Category.name)
+            select(Category).where(Category.parent_id == pid).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
 
     rows = []
@@ -534,6 +534,7 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
             return
         children = (await s.execute(
             select(Category).where(Category.parent_id == cat_id)
+            .order_by(sql_text("order_num"), Category.name)  # как при просмотре
         )).scalars().all()
         parent_id = category.parent_id
 
