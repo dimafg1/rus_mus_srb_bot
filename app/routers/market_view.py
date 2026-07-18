@@ -51,6 +51,8 @@ from app.lifecycle import (
     days_left_text,
     should_show_extend_button,
     extend_listing,
+    archive_as_closed,
+    is_active,
 )
 
 import urllib.parse
@@ -1068,17 +1070,25 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         )
         buttons.append([edit_btn])
 
+        owner_source = "my" if from_my else "catalog"
+        if is_active(listing):
+            buttons.append([
+                InlineKeyboardButton(
+                    text="📦 Закрыть (в архив)",
+                    callback_data=f"market_close:{listing.id}:{city_slug}:{cat_slug}:{owner_source}"
+                )
+            ])
+
         del_btn = await get_common_menu_button('btn_delete_listing', lang='ru')
         del_btn = InlineKeyboardButton(text=del_btn.text, callback_data=f"sell_sold:{listing.id}") if del_btn \
             else InlineKeyboardButton(text="❌ Delete listing", callback_data=f"sell_sold:{listing.id}")
         buttons.append([del_btn])
 
         if should_show_extend_button(listing):
-            extend_source = "my" if from_my else "catalog"
             buttons.append([
                 InlineKeyboardButton(
                     text="🔄 Продлить на 30 дней",
-                    callback_data=f"market_extend:{listing.id}:{city_slug}:{cat_slug}:{extend_source}"
+                    callback_data=f"market_extend:{listing.id}:{city_slug}:{cat_slug}:{owner_source}"
                 )
             ])
 
@@ -1121,7 +1131,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         try:
             twa_url = f"{WEBAPP_BASE}/media/video_yt.html?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing.id}"
             video_only_markup = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="|        ▶️   Смотреть  видео         |", web_app=WebAppInfo(url=twa_url))]]
+                inline_keyboard=[[InlineKeyboardButton(text="▶️ Смотреть видео", web_app=WebAppInfo(url=twa_url))]]
             )
         except Exception as e:
             print(f"[market_view.py] show_listing_details | WATCH_BTN_ERROR {e}")
@@ -1196,7 +1206,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
 
         if video_only_markup:
             try:
-                vid_btn_msg = await cb.message.answer("\u2063", reply_markup=video_only_markup)
+                vid_btn_msg = await cb.message.answer("⁣", reply_markup=video_only_markup)
                 sent_ids.append(vid_btn_msg.message_id)
             except Exception as e:
                 print(f"[market_view.py] show_listing_details | video_only button send failed: {e}")
@@ -1323,6 +1333,14 @@ async def market_extend_listing(cb: CallbackQuery):
         )
     ])
 
+    if is_active(listing):
+        buttons.append([
+            InlineKeyboardButton(
+                text="📦 Закрыть (в архив)",
+                callback_data=f"market_close:{listing.id}:{city_slug}:{cat_slug}:{source}"
+            )
+        ])
+
     del_btn = await get_common_menu_button('btn_delete_listing', lang='ru')
     buttons.append([
         InlineKeyboardButton(
@@ -1345,6 +1363,14 @@ async def market_extend_listing(cb: CallbackQuery):
             InlineKeyboardButton(
                 text=back_btn.text if back_btn else "⬅️ Back to my listings",
                 callback_data="my_listings_back"
+            )
+        ])
+    elif source == "search":
+        back_btn = await get_common_menu_button('btn_back_search', lang='ru')
+        buttons.append([
+            InlineKeyboardButton(
+                text=back_btn.text if back_btn else "⬅️ Назад к поиску",
+                callback_data="market_search_results"
             )
         ])
     else:
@@ -1374,6 +1400,132 @@ async def market_extend_listing(cb: CallbackQuery):
         await register_bot_messages(cb.message.chat.id, [msg.message_id])
 
     await cb.answer("Объявление продлено на 30 дней.")
+
+    print(
+        f"FUNC: {inspect.currentframe().f_code.co_name} | "
+        f"listing_id={listing.id} | chat_id={cb.message.chat.id} | "
+        f"user_id={cb.from_user.id} | source={source}"
+    )
+
+
+# RU: «Закрыть (в архив)» — скрыть своё объявление из выдачи, не удаляя.
+#     Вернуть можно кнопкой «Продлить на 30 дней» (extend_listing реактивирует).
+@router.callback_query(F.data.startswith("market_close:"))
+async def market_close_listing(cb: CallbackQuery):
+    parts = cb.data.split(":", 4)
+    if len(parts) < 5:
+        await cb.answer("Ошибка данных закрытия.", show_alert=True)
+        return
+
+    _, listing_id_raw, city_slug, cat_slug, source = parts
+
+    try:
+        listing_id = int(listing_id_raw)
+    except ValueError:
+        await cb.answer("Неверный идентификатор объявления.", show_alert=True)
+        return
+
+    async with SessionLocal() as s:
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "market")
+        )).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Объявление не найдено.", show_alert=True)
+            return
+
+        if listing.owner_id != cb.from_user.id:
+            await cb.answer("Закрыть может только автор объявления.", show_alert=True)
+            return
+
+        if not is_active(listing):
+            await cb.answer("Объявление уже закрыто или в архиве.", show_alert=True)
+            return
+
+        archive_as_closed(listing, user_id=cb.from_user.id)
+        await s.commit()
+        await s.refresh(listing)
+
+    from app.analytics import log_event
+    try:
+        await log_event("listing_closed", user_id=cb.from_user.id,
+                        section="market", entity_type="listing", entity_id=listing.id)
+    except Exception as e:
+        print(f"[market_view.py] market_close analytics error listing_id={listing.id}: {e}")
+
+    management_text = (
+        "Контакты/Управление:\n"
+        "🔴 Объявление закрыто и скрыто из каталога.\n"
+        "Вернуть его можно кнопкой ниже — текст и фото сохранены."
+    )
+
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="↩️ Вернуть в каталог (на 30 дней)",
+            callback_data=f"market_extend:{listing.id}:{city_slug}:{cat_slug}:{source}"
+        )
+    ])
+
+    edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
+    buttons.append([
+        InlineKeyboardButton(
+            text=edit_btn.text if edit_btn else "✏️ Редактировать все поля",
+            callback_data=f"edit_listing_overview:{listing.id}:{city_slug}:{cat_slug}:{source}"
+        )
+    ])
+
+    del_btn = await get_common_menu_button('btn_delete_listing', lang='ru')
+    buttons.append([
+        InlineKeyboardButton(
+            text=del_btn.text if del_btn else "❌ Delete listing",
+            callback_data=f"sell_sold:{listing.id}"
+        )
+    ])
+
+    if source == "my":
+        back_btn = await get_common_menu_button('btn_back_my_listings', lang='ru')
+        buttons.append([
+            InlineKeyboardButton(
+                text=back_btn.text if back_btn else "⬅️ Back to my listings",
+                callback_data="my_listings_back"
+            )
+        ])
+    elif source == "search":
+        back_btn = await get_common_menu_button('btn_back_search', lang='ru')
+        buttons.append([
+            InlineKeyboardButton(
+                text=back_btn.text if back_btn else "⬅️ Назад к поиску",
+                callback_data="market_search_results"
+            )
+        ])
+    else:
+        back_btn = await get_common_menu_button('btn_back_listings', lang='ru')
+        buttons.append([
+            InlineKeyboardButton(
+                text=back_btn.text if back_btn else "⬅️ Back to listings",
+                callback_data=f"mlist:{city_slug}:{cat_slug}"
+            )
+        ])
+
+    main_btn = await get_common_menu_button('main_menu', lang='ru')
+    if main_btn:
+        buttons.append([main_btn])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    try:
+        await cb.message.edit_text(management_text, reply_markup=markup)
+    except Exception:
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        msg = await cb.message.answer(management_text, reply_markup=markup)
+        my_listing_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+        await register_bot_messages(cb.message.chat.id, [msg.message_id])
+
+    await cb.answer("Объявление закрыто.")
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -1942,6 +2094,14 @@ async def show_search_listing(cb: CallbackQuery):
         )
         buttons.append([edit_btn])
 
+        if is_active(listing):
+            buttons.append([
+                InlineKeyboardButton(
+                    text="📦 Закрыть (в архив)",
+                    callback_data=f"market_close:{listing.id}:-:-:search"
+                )
+            ])
+
         # ❌ Удалить (ваш сценарий «Продано»)
         del_btn = await get_common_menu_button('btn_delete_listing', lang='ru')
         del_btn = InlineKeyboardButton(text=del_btn.text, callback_data=f"sell_sold:{listing.id}") if del_btn \
@@ -2059,6 +2219,14 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
             callback_data=f"edit_listing_overview:{listing.id}:search"
         )
         buttons.append([edit_btn])
+
+        if is_active(listing):
+            buttons.append([
+                InlineKeyboardButton(
+                    text="📦 Закрыть (в архив)",
+                    callback_data=f"market_close:{listing.id}:-:-:search"
+                )
+            ])
 
         del_btn = await get_common_menu_button('btn_delete_listing', lang='ru')
         del_btn = InlineKeyboardButton(

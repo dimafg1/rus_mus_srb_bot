@@ -117,9 +117,9 @@ def should_show_extend_button(listing: Listing, *, now: Optional[datetime] = Non
         left = days_left(listing, now=now)
         return left is not None and left <= REMIND_BEFORE_DAYS
 
-    # Архивное по истечению срока владелец может реактивировать:
-    # extend_listing() возвращает статус active и сдвигает срок.
-    return is_archived(listing) and listing.archive_reason == REASON_EXPIRED
+    # Архивное по истечению срока или закрытое владельцем вручную можно
+    # реактивировать: extend_listing() возвращает статус active и сдвигает срок.
+    return is_archived(listing) and listing.archive_reason in (REASON_EXPIRED, REASON_CLOSED)
 
 
 def needs_expiry_reminder(listing: Listing, *, now: Optional[datetime] = None) -> bool:

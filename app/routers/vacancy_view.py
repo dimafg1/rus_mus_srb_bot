@@ -45,7 +45,7 @@ from app.search.fuzzy import search_items
 
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
-from app.lifecycle import days_left_text, should_show_extend_button, extend_listing
+from app.lifecycle import days_left_text, should_show_extend_button, extend_listing, archive_as_closed, is_active
 from app.routers.utils import build_contact_url, escape_html
 
 
@@ -400,19 +400,25 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
     buttons: List[List[InlineKeyboardButton]] = []
 
     if is_owner:
+        if from_search:
+            owner_source = "search"
+        elif is_my_suffix:
+            owner_source = "my"
+        else:
+            owner_source = "catalog"
+
         buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
+        if is_active(listing):
+            buttons.append([InlineKeyboardButton(
+                text="📦 Закрыть (в архив)",
+                callback_data=f"vac_close:{listing.id}:{owner_source}:{city_slug or '-'}:{cat_id or 0}"
+            )])
         buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
 
         if should_show_extend_button(listing):
-            if from_search:
-                extend_source = "search"
-            elif is_my_suffix:
-                extend_source = "my"
-            else:
-                extend_source = "catalog"
             buttons.append([InlineKeyboardButton(
                 text="🔄 Продлить на 30 дней",
-                callback_data=f"vac_extend:{listing.id}:{extend_source}:{city_slug or '-'}:{cat_id or 0}"
+                callback_data=f"vac_extend:{listing.id}:{owner_source}:{city_slug or '-'}:{cat_id or 0}"
             )])
     else:
         if contact and contact.startswith("@"):
@@ -501,6 +507,9 @@ async def vac_extend_listing(cb: CallbackQuery):
             continue
         if stripped.startswith("⏳ До архивации:"):
             continue
+        # Строки экрана «Закрыть (в архив)» — не тащим их в реактивированную карточку
+        if stripped.startswith("🔴 Вакансия закрыта") or stripped.startswith("Вернуть её можно"):
+            continue
         cleaned.append(line)
 
     # Убираем лишние пустые строки в конце перед новым блоком.
@@ -538,6 +547,88 @@ async def vac_extend_listing(cb: CallbackQuery):
     await cb.answer("Вакансия продлена на 30 дней.")
     print(
         f"[vacancy_view.py] handler=vac_extend_listing | "
+        f"listing_id={listing.id} source={source} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
+    )
+
+
+# RU: «Закрыть (в архив)» — скрыть свою вакансию из выдачи, не удаляя.
+#     Вернуть можно кнопкой «Вернуть в каталог» (vac_extend реактивирует).
+@router.callback_query(F.data.startswith("vac_close:"))
+async def vac_close_listing(cb: CallbackQuery):
+    parts = cb.data.split(":", 4)
+    if len(parts) < 5:
+        await cb.answer("Ошибка данных закрытия.", show_alert=True)
+        return
+
+    try:
+        listing_id = int(parts[1])
+    except ValueError:
+        await cb.answer("Неверный идентификатор вакансии.", show_alert=True)
+        return
+
+    source = parts[2]
+    city_slug = None if parts[3] == "-" else parts[3]
+    try:
+        cat_id = int(parts[4]) if parts[4] and parts[4] != "0" else None
+    except ValueError:
+        cat_id = None
+
+    async with SessionLocal() as s:
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "vacancy")
+        )).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Вакансия не найдена.", show_alert=True)
+            return
+        if listing.owner_id != cb.from_user.id:
+            await cb.answer("Закрыть может только автор вакансии.", show_alert=True)
+            return
+        if not is_active(listing):
+            await cb.answer("Вакансия уже закрыта или в архиве.", show_alert=True)
+            return
+
+        archive_as_closed(listing, user_id=cb.from_user.id)
+        await s.commit()
+        await s.refresh(listing)
+
+    from app.analytics import log_event
+    try:
+        await log_event("listing_closed", user_id=cb.from_user.id,
+                        section="vacancy", entity_type="listing", entity_id=listing.id)
+    except Exception as e:
+        print(f"[vacancy_view.py] vac_close analytics error listing_id={listing.id}: {e}")
+
+    text = (
+        "Контакты/Управление:\n"
+        "🔴 Вакансия закрыта и скрыта из каталога.\n"
+        "Вернуть её можно кнопкой ниже — текст сохранён."
+    )
+
+    buttons: List[List[InlineKeyboardButton]] = []
+    buttons.append([InlineKeyboardButton(
+        text="↩️ Вернуть в каталог (на 30 дней)",
+        callback_data=f"vac_extend:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
+    )])
+    buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
+    buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
+
+    if source == "search":
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_search_results")])
+    elif source == "catalog" and city_slug and cat_id:
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{cat_id}")])
+    else:
+        buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+
+    main_btn = await get_common_menu_button('main_menu')
+    if main_btn:
+        buttons.append([main_btn])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await safe_edit_or_send(cb, text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer("Вакансия закрыта.")
+    print(
+        f"[vacancy_view.py] handler=vac_close_listing | "
         f"listing_id={listing.id} source={source} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
     )
 

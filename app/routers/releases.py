@@ -244,30 +244,22 @@ def _youtube_url(links: list[dict]) -> str | None:
     return None
 
 
-async def _send_release_yt_button(bot, chat_id: int, video_url: str, listing_id: int):
-    """TWA-кнопка «▶️ Смотреть видео» отдельным сообщением под карточкой —
-    образец: app/routers/services_view.py::_send_yt_button. Открывает
-    страницу-плеер внутри Telegram, без окна подтверждения."""
+def _release_yt_button(video_url: str, listing_id: int):
+    """TWA-кнопка «Смотреть видео» для клавиатуры карточки (страница-плеер
+    внутри Telegram, без окна подтверждения). None — если кнопку строить не из чего."""
     try:
         from app.routers.services_view import WEBAPP_BASE
         if not video_url or not WEBAPP_BASE:
-            return
+            return None
         low = video_url.lower()
         if ("youtube.com" not in low) and ("youtu.be" not in low):
-            return
+            return None
         twa_url = (f"{WEBAPP_BASE}/media/video_yt.html"
                    f"?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing_id}")
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="▶️ Смотреть видео", web_app=WebAppInfo(url=twa_url))]
-        ])
-        try:
-            m = await bot.send_message(chat_id, " ", reply_markup=kb)
-        except Exception:
-            m = await bot.send_message(chat_id, "•", reply_markup=kb)
-        last_bot_messages.setdefault(chat_id, []).append(m.message_id)
-        await register_bot_messages(chat_id, [m.message_id])
+        return InlineKeyboardButton(text="\u25b6\ufe0f Смотреть видео", web_app=WebAppInfo(url=twa_url))
     except Exception as e:
-        print(f"[releases] _send_release_yt_button: {e}")
+        print(f"[releases] _release_yt_button: {e}")
+        return None
 
 
 async def _admin_ids() -> list[int]:
@@ -396,13 +388,14 @@ def _release_caption(listing, meta, artist, tracks, *, hidden: bool = False) -> 
         for t in tracks:
             lines.append(f"{t.position}. {_e(t.title or 'Трек ' + str(t.position))}")
     # YouTube в тексте не показываем: как в Услугах, под карточкой идёт
-    # отдельная TWA-кнопка «▶️ Смотреть видео» (см. _send_release_yt_button)
+    # отдельная TWA-кнопка «▶️ Смотреть видео» в клавиатуре карточки (_release_yt_button)
     return _fit_html_lines(lines)
 
 
 def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
                 artist=None, back_cb: str = "go_releases",
-                back_label: str = "⬅️ К релизам", source: str = "") -> InlineKeyboardMarkup:
+                back_label: str = "⬅️ К релизам", source: str = "",
+                yt_btn: InlineKeyboardButton | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     playable = _release_is_public(listing, meta, artist, tracks)
     if tracks and playable:
@@ -442,6 +435,8 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
     if playable:
         rows.append([InlineKeyboardButton(
             text="⚠️ Пожаловаться", callback_data=f"rel:report:{listing.id}")])
+    if yt_btn is not None and playable:
+        rows.append([yt_btn])
     rows.append([InlineKeyboardButton(text=back_label, callback_data=back_cb), _menu_btn()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -580,16 +575,15 @@ async def _show_release_card(cb: CallbackQuery, listing_id: int, src: str = ""):
         hidden=not _release_is_public(listing, meta, artist, tracks),
     )
     back_cb, back_label = _release_back(src, artist)
-    kb = _release_kb(listing, meta, tracks, artist=artist,
-                     viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id),
-                     back_cb=back_cb, back_label=back_label, source=src)
-    await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
     links = _load_links(
         meta.links if _release_is_public(listing, meta, artist, tracks) else None
     )
     yt = _youtube_url(links)
-    if yt:
-        await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
+    yt_btn = _release_yt_button(yt, listing.id) if yt else None
+    kb = _release_kb(listing, meta, tracks, artist=artist,
+                     viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id),
+                     back_cb=back_cb, back_label=back_label, source=src, yt_btn=yt_btn)
+    await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
     source = "search" if src == "s" else "my" if src == "my" else "artist" if src.startswith("a") else "catalog"
     await log_listing_view(listing_id=listing.id, user_id=cb.from_user.id,
                            section="releases", action="open", source=source)
@@ -1707,13 +1701,13 @@ async def _publish_locked(cb: CallbackQuery, state: FSMContext):
         "",
         *_release_caption(listing, meta, artist, tracks).splitlines(),
     ])
-    kb = _release_kb(listing, meta, tracks, artist=artist,
-                     viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
-    await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
     links_pub = _load_links(meta.links if meta else None)
     yt = _youtube_url(links_pub)
-    if yt:
-        await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
+    yt_btn = _release_yt_button(yt, listing.id) if yt else None
+    kb = _release_kb(listing, meta, tracks, artist=artist,
+                     viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id),
+                     yt_btn=yt_btn)
+    await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
 
 
 # ─────────────────────── поиск (fuzzy, как в вакансиях) ───────────────────────

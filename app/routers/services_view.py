@@ -46,7 +46,7 @@ from app.routers.utils_category_title import format_category_title
 from app.routers.utils_kb import grid3
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
-from app.lifecycle import days_left_text, should_show_extend_button, extend_listing
+from app.lifecycle import days_left_text, should_show_extend_button, extend_listing, archive_as_closed, is_active
 from app.db_path import config_value
 
 
@@ -72,6 +72,33 @@ WEBAPP_BASE = (
     )
     or ""
 ).rstrip("/")
+
+
+async def _send_yt_button(cb: CallbackQuery, video_url: str, listing_id: int) -> int | None:
+    """
+    Отправляет TWA-кнопку '▶️ Смотреть видео' ОТДЕЛЬНЫМ сообщением (без заголовка),
+    чтобы кнопка оказалась НИЖЕ основного медиа/текста (как в Барахолке).
+    Возвращает message_id созданного сообщения (для последующей зачистки).
+    """
+    try:
+        if not video_url or not WEBAPP_BASE:
+            return None
+        low = video_url.lower()
+        if ("youtube.com" not in low) and ("youtu.be" not in low):
+            return None
+        twa_url = f"{WEBAPP_BASE}/media/video_yt.html?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing_id}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="▶️ Смотреть видео", web_app=WebAppInfo(url=twa_url))]
+        ])
+        try:
+            m = await cb.message.answer(" ", reply_markup=kb)
+        except Exception:
+            m = await cb.message.answer("•", reply_markup=kb)
+        print(f"[services_view.py] _send_yt_button ✓ | listing_id={listing_id} url={video_url}")
+        return m.message_id
+    except Exception as e:
+        print(f"[services_view.py] _send_yt_button ✗ | listing_id={listing_id} err={e}")
+        return None
 
 
 # ───────────────────────── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────
@@ -230,37 +257,6 @@ def _is_youtube_url(url: str) -> bool:
 
 
 # ───────────────────────── ВСПОМОГАТЕЛЬНОЕ: YouTube TWA-кнопка ─────────────────────────
-async def _send_yt_button(cb: CallbackQuery, video_url: str, listing_id: int) -> int | None:
-    """
-    Отправляет TWA-кнопку '▶️ Смотреть видео' ОТДЕЛЬНЫМ сообщением (без заголовка),
-    чтобы кнопка оказалась НИЖЕ основного медиа/текста (как в Барахолке).
-    Возвращает message_id созданного сообщения или None при ошибке/неподходящем URL.
-    """
-    try:
-        if not video_url:
-            return None
-        low = video_url.lower()
-        if ("youtube.com" not in low) and ("youtu.be" not in low):
-            return None
-        twa_url = f"{WEBAPP_BASE}/media/video_yt.html?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing_id}"
-        yt_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="▶️ Смотреть видео", web_app=WebAppInfo(url=twa_url))]
-        ])
-        # NBSP — выглядит «пусто», но Telegram его принимает
-        try:
-            m = await cb.message.answer("\u00A0", reply_markup=yt_kb)
-        except Exception as e:
-            # запасной вариант, если вдруг NBSP не пройдёт на конкретном клиенте
-            m = await cb.message.answer("•", reply_markup=yt_kb)
-        print(f"[services_view.py] _send_yt_button ✓ | listing_id={listing_id} | url={video_url}")
-
-        print(f"[services_view.py] _send_yt_button ✓ | listing_id={listing_id} url={video_url}")
-        return m.message_id
-    except Exception as e:
-        print(f"[services_view.py] _send_yt_button ✗ | listing_id={listing_id} err={e}")
-        return None
-
-
 # ───────────────────────────────── ВХОД В «УСЛУГИ» ──────────────────────────
 
 @router.callback_query(F.data == "go_services")
@@ -650,6 +646,11 @@ async def sv_item(cb: CallbackQuery):
             text=(edit_btn.text if edit_btn else "✏️ Редактировать все поля"),
             callback_data=f"service_edit_overview:{listing.id}"
         )])
+        if is_active(listing):
+            buttons.append([InlineKeyboardButton(
+                text="📦 Закрыть (в архив)",
+                callback_data=f"service_close:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
+            )])
         del_btn = await get_common_menu_button("btn_delete_service", "ru")
         buttons.append([InlineKeyboardButton(
             text=(del_btn.text if del_btn else "❌ Удалить объявление"),
@@ -847,6 +848,99 @@ async def service_extend_listing(cb: CallbackQuery):
     await cb.answer("Услуга продлена на 30 дней.")
     print(
         f"[services_view.py] service_extend_listing ✓ | "
+        f"listing_id={listing.id} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
+    )
+
+
+# RU: «Закрыть (в архив)» — скрыть свою услугу из выдачи, не удаляя.
+#     Вернуть можно кнопкой «Вернуть в каталог» (service_extend реактивирует).
+@router.callback_query(F.data.startswith("service_close:"))
+async def service_close_listing(cb: CallbackQuery):
+    parts = cb.data.split(":", 2)
+    if len(parts) < 3:
+        await cb.answer("Ошибка данных закрытия.", show_alert=True)
+        return
+
+    try:
+        listing_id = int(parts[1])
+    except ValueError:
+        await cb.answer("Неверный идентификатор услуги.", show_alert=True)
+        return
+
+    back_cb = urllib.parse.unquote(parts[2])
+
+    async with SessionLocal() as s:
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "service")
+        )).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Услуга не найдена.", show_alert=True)
+            return
+        if listing.owner_id != cb.from_user.id:
+            await cb.answer("Закрыть может только автор услуги.", show_alert=True)
+            return
+        if not is_active(listing):
+            await cb.answer("Услуга уже закрыта или в архиве.", show_alert=True)
+            return
+
+        archive_as_closed(listing, user_id=cb.from_user.id)
+        await s.commit()
+        await s.refresh(listing)
+
+    from app.analytics import log_event
+    try:
+        await log_event("listing_closed", user_id=cb.from_user.id,
+                        section="services", entity_type="listing", entity_id=listing.id)
+    except Exception as e:
+        print(f"[services_view.py] service_close analytics error listing_id={listing.id}: {e}")
+
+    management_text = (
+        "Контакты/Управление:\n"
+        "🔴 Услуга закрыта и скрыта из каталога.\n"
+        "Вернуть её можно кнопкой ниже — текст и фото сохранены."
+    )
+
+    buttons = []
+
+    buttons.append([InlineKeyboardButton(
+        text="↩️ Вернуть в каталог (на 30 дней)",
+        callback_data=f"service_extend:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
+    )])
+
+    edit_btn = await get_common_menu_button("btn_edit_service", "ru")
+    buttons.append([InlineKeyboardButton(
+        text=(edit_btn.text if edit_btn else "✏️ Редактировать все поля"),
+        callback_data=f"service_edit_overview:{listing.id}"
+    )])
+
+    del_btn = await get_common_menu_button("btn_delete_service", "ru")
+    buttons.append([InlineKeyboardButton(
+        text=(del_btn.text if del_btn else "❌ Удалить объявление"),
+        callback_data=f"sell_sold:{listing.id}"
+    )])
+
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
+
+    main_btn = await get_common_menu_button("main_menu", "ru")
+    if main_btn:
+        buttons.append([main_btn])
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    try:
+        await cb.message.edit_text(management_text, reply_markup=markup)
+    except Exception:
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        msg = await cb.message.answer(management_text, reply_markup=markup)
+        my_listing_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+        await register_bot_messages(cb.message.chat.id, [msg.message_id])
+
+    await cb.answer("Услуга закрыта.")
+    print(
+        f"[services_view.py] service_close_listing ✓ | "
         f"listing_id={listing.id} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
     )
 
