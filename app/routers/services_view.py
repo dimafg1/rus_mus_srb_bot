@@ -13,7 +13,8 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy import select, or_, func, text as sql_text
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import joinedload
-import os, urllib.parse, json
+import urllib.parse, json
+from pathlib import Path
 
 from aiogram.filters import StateFilter
 
@@ -30,7 +31,7 @@ from app.routers.utils import (
     last_bot_messages, sent_photo_messages,
     render_flex_block, render_contact, render_category_path,
     last_search_query_message, last_search_menu_message, my_listing_messages,
-    build_contact_url,
+    build_contact_url, escape_html,
 )
 
 from app.search.fuzzy import search_items
@@ -46,6 +47,7 @@ from app.routers.utils_kb import grid3
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
 from app.lifecycle import days_left_text, should_show_extend_button, extend_listing
+from app.db_path import config_value
 
 
 router = Router(name="services_view")
@@ -60,10 +62,50 @@ SERVICES_SEARCH_PAGE_SIZE = 10
 
 
 SERVICES_ROOT_CATEGORY_ID = 80
-WEBAPP_BASE = os.getenv("WEBAPP_BASE", "https://unixound.com/rus_mus_srb_bot").rstrip("/")
+_ROOT = Path(__file__).resolve().parents[2]
+WEBAPP_BASE = (
+    config_value(
+        _ROOT,
+        "WEBAPP_BASE",
+        "https://unixound.com/rus_mus_srb_bot",
+        env_files=(".env.web", ".env"),
+    )
+    or ""
+).rstrip("/")
 
 
 # ───────────────────────── ВСПОМОГАТЕЛЬНЫЕ ─────────────────────────
+
+def _service_public_predicates():
+    """Единые условия публичной выдачи услуг."""
+    return (
+        Listing.type == "service",
+        Listing.status == "active",
+        Listing.is_sold.is_(False),
+    )
+
+
+async def _load_public_service_ids(ids: list[int]) -> tuple[list[int], list[Listing]]:
+    clean_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in ids or []:
+        try:
+            listing_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if listing_id not in seen:
+            seen.add(listing_id)
+            clean_ids.append(listing_id)
+    if not clean_ids:
+        return [], []
+
+    async with SessionLocal() as s:
+        db_rows = (await s.execute(
+            select(Listing).where(Listing.id.in_(clean_ids), *_service_public_predicates())
+        )).scalars().all()
+    by_id = {row.id: row for row in db_rows}
+    valid_ids = [listing_id for listing_id in clean_ids if listing_id in by_id]
+    return valid_ids, [by_id[listing_id] for listing_id in valid_ids]
 
 async def _fetch_menu_items(parent_code: str, lang: str = "ru"):
     """Получить пункты меню из таблицы menu по parent_code/lang/visible с сортировкой."""
@@ -288,7 +330,7 @@ async def sv_city(cb: CallbackQuery):
         )).scalars().all()
 
     kb = await _services_categories_kb(cats, city_id=city.id, parent_id=SERVICES_ROOT_CATEGORY_ID)
-    text = f"🛎 Услуги → <b>{city.name}</b>\nВыберите категорию:"
+    text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nВыберите категорию:"
     msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -338,7 +380,7 @@ async def sv_cat(cb: CallbackQuery):
                 )).scalars().all()
 
                 kb = await _services_categories_kb(top_cats, city_id=city_id, parent_id=SERVICES_ROOT_CATEGORY_ID)
-                text = f"🛎 Услуги → <b>{city.name}</b>\nВыберите категорию:"
+                text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nВыберите категорию:"
                 msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
                 last_bot_messages[chat_id] = [msg.message_id]
                 await register_bot_messages(chat_id, [msg.message_id])
@@ -354,8 +396,8 @@ async def sv_cat(cb: CallbackQuery):
 
             kb = await _services_categories_kb(siblings, city_id=city_id, parent_id=parent_id)
             text = (
-                f"🛎 Услуги → <b>{city.name}</b>\n"
-                f"Категория: <b>{parent.name}</b>\nВыберите подкатегорию:"
+                f"🛎 Услуги → <b>{escape_html(city.name)}</b>\n"
+                f"Категория: <b>{escape_html(parent.name)}</b>\nВыберите подкатегорию:"
             )
             msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
             last_bot_messages[chat_id] = [msg.message_id]
@@ -368,7 +410,7 @@ async def sv_cat(cb: CallbackQuery):
     # если есть дети и это не «назад» — показываем подкатегории
     if children:
         kb = await _services_categories_kb(children, city_id=city_id, parent_id=cat_id)
-        text = f"🛎 Услуги → <b>{city.name}</b>\nКатегория: <b>{cat.name}</b>\nВыберите подкатегорию:"
+        text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nКатегория: <b>{escape_html(cat.name)}</b>\nВыберите подкатегорию:"
         msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
@@ -409,7 +451,7 @@ async def sv_cat(cb: CallbackQuery):
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         async with SessionLocal() as s:
             cat_path = await render_category_path(s, cat_id, root_id=SERVICES_ROOT_CATEGORY_ID)
-        text = f"🛎 Услуги → <b>{city.name}</b> → {cat_path}\nПока пусто в этой категории."
+        text = f"🛎 Услуги → <b>{escape_html(city.name)}</b> → {cat_path}\nПока пусто в этой категории."
         msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
@@ -418,7 +460,7 @@ async def sv_cat(cb: CallbackQuery):
         return
 
     kb = await _services_listings_kb(items, city_id=city_id, cat_id=cat_id)
-    text = f"🛎 Услуги → <b>{city.name}</b>\nКатегория: <b>{cat.name}</b>\nВыберите услугу:"
+    text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nКатегория: <b>{escape_html(cat.name)}</b>\nВыберите услугу:"
     msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -461,9 +503,12 @@ async def sv_item(cb: CallbackQuery):
 
     # Читаем объявление
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        stmt = select(Listing).where(Listing.id == listing_id, Listing.type == "service")
+        if not from_my:
+            stmt = stmt.where(Listing.status == "active", Listing.is_sold.is_(False))
+        listing = (await s.execute(stmt)).scalar_one_or_none()
         city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one_or_none() if listing else None
-    if not listing:
+    if not listing or (from_my and listing.owner_id != cb.from_user.id):
         msg = await cb.bot.send_message(chat_id, "Объявление не найдено или удалено.")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
@@ -558,11 +603,11 @@ async def sv_item(cb: CallbackQuery):
         category_path = await render_category_path(s, cat_id, root_id=SERVICES_ROOT_CATEGORY_ID)
     category_line = f"Категория: <b>Услуги → {category_path}</b>" if category_path else "Категория: <b>Услуги</b>"
 
-    city_line = f"Город: <b>{city.name}</b>" if city else ""
+    city_line = f"Город: <b>{escape_html(city.name)}</b>" if city else ""
     price_label = (await get_text("service_price", "ru")) or (await get_text("listing_price", "ru")) or "Стоимость услуг"
-    title_line = f"<b>{(listing.title or '').strip()}</b>" if listing.title else ""
-    descr_line = (listing.descr or "").strip()
-    price_line = f"{price_label}: {listing.price}" if listing.price else ""
+    title_line = f"<b>{escape_html((listing.title or '').strip())}</b>" if listing.title else ""
+    descr_line = escape_html((listing.descr or "").strip())
+    price_line = f"{escape_html(price_label)}: {escape_html(listing.price)}" if listing.price else ""
     main_block = "\n\n".join([p for p in [city_line, category_line, title_line, descr_line, price_line] if p])
 
     async with SessionLocal() as s:
@@ -575,7 +620,7 @@ async def sv_item(cb: CallbackQuery):
 
     # Если есть YouTube/URL — добавляем ссылку перед контактами
     if video_url:
-        caption_parts.append(f"Видео: {video_url}")
+        caption_parts.append(f"Видео: {escape_html(video_url)}")
 
     if contact_block:
         caption_parts.append(contact_block)
@@ -620,7 +665,7 @@ async def sv_item(cb: CallbackQuery):
         c_btn = await get_common_menu_button("btn_contact_provider", "ru")
         buttons.append([InlineKeyboardButton(
             text=(c_btn.text if c_btn else "💬 Связаться"),
-            url=build_contact_url(listing.id, listing.contact, cb.from_user.id, "services"),
+            url=build_contact_url(listing.id, listing.contact, cb.from_user.id, source),
         )])
 
     # Кнопки навигации — в конец
@@ -737,7 +782,9 @@ async def service_extend_listing(cb: CallbackQuery):
     back_cb = urllib.parse.unquote(parts[2])
 
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "service")
+        )).scalar_one_or_none()
         if not listing:
             await cb.answer("Услуга не найдена.", show_alert=True)
             return
@@ -922,9 +969,16 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    # достаём объекты
-    async with SessionLocal() as s:
-        results = (await s.execute(select(Listing).where(Listing.id.in_(ids)))).scalars().all()
+    # Перепроверяем сохранённые ids: услуга могла быть архивирована после поиска.
+    ids, results = await _load_public_service_ids(ids)
+    await state.update_data(search_results=ids)
+    services_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
+
+    if not ids:
+        msg = await cb.message.answer("Все услуги из результатов уже недоступны. Начните новый поиск.")
+        await register_bot_messages(chat_id, [msg.message_id])
+        await cb.answer()
+        return
 
     # строим клавиатуру — обязательно помечаем ':s', чтобы карточка знала, что мы из поиска
     rows = []
@@ -945,7 +999,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     msg = await cb.message.answer(
-        f"🔎 Найдено: <b>{len(results)}</b> по запросу: <b>{query}</b>\n\nВыберите услугу:",
+        f"🔎 Найдено: <b>{len(results)}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1058,15 +1112,7 @@ async def handle_services_search_query(m: Message, state: FSMContext):
     async with SessionLocal() as s:
         stmt = (
             select(Listing)
-            .join(Category, Category.id == Listing.category_id)
-            .where(or_(Listing.is_sold == 0, Listing.is_sold == False, Listing.is_sold.is_(False)))
-            .where(
-                or_(
-                    func.lower(func.trim(Listing.type)) == "service",
-                    Category.id == SERVICES_ROOT_CATEGORY_ID,
-                    Category.parent_id == SERVICES_ROOT_CATEGORY_ID,
-                )
-            )
+            .where(*_service_public_predicates())
             .order_by(Listing.created_at.desc())
             .limit(500)
         )
@@ -1115,7 +1161,7 @@ async def handle_services_search_query(m: Message, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
 
         msg = await m.answer(
-            f"😕 Ничего не найдено по запросу: <b>{query}</b>",
+            f"😕 Ничего не найдено по запросу: <b>{escape_html(query)}</b>",
             reply_markup=kb,
             parse_mode="HTML"
         )
@@ -1181,14 +1227,14 @@ async def handle_services_search_query(m: Message, state: FSMContext):
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
         correction_note = (
             f"🧠 Показаны результаты по запросу: "
-            f"<b>{search_query_effective}</b> "
+            f"<b>{escape_html(search_query_effective)}</b> "
             f"(учтена возможная опечатка).\n\n"
         )
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
 
     msg = await m.answer(
-        f"{correction_note}🔎 Найдено: <b>{total_count}</b> по запросу: <b>{query}</b>\n\nВыберите услугу:",
+        f"{correction_note}🔎 Найдено: <b>{total_count}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1309,15 +1355,10 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    page_ids = ids[offset:offset + SERVICES_SEARCH_PAGE_SIZE]
-
-    async with SessionLocal() as s:
-        db_results = (await s.execute(
-            select(Listing).where(Listing.id.in_(page_ids))
-        )).scalars().all()
-
-    by_id = {r.id: r for r in db_results}
-    results = [by_id[i] for i in page_ids if i in by_id]
+    ids, valid_results = await _load_public_service_ids(ids)
+    await state.update_data(search_results=ids)
+    services_search_ctx_by_chat[chat_id] = {**ctx, "ids": ids, "query": query}
+    results = valid_results[offset:offset + SERVICES_SEARCH_PAGE_SIZE]
 
     total_count = len(ids)
     page = (offset // SERVICES_SEARCH_PAGE_SIZE) + 1
@@ -1370,7 +1411,7 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     msg = await cb.message.answer(
-        f"🔎 Найдено: <b>{total_count}</b> по запросу: <b>{query}</b>\n\nВыберите услугу:",
+        f"🔎 Найдено: <b>{total_count}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1387,5 +1428,3 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
         f"[services_view.py] services_search_page | "
         f"chat_id={chat_id} | page={page}/{pages} | offset={offset} | msg_id={msg.message_id}"
     )
-
-

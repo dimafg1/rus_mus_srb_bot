@@ -11,352 +11,9 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import re
 
-from app.routers.utils import clear_bot_messages, last_bot_messages, get_text, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, get_text, register_bot_messages, escape_html
 from app.database import SessionLocal
-from sqlalchemy import text as sql
-from app.keyboards import get_common_menu_button, events_main_inline
-from app.routers.utils import log
-
-
-router = Router()
-
-_TZ = ZoneInfo("Europe/Belgrade")
-_MAX_MONTHS_AHEAD = 6
-
-# ===================== ХЕЛПЕРЫ И УТИЛИТЫ =====================
-
-# Коротко: удаляем nav/prompt, что могли остаться в FSM
-async def _drop_nav_and_prompt(state: FSMContext, chat_id: int, bot):
-    data = await state.get_data()
-    for key in ("nav_msg_id", "prompt_id"):
-        mid = data.get(key)
-        if mid:
-            try:
-                await bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
-    await state.update_data(nav_msg_id=None, prompt_id=None)
-
-# Жёсткий ресет UI шага: удаляем nav/prompt и все служебные сообщения
-async def _reset_step_ui(state: FSMContext, chat_id: int, bot):
-    data = await state.get_data()
-    for key in ("nav_msg_id", "prompt_id"):
-        mid = data.get(key)
-        if mid:
-            try:
-                await bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
-    await state.update_data(nav_msg_id=None, prompt_id=None)
-    try:
-        await clear_bot_messages(chat_id, bot)
-    except Exception:
-        pass
-    last_bot_messages[chat_id] = []
-    print(f"[AFISHA][RESET][done] chat={chat_id}")
-
-# Навигационная панель «Назад + Главное меню» и фиксация nav_msg_id
-async def _send_nav(chat_id: int, bot, state: FSMContext, back_cb: str | None):
-    try:
-        nav_text = await get_text('return_to_menu', 'ru') or "Возврат -db"
-    except Exception:
-        nav_text = "Возврат -db"
-
-    buttons = []
-    if back_cb:
-        buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb))
-    try:
-        main_btn = await get_common_menu_button('main_menu')
-        if main_btn:
-            buttons.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
-    except Exception:
-        pass
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
-    nav_msg = await bot.send_message(chat_id, nav_text, reply_markup=kb, parse_mode="HTML")
-    await state.update_data(nav_msg_id=nav_msg.message_id)
-    last_bot_messages.setdefault(chat_id, []).append(nav_msg.message_id)
-    await register_bot_messages(chat_id, [nav_msg.message_id])
-    return nav_msg.message_id
-
-# Удаление пользовательского сообщения безопасно
-async def _delete_user_msg(bot, chat_id: int, msg_id: int | None):
-    if not msg_id:
-        return
-    try:
-        await bot.delete_message(chat_id, msg_id)
-    except Exception:
-        pass
-
-# ===================== FSM СОСТОЯНИЯ =====================
-
-class AfishaAddStates(StatesGroup):
-    wait_title = State()
-    wait_date = State()
-    wait_time = State()
-    wait_city_choice = State()
-    wait_city_text = State()
-    wait_price_choice = State()
-    wait_price_text = State()
-    wait_venue = State()
-    wait_descr = State()
-    wait_photo = State()
-    preview = State()
-
-class AfishaEditStates(StatesGroup):
-    title = State()
-    date = State()
-    time = State()
-    price = State()
-    city = State()
-    city_text = State()
-    venue = State()
-    descr = State()
-    photo = State()
-
-
-# ===================== ВАЛИДАЦИЯ / ФОРМАТ =====================
-
-def _strip(s: str | None) -> str:
-    return (s or "").strip()
-
-def _valid_title(s: str) -> bool:
-    return 1 <= len(s) <= 100
-
-def _parse_date_ddmmyy(raw: str) -> datetime | None:
-    """
-    Принимает:
-    - 07.10.25 / 07-10-25 / 07/10/25
-    - 07.10.2025 / 07-10-2025 / 07/10/2025
-    - 071025 (DDMMYY)
-    - 07102025 (DDMMYYYY)
-    - 2026-02-20 / 2026.02.20 / 2026/02/20 (на всякий случай)
-    Возвращает datetime(year, month, day) или None
-    """
-    s = (raw or "").strip()
-    if not s:
-        return None
-
-    # 1) Слитные форматы (оставляем только цифры)
-    digits = re.sub(r"\D", "", s)
-    try:
-        if len(digits) == 6:  # DDMMYY
-            day = int(digits[0:2])
-            month = int(digits[2:4])
-            year = 2000 + int(digits[4:6])
-            return datetime(year, month, day)
-
-        if len(digits) == 8:
-            # Может быть DDMMYYYY или YYYYMMDD — различаем по первой паре
-            a = int(digits[0:2])
-            b = int(digits[2:4])
-            c = int(digits[4:8])
-            if 1 <= a <= 31 and 1 <= b <= 12 and 2000 <= c <= 2100:
-                # DDMMYYYY
-                return datetime(c, b, a)
-
-            year = int(digits[0:4])
-            month = int(digits[4:6])
-            day = int(digits[6:8])
-            if 2000 <= year <= 2100:
-                return datetime(year, month, day)
-    except ValueError:
-        return None
-
-    # 2) Форматы с разделителями
-    patterns = (
-        "%d.%m.%y", "%d-%m-%y", "%d/%m/%y",
-        "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y",
-        "%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d",
-    )
-    for fmt in patterns:
-        try:
-            return datetime.strptime(s, fmt)
-        except ValueError:
-            continue
-
-    return None
-
-
-def _parse_time_hhmm(s: str) -> tuple[int, int] | None:
-    """Гибкий парсер времени.
-    Поддержка:
-      - HH:MM, H:MM
-      - HH.MM, HH-MM, HH MM
-      - HHMM / HMM (например 930 -> 09:30, 2030 -> 20:30)
-      - HH (интерпретируем как HH:00)
-    """
-    s = s.strip()
-    if not s:
-        return None
-
-    s_low = s.lower().strip()
-
-    # чисто цифры: 3-4 знака (HMM/HHMM) или 1-2 (HH)
-    if re.fullmatch(r"\d{1,4}", s_low):
-        n = s_low
-        if len(n) <= 2:
-            hh = int(n); mm = 0
-        else:
-            # HMM / HHMM
-            hh = int(n[:-2]); mm = int(n[-2:])
-        if 0 <= hh <= 23 and 0 <= mm <= 59:
-            return (hh, mm)
-        return None
-
-    # разделители: :, ., -, пробел
-    s_norm = re.sub(r"[\s]+", ":", s_low)
-    s_norm = s_norm.replace(".", ":").replace("-", ":")
-    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s_norm)
-    if not m:
-        return None
-    hh, mm = map(int, m.groups())
-    if 0 <= hh <= 23 and 0 <= mm <= 59:
-        return (hh, mm)
-    return None
-
-def _is_past_or_too_far(date_local: datetime) -> str | None:
-    now_local = datetime.now(_TZ).date()
-    if date_local.date() < now_local:
-        return "Дата в прошлом. Укажите будущую дату."
-    limit = (now_local.replace(day=1) + timedelta(days=31*_MAX_MONTHS_AHEAD))
-    if date_local.date() > limit:
-        return f"Слишком далеко. Не позже, чем через {_MAX_MONTHS_AHEAD} месяцев."
-    return None
-
-def _to_start_utc(date_local_str: str, hh: int, mm: int) -> int:
-    dt_local = datetime.strptime(date_local_str, "%Y-%m-%d").replace(hour=int(hh), minute=int(mm))
-    return int(dt_local.replace(tzinfo=_TZ).astimezone(timezone.utc).timestamp())
-
-# ===================== БД / СПРАВОЧНИКИ =====================
-
-async def _ensure_events_meta():
-    try:
-        async with SessionLocal() as s:
-            await s.execute(sql("""
-                CREATE TABLE IF NOT EXISTS events_meta (
-                    listing_id   INTEGER PRIMARY KEY
-                        REFERENCES listing(id) ON DELETE CASCADE ON UPDATE CASCADE,
-                    start_at_utc INTEGER NOT NULL,
-                    timezone     TEXT    NOT NULL DEFAULT 'Europe/Belgrade',
-                    venue_text   TEXT,
-                    city_text    TEXT,
-                    lat          REAL,
-                    lon          REAL,
-                    price_text   TEXT,
-                    status       TEXT    NOT NULL DEFAULT 'published',
-                    created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    CHECK (status IN ('published','cancelled'))
-                );
-            """))
-            await s.execute(sql("CREATE INDEX IF NOT EXISTS idx_events_meta_start ON events_meta(start_at_utc);"))
-            await s.commit()
-    except Exception as e:
-        print(f"[AFISHA] ensure_events_meta error: {e}")
-
-async def _city_name_by_id(city_id: int | None) -> str | None:
-    if not city_id:
-        return None
-    try:
-        async with SessionLocal() as s:
-            res = await s.execute(sql("SELECT name FROM city WHERE id = :id LIMIT 1"), {"id": city_id})
-            row = res.first()
-            return row[0] if row else None
-    except Exception as e:
-        print(f"[AFISHA] city_name_by_id error: {e}")
-        return None
-
-async def _kb_city_from_db() -> InlineKeyboardMarkup:
-    rows = []
-    try:
-        async with SessionLocal() as s:
-            res = await s.execute(sql("SELECT id, name FROM city ORDER BY id ASC LIMIT 20"))
-            rows = [tuple(r) for r in res.fetchall()]
-    except Exception as e:
-        print(f"[AFISHA] load cities error: {e}")
-        rows = []
-    btn_rows: list[list[InlineKeyboardButton]] = []
-    row: list[InlineKeyboardButton] = []
-    for cid, name in rows:
-        row.append(InlineKeyboardButton(text=str(name), callback_data=f"af:add:city:{cid}"))
-        if len(row) == 2:
-            btn_rows.append(row); row = []
-    if row:
-        btn_rows.append(row)
-    btn_rows.append([InlineKeyboardButton(text="Другой", callback_data="af:add:city:other")])
-    return InlineKeyboardMarkup(inline_keyboard=btn_rows)
-
-def _kb_skip(cbdata: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить", callback_data=cbdata)]
-    ])
-
-def _kb_price() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Бесплатно", callback_data="af:add:price:free")],
-        [InlineKeyboardButton(text="На донатах", callback_data="af:add:price:donate")],
-        [InlineKeyboardButton(text="Ввести цену", callback_data="af:add:price:custom")],
-    ])
-
-def _kb_preview() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Опубликовать ✅", callback_data="af:add:publish")],
-        [InlineKeyboardButton(text="Исправить ✏️", callback_data="af:add:edit")],
-        [InlineKeyboardButton(text="Отмена", callback_data="af:add:cancel")],
-    ])
-
-# --- Меню Афиши (города из БД + две кнопки и "Главное меню")
-async def _kb_afisha_root() -> InlineKeyboardMarkup:
-    # города (по 2 в ряд)
-    base = await _kb_city_from_db()
-    rows = list(base.inline_keyboard)
-
-    # ряд: "Ближайшие мероприятия" + "Разместить информацию"
-    rows.append([
-        InlineKeyboardButton(text="Ближайшие мероприятия", callback_data="events:near"),
-        InlineKeyboardButton(text="➕ Разместить информацию", callback_data="event_new"),
-    ])
-
-    # ряд: "Главное меню"
-    try:
-        mm = await get_common_menu_button('main_menu')
-        if mm:
-            rows.append([InlineKeyboardButton(text=mm.text, callback_data=mm.callback_data)])
-    except Exception:
-        pass
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-async def _go_afisha_menu(bot, chat_id: int):
-    try:
-        txt = await get_text("afisha_choose_city", "ru") or "📅 <b>Афиша — выберите город:</b>"
-    except Exception:
-        txt = "📅 <b>Афиша — выберите город:</b>"
-
-    kb = await _kb_afisha_root()
-    msg = await bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
-    await register_bot_messages(chat_id, [msg.message_id])
-    print(f"[AFISHA][ROOT] menu shown | chat_id={chat_id} | msg_id={msg.message_id}")
-
-
-
-from aiogram import Router, F
-from aiogram.types import (
-    CallbackQuery, Message,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-)
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import StateFilter
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-import re
-
-from app.routers.utils import clear_bot_messages, last_bot_messages, get_text, register_bot_messages
-from app.database import SessionLocal
+from app.events_meta import ensure_events_meta
 from sqlalchemy import text as sql
 from app.keyboards import get_common_menu_button, events_main_inline
 from app.routers.utils import log
@@ -427,13 +84,13 @@ def _draft_text_from_data(data: dict, city_name: str | None = None) -> str:
     # Делаем аккуратные заголовки (HTML).
     parts = [
         "🧾 <b>Черновик объявления</b>",
-        f"<b>Название:</b> {title}",
-        f"<b>Дата:</b> {date_local}",
-        f"<b>Время:</b> {time_str}",
-        f"<b>Город:</b> {city_str}",
-        f"<b>Цена:</b> {price}",
-        f"<b>Площадка:</b> {venue}",
-        f"<b>Описание:</b> {descr}",
+        f"<b>Название:</b> {escape_html(title)}",
+        f"<b>Дата:</b> {escape_html(date_local)}",
+        f"<b>Время:</b> {escape_html(time_str)}",
+        f"<b>Город:</b> {escape_html(city_str)}",
+        f"<b>Цена:</b> {escape_html(price)}",
+        f"<b>Площадка:</b> {escape_html(venue)}",
+        f"<b>Описание:</b> {escape_html(descr)}",
         f"<b>Фото:</b> {photo_str}",
     ]
     return "\n".join(parts)
@@ -564,6 +221,19 @@ class AfishaAddStates(StatesGroup):
     wait_photo = State()
     preview = State()
 
+
+class AfishaEditStates(StatesGroup):
+    title = State()
+    date = State()
+    time = State()
+    price = State()
+    city = State()
+    city_text = State()
+    venue = State()
+    descr = State()
+    photo = State()
+
+
 # ===================== ВАЛИДАЦИЯ / ФОРМАТ =====================
 
 def _strip(s: str | None) -> str:
@@ -679,31 +349,6 @@ def _to_start_utc(date_local_str: str, hh: int, mm: int) -> int:
 
 # ===================== БД / СПРАВОЧНИКИ =====================
 
-async def _ensure_events_meta():
-    try:
-        async with SessionLocal() as s:
-            await s.execute(sql("""
-                CREATE TABLE IF NOT EXISTS events_meta (
-                    listing_id   INTEGER PRIMARY KEY
-                        REFERENCES listing(id) ON DELETE CASCADE ON UPDATE CASCADE,
-                    start_at_utc INTEGER NOT NULL,
-                    timezone     TEXT    NOT NULL DEFAULT 'Europe/Belgrade',
-                    venue_text   TEXT,
-                    city_text    TEXT,
-                    lat          REAL,
-                    lon          REAL,
-                    price_text   TEXT,
-                    status       TEXT    NOT NULL DEFAULT 'published',
-                    created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    CHECK (status IN ('published','cancelled'))
-                );
-            """))
-            await s.execute(sql("CREATE INDEX IF NOT EXISTS idx_events_meta_start ON events_meta(start_at_utc);"))
-            await s.commit()
-    except Exception as e:
-        print(f"[AFISHA] ensure_events_meta error: {e}")
-
 async def _city_name_by_id(city_id: int | None) -> str | None:
     if not city_id:
         return None
@@ -715,6 +360,57 @@ async def _city_name_by_id(city_id: int | None) -> str | None:
     except Exception as e:
         print(f"[AFISHA] city_name_by_id error: {e}")
         return None
+
+
+async def _other_city_id() -> int | None:
+    """ID справочной строки ``slug=other`` для произвольного города."""
+    try:
+        async with SessionLocal() as s:
+            row = (await s.execute(sql(
+                "SELECT id FROM city WHERE lower(slug)='other' ORDER BY id LIMIT 1"
+            ))).first()
+            return int(row[0]) if row else None
+    except Exception as e:
+        print(f"[AFISHA] other_city_id error: {e}")
+        return None
+
+
+async def _event_root_category_id(session) -> int:
+    """Resolve the root Afisha category without reusing a seeded child slug."""
+    query = sql("""
+        SELECT id
+        FROM category
+        WHERE lower(trim(slug))='event' AND parent_id IS NULL
+        ORDER BY id
+    """)
+    roots = [int(row[0]) for row in (await session.execute(query)).fetchall()]
+    if len(roots) > 1:
+        raise RuntimeError("Found multiple root categories with slug='event'; resolve the catalog conflict")
+    if roots:
+        return roots[0]
+
+    await session.execute(sql("""
+        INSERT INTO category (slug, name, parent_id, fields)
+        SELECT 'event', 'Афиша', NULL, NULL
+        WHERE NOT EXISTS (
+            SELECT 1 FROM category
+            WHERE lower(trim(slug))='event' AND parent_id IS NULL
+        )
+    """))
+    roots = [int(row[0]) for row in (await session.execute(query)).fetchall()]
+    if len(roots) != 1:
+        raise RuntimeError("Could not create an unambiguous root category for Afisha")
+    return roots[0]
+
+
+async def _mark_event_pending(session, listing_id: int) -> None:
+    """Send an edited event back to moderation."""
+    await session.execute(sql("""
+        UPDATE events_meta
+        SET status='pending', updated_at=strftime('%s','now')
+        WHERE listing_id=:id
+    """), {"id": int(listing_id)})
+
 
 async def _kb_city_from_db() -> InlineKeyboardMarkup:
     rows = []
@@ -860,13 +556,13 @@ async def _render_afisha_edit_overview(chat_id: int, bot, state: FSMContext) -> 
     text = (
         "✏️ <b>Редактирование объявления</b>\n"
         f"ID: <code>{listing_id}</code>\n\n"
-        f"<b>Название:</b> {title}\n"
-        f"<b>Дата:</b> {date_card}\n"
-        f"<b>Время:</b> {time_card}\n"
-        f"<b>Город:</b> {city_text}\n"
-        f"<b>Место:</b> {venue_text}\n"
-        f"<b>Цена:</b> {price_text}\n"
-        f"<b>Описание:</b> {descr_short}\n"
+        f"<b>Название:</b> {escape_html(title)}\n"
+        f"<b>Дата:</b> {escape_html(date_card)}\n"
+        f"<b>Время:</b> {escape_html(time_card)}\n"
+        f"<b>Город:</b> {escape_html(city_text)}\n"
+        f"<b>Место:</b> {escape_html(venue_text)}\n"
+        f"<b>Цена:</b> {escape_html(price_text)}\n"
+        f"<b>Описание:</b> {escape_html(descr_short)}\n"
         f"<b>Фото:</b> {'есть' if photo_id else 'нет'}\n\n"
         "Выберите поле для редактирования:"
     )
@@ -955,7 +651,7 @@ async def afisha_edit_entry(cb: CallbackQuery, state: FSMContext):
                     em.start_at_utc, em.venue_text, em.city_text, em.price_text
                 FROM listing l
                 JOIN events_meta em ON em.listing_id = l.id
-                WHERE l.id = :id AND l.type='events' AND l.is_sold=0
+                WHERE l.id = :id AND l.type='events' AND l.status='active' AND l.is_sold=0
                 LIMIT 1
             """), {"id": listing_id})
             row = res.first()
@@ -1062,7 +758,7 @@ async def afisha_edit_title_start(cb: CallbackQuery, state: FSMContext):
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
     # строка с текущим названием
-    cur_line = f"Текущее: <code>{cur_title}</code>\n\n" if cur_title else ""
+    cur_line = f"Текущее: <code>{escape_html(cur_title)}</code>\n\n" if cur_title else ""
 
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
@@ -1190,6 +886,18 @@ async def af_add_time(message: Message, state: FSMContext):
         return
 
     hh, mm = hhmm
+    data = await state.get_data()
+    try:
+        start_at_utc = _to_start_utc(data.get("date_local"), hh, mm)
+    except Exception:
+        start_at_utc = 0
+    if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
+        await _delete_user_msg(message.bot, chat_id, message.message_id)
+        msg = await message.answer("Это время уже прошло. Укажите будущее время:")
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
+        return
+
     await state.update_data(time_hh=hh, time_mm=mm)
     await _update_draft(message.bot, chat_id, state)
     await _delete_user_msg(message.bot, chat_id, message.message_id)
@@ -1257,7 +965,14 @@ async def af_add_city_text(message: Message, state: FSMContext):
         print(f"[AFISHA][ERR] wait_city_text empty | chat_id={chat_id}")
         return
 
-    await state.update_data(city_id=None, city_text=city_text)
+    other_city_id = await _other_city_id()
+    if other_city_id is None:
+        msg = await message.answer("Не найден служебный город «Другой». Обратитесь к администратору.")
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
+        return
+
+    await state.update_data(city_id=other_city_id, city_text=city_text)
     await _update_draft(message.bot, chat_id, state)
     await _delete_user_msg(message.bot, chat_id, message.message_id)
 
@@ -1418,6 +1133,7 @@ async def afisha_edit_title_apply(message: Message, state: FSMContext):
                 SET title = :title
                 WHERE id = :id AND owner_id = :owner AND type='events' AND is_sold=0
             """), {"title": new_title, "id": int(listing_id), "owner": int(owner_id)})
+            await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id}")
     except Exception as e:
@@ -1516,6 +1232,11 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
         )
         return
 
+    date_err = _is_past_or_too_far(dt)
+    if date_err:
+        await message.answer(date_err)
+        return
+
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     prompt_mid = data.get("edit_prompt_msg_id")
@@ -1539,6 +1260,9 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
         _af_dbg(func, "to_utc_fail", f"{type(e).__name__}: {e}")
         await message.answer("Не удалось обработать дату. Попробуйте ещё раз.")
         return
+    if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
+        await message.answer("Выбранные дата и время уже прошли. Укажите будущую дату.")
+        return
 
     try:
         async with SessionLocal() as s:
@@ -1554,6 +1278,7 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
                         AND is_sold=0
                   )
             """), {"ts": int(start_at_utc), "id": int(listing_id), "owner": int(owner_id)})
+            await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} ts={start_at_utc}")
     except Exception as e:
@@ -1670,6 +1395,9 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
         _af_dbg(func, "to_utc_fail", f"{type(e).__name__}: {e}")
         await message.answer("Не удалось обработать время. Попробуйте ещё раз.")
         return
+    if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
+        await message.answer("Выбранные дата и время уже прошли. Укажите будущее время.")
+        return
 
     try:
         async with SessionLocal() as s:
@@ -1685,6 +1413,7 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
                         AND is_sold=0
                   )
             """), {"ts": int(start_at_utc), "id": int(listing_id), "owner": int(owner_id)})
+            await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} ts={start_at_utc}")
     except Exception as e:
@@ -1734,7 +1463,7 @@ async def afisha_edit_price_start(cb: CallbackQuery, state: FSMContext):
         chat_id=chat_id,
         text=(
             "✏️ <b>Редактирование цены</b>\n\n"
-            f"Текущая цена: <code>{cur_price}</code>\n\n"
+            f"Текущая цена: <code>{escape_html(cur_price)}</code>\n\n"
             "Введите новую цену (можно как текст):\n"
             "Например: <code>0</code>, <code>500</code>, <code>500 rsd</code>, <code>бесплатно</code>"
         ),
@@ -1827,6 +1556,7 @@ async def _afisha_edit_price_apply_value(
                   AND is_sold=0
             """), {"pn": price_num, "id": int(listing_id), "owner": int(owner_id)})
 
+            await _mark_event_pending(s, listing_id)
             await s.commit()
 
         _af_dbg(func, "db.ok", f"id={listing_id} price_num={price_num}")
@@ -1915,6 +1645,7 @@ async def afisha_edit_price_apply(message: Message, state: FSMContext):
                   AND is_sold=0
             """), {"pn": price_num, "id": int(listing_id), "owner": int(owner_id)})
 
+            await _mark_event_pending(s, listing_id)
             await s.commit()
 
         _af_dbg(func, "db.ok", f"id={listing_id} price_num={price_num} price_text={new_price_text!r}")
@@ -1965,7 +1696,7 @@ async def afisha_edit_city_start(cb: CallbackQuery, state: FSMContext):
         chat_id=chat_id,
         text=(
             "✏️ <b>Редактирование города</b>\n\n"
-            f"Текущий город: <code>{cur_city}</code>\n\n"
+            f"Текущий город: <code>{escape_html(cur_city)}</code>\n\n"
             "Выберите город из списка или нажмите «Другой»:"
         ),
         parse_mode="HTML",
@@ -2077,6 +1808,7 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
                 WHERE listing_id = :id
             """), {"ct": city_name, "id": int(listing_id)})
 
+            await _mark_event_pending(s, listing_id)
             await s.commit()
 
         _af_dbg(func, "db.ok", f"id={listing_id} city_id={city_id} city_name={city_name!r}")
@@ -2140,6 +1872,7 @@ async def afisha_edit_city_text_apply(message: Message, state: FSMContext):
                 WHERE listing_id = :id
             """), {"ct": raw, "id": int(listing_id)})
 
+            await _mark_event_pending(s, listing_id)
             await s.commit()
 
         _af_dbg(func, "db.ok", f"id={listing_id} city_id={other_city_id} city_text={raw!r}")
@@ -2189,7 +1922,7 @@ async def afisha_edit_venue_start(cb: CallbackQuery, state: FSMContext):
         chat_id=chat_id,
         text=(
             "✏️ <b>Редактирование места</b>\n\n"
-            f"Текущее место: <code>{cur_venue}</code>\n\n"
+            f"Текущее место: <code>{escape_html(cur_venue)}</code>\n\n"
             "Введите новое место/площадку.\n"
             "Пример: <code>Zappa Barka</code> или <code>KC Grad</code>"
         ),
@@ -2237,6 +1970,7 @@ async def afisha_edit_venue_apply(message: Message, state: FSMContext):
                         AND is_sold=0
                   )
             """), {"vt": raw, "id": int(listing_id), "owner": int(owner_id)})
+            await _mark_event_pending(s, listing_id)
             await s.commit()
 
         _af_dbg(func, "db.ok", f"id={listing_id} venue_text={raw!r}")
@@ -2287,7 +2021,7 @@ async def afisha_edit_descr_start(cb: CallbackQuery, state: FSMContext):
         chat_id=chat_id,
         text=(
             "✏️ <b>Редактирование описания</b>\n\n"
-            f"Текущее:\n<code>{cur_short}</code>\n\n"
+            f"Текущее:\n<code>{escape_html(cur_short)}</code>\n\n"
             "Введите новое описание одним сообщением.\n"
             "Чтобы убрать описание — отправьте <code>-</code>"
         ),
@@ -2340,6 +2074,7 @@ async def afisha_edit_descr_apply(message: Message, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"d": new_descr, "id": int(listing_id), "owner": int(owner_id)})
+            await _mark_event_pending(s, listing_id)
             await s.commit()
 
         _af_dbg(func, "db.ok", f"id={listing_id} descr_len={len(new_descr)}")
@@ -2506,6 +2241,7 @@ async def afisha_edit_photo_delete_yes(cb: CallbackQuery, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"id": int(listing_id), "owner": int(owner_id)})
+            await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} photo=NULL")
     except Exception as e:
@@ -2560,6 +2296,7 @@ async def afisha_edit_photo_apply(message: Message, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"ph": file_id, "id": int(listing_id), "owner": int(owner_id)})
+            await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} photo=set")
     except Exception as e:
@@ -2733,14 +2470,14 @@ async def _go_preview(message: Message, state: FSMContext):
     price_line = f"💲 {price}" if price else ""
 
     parts = [
-        f"🧾 <b>{title}</b>",
-        f"📅 {when_line}",
-        f"📍 {place_line}",
+        f"🧾 <b>{escape_html(title)}</b>",
+        f"📅 {escape_html(when_line)}",
+        f"📍 {escape_html(place_line)}",
     ]
     if price_line:
-        parts.append(price_line)
+        parts.append(escape_html(price_line))
     if descr:
-        parts.append("\n" + descr)
+        parts.append("\n" + escape_html(descr))
 
     card_text = "\n".join(parts)
 
@@ -2864,6 +2601,16 @@ async def af_add_publish(cb: CallbackQuery, state: FSMContext):
     owner_id = cb.from_user.id
     contact = f"@{(cb.from_user.username or '').strip()}" if cb.from_user.username else str(owner_id)
 
+    if not isinstance(city_id, int) and city_text:
+        city_id = await _other_city_id()
+    if not isinstance(city_id, int):
+        sent = await cb.message.answer("Не удалось определить город. Создайте объявление заново.")
+        last_bot_messages.setdefault(chat_id, []).append(sent.message_id)
+        await register_bot_messages(chat_id, [sent.message_id])
+        await state.clear()
+        await cb.answer()
+        return
+
     try:
         start_at_utc = _to_start_utc(date_local, int(hh), int(mm))
     except Exception as e:
@@ -2875,21 +2622,30 @@ async def af_add_publish(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    await _ensure_events_meta()
+    if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
+        sent = await cb.message.answer("Дата и время события уже прошли. Создайте объявление заново.")
+        last_bot_messages.setdefault(chat_id, []).append(sent.message_id)
+        await register_bot_messages(chat_id, [sent.message_id])
+        await state.clear()
+        await cb.answer()
+        return
+
     listing_id = None
     try:
+        await ensure_events_meta()
         async with SessionLocal() as s:
+            category_id = await _event_root_category_id(s)
             await s.execute(sql("""
                 INSERT INTO listing (
                     city_id, category_id, owner_id, title, price, descr, contact,
-                    photo_file_id, is_sold, created_at, type, flex, extra_category_id1, extra_category_id2
+                    photo_file_id, is_sold, created_at, type, flex, extra_category_id1, extra_category_id2, status
                 ) VALUES (
                     :city_id, :category_id, :owner_id, :title, :price, :descr, :contact,
-                    :photo_file_id, 0, CURRENT_TIMESTAMP, 'events', '{}', NULL, NULL
+                    :photo_file_id, 0, CURRENT_TIMESTAMP, 'events', '{}', NULL, NULL, 'active'
                 )
             """), {
-                "city_id": city_id if isinstance(city_id, int) else None,
-                "category_id": 100,
+                "city_id": city_id,
+                "category_id": category_id,
                 "owner_id": owner_id,
                 "title": title,
                 "price": price_text or "",
@@ -2904,7 +2660,7 @@ async def af_add_publish(cb: CallbackQuery, state: FSMContext):
                 INSERT INTO events_meta (
                     listing_id, start_at_utc, timezone, venue_text, city_text, price_text, status
                 ) VALUES (
-                    :listing_id, :start_at_utc, 'Europe/Belgrade', :venue_text, :city_text, :price_text, 'published'
+                    :listing_id, :start_at_utc, 'Europe/Belgrade', :venue_text, :city_text, :price_text, 'pending'
                 )
             """), {
                 "listing_id": listing_id,
@@ -2927,7 +2683,7 @@ async def af_add_publish(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    txt = "✅ Опубликовано!"
+    txt = "✅ Отправлено на модерацию. После проверки событие появится в Афише."
 
     rows = []
     try:

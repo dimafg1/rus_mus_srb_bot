@@ -1,0 +1,17 @@
+[Unit]
+Description=Backup Rus Mus Srb SQLite database
+
+[Service]
+Type=oneshot
+User=rusmus
+Group=rusmus
+WorkingDirectory=/opt/rus_mus_srb_bot
+EnvironmentFile=/etc/rus-mus-srb-bot/bot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rus_mus_srb_bot/.venv/bin/python scripts/backup_db.py
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rus-mus-srb-bot /var/backups/rus-mus-srb-bot

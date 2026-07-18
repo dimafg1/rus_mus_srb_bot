@@ -17,6 +17,8 @@ published/hidden/deleted, без 30-дневных сроков) + release_track
 - железное правило чата: каждый экран убирает предыдущие сообщения
   (clear_bot_messages) и регистрирует новые (register_bot_messages).
 """
+import asyncio
+import html
 import json
 import urllib.parse
 
@@ -29,7 +31,7 @@ from aiogram.types import (
 from sqlmodel import select
 
 from app.database import SessionLocal
-from app.models import Artist, Category, Listing, ReleaseMeta, ReleaseTrack, utcnow_naive
+from app.models import Artist, Category, City, Listing, ReleaseMeta, ReleaseTrack, utcnow_naive
 from app.analytics import log_event
 from app.analytics.listing_views import log_listing_view
 from app.features import is_enabled
@@ -41,9 +43,13 @@ from app.routers.utils import (
 
 router = Router(name="releases")
 
-RELEASES_CITY_ID = 999        # техническая привязка (город в релизах не показывается)
 RELEASES_CATEGORY_SLUG = "releases"
 PAGE = 8
+MAX_LINKS = 10
+MAX_TRACKS = 50
+MAX_URL_LENGTH = 2048
+
+_release_publish_locks: dict[int, asyncio.Lock] = {}
 
 RELEASE_TYPES = {
     "single": "Сингл",
@@ -57,8 +63,8 @@ ARTIST_TYPES = ["Сольный исполнитель", "Группа", "Дуэ
 LINK_LABELS = {
     "youtube.com": "YouTube", "youtu.be": "YouTube",
     "spotify.com": "Spotify",
-    "music.yandex": "Яндекс Музыка",
-    "music.apple": "Apple Music",
+    "music.yandex.ru": "Яндекс Музыка",
+    "music.apple.com": "Apple Music",
     "bandcamp.com": "Bandcamp",
     "soundcloud.com": "SoundCloud",
     "vk.com": "VK Музыка", "vk.ru": "VK Музыка",
@@ -79,6 +85,99 @@ class ReleaseReport(StatesGroup):
     other_text = State()
 
 
+class _MusicEnabledMiddleware:
+    """Закрывает все stale callback/FSM-входы музыкального раздела флагом."""
+
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if user is None or await is_enabled("releases_enabled", user_id=user.id):
+            return await handler(event, data)
+        if isinstance(event, CallbackQuery):
+            await event.answer("Раздел временно недоступен.", show_alert=True)
+        elif isinstance(event, Message):
+            await event.answer("Музыкальный раздел временно недоступен.")
+        return None
+
+
+router.callback_query.middleware(_MusicEnabledMiddleware())
+router.message.middleware(_MusicEnabledMiddleware())
+
+
+def _e(value) -> str:
+    """Пользовательский/БД-текст для Telegram HTML."""
+    return html.escape(str(value or ""), quote=False)
+
+
+def _fit_html_lines(lines: list[str], limit: int = 1024) -> str:
+    """Обрезает только по границам строк, не разрывая HTML-теги/entities."""
+    result: list[str] = []
+    for line in lines:
+        candidate = "\n".join([*result, line])
+        if len(candidate) <= limit:
+            result.append(line)
+            continue
+        if len("\n".join([*result, "…"])) <= limit:
+            result.append("…")
+        break
+    return "\n".join(result)
+
+
+def _normalize_http_url(value: str) -> str | None:
+    """Принимает только полноценные http(s)-URL без credentials/пробелов."""
+    raw = (value or "").strip()
+    if (
+        not raw
+        or len(raw) > MAX_URL_LENGTH
+        or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+        or any(ch in raw for ch in "\"'<>`\\")
+    ):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        _ = parsed.port  # невалидный порт должен быть отвергнут
+    except (TypeError, ValueError):
+        return None
+    return raw
+
+
+def _parse_link_text(text: str, *, limit: int = MAX_LINKS) -> list[dict]:
+    links: list[dict] = []
+    seen: set[str] = set()
+    for token in (text or "").replace(",", " ").split():
+        url = _normalize_http_url(token)
+        if not url or url in seen:
+            continue
+        links.append({"label": _link_label(url), "url": url})
+        seen.add(url)
+        if len(links) >= limit:
+            break
+    return links
+
+
+def _load_links(raw_json: str | None) -> list[dict]:
+    """Безопасно читает старые данные и отбрасывает опасные/битые URL."""
+    try:
+        raw_links = json.loads(raw_json) if raw_json else []
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(raw_links, list):
+        return []
+    links: list[dict] = []
+    for item in raw_links[:MAX_LINKS]:
+        if not isinstance(item, dict):
+            continue
+        url = _normalize_http_url(str(item.get("url") or ""))
+        if not url:
+            continue
+        label = str(item.get("label") or _link_label(url))[:64]
+        links.append({"label": label, "url": url})
+    return links
+
+
 # ─────────────────────────── helpers ───────────────────────────
 
 def _menu_btn() -> InlineKeyboardButton:
@@ -93,6 +192,10 @@ def _nav_row(back_cb: str) -> list[InlineKeyboardButton]:
 async def _send_screen(bot, chat_id: int, text: str, kb=None, photo=None):
     """Экран раздела: чистим предыдущие сообщения, шлём новое, регистрируем."""
     await clear_bot_messages(chat_id, bot)
+    # Поле исторически CSV для market/service. Релиз использует одну обложку;
+    # даже повреждённая старая запись не должна передавать Telegram строку id1,id2.
+    if isinstance(photo, str):
+        photo = next((part.strip() for part in photo.split(",") if part.strip()), None)
     if photo:
         msg = await bot.send_photo(chat_id, photo, caption=text, reply_markup=kb, parse_mode="HTML")
     else:
@@ -122,17 +225,22 @@ async def _replace_prompt(state: FSMContext, bot, chat_id: int, text: str, kb=No
 
 
 def _link_label(url: str) -> str:
-    u = url.lower()
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        host = ""
     for dom, label in LINK_LABELS.items():
-        if dom in u:
+        if host == dom or host.endswith("." + dom):
             return label
     return "Слушать"
 
 
 def _youtube_url(links: list[dict]) -> str | None:
     for l in links:
-        if l.get("label") == "YouTube":
-            return l["url"]
+        url = _normalize_http_url(str(l.get("url") or ""))
+        host = (urllib.parse.urlsplit(url).hostname or "").lower() if url else ""
+        if host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+            return url
     return None
 
 
@@ -184,11 +292,33 @@ async def _ensure_release_category() -> int:
         return cat.id
 
 
+async def _release_city_id() -> int | None:
+    """Техническая FK-привязка: Белград из seed, затем любой существующий город."""
+    async with SessionLocal() as s:
+        city = (await s.execute(
+            select(City).where(City.slug == "belgrade")
+        )).scalars().first()
+        if city is None:
+            city = (await s.execute(select(City).order_by(City.id))).scalars().first()
+    return city.id if city else None
+
+
+async def _owned_active_artist(artist_id: int, owner_id: int):
+    async with SessionLocal() as s:
+        return (await s.execute(
+            select(Artist).where(
+                Artist.id == artist_id,
+                Artist.owner_user_id == owner_id,
+                Artist.status == "active",
+            )
+        )).scalar_one_or_none()
+
+
 async def _load_release(listing_id: int):
     """→ (listing, meta, artist, tracks) либо (None, None, None, [])."""
     async with SessionLocal() as s:
         listing = (await s.execute(
-            select(Listing).where(Listing.id == listing_id)
+            select(Listing).where(Listing.id == listing_id, Listing.type == "release")
         )).scalar_one_or_none()
         if not listing:
             return None, None, None, []
@@ -207,44 +337,87 @@ async def _load_release(listing_id: int):
     return listing, meta, artist, tracks
 
 
-def _release_caption(listing, meta, artist, tracks) -> str:
-    a_name = artist.name if artist else "Неизвестный исполнитель"
-    t_label = RELEASE_TYPES.get(meta.release_type, meta.release_type) if meta else ""
-    lines = [f"🎵 <b>{a_name} — «{listing.title}»</b>"]
+def _release_is_public(listing, meta, artist, tracks) -> bool:
+    base = bool(
+        listing
+        and listing.type == "release"
+        and listing.status == "active"
+        and meta
+        and meta.status == "published"
+        and artist
+        and artist.id == meta.artist_id
+        and artist.owner_user_id == listing.owner_id
+        and artist.status == "active"
+    )
+    return base and _has_release_media(meta, tracks)
+
+
+def _can_view_release(user_id: int, listing, meta, artist, tracks) -> bool:
+    if _release_is_public(listing, meta, artist, tracks):
+        return True
+    if (
+        not listing
+        or listing.type != "release"
+        or listing.status != "active"
+        or not meta
+        or meta.status == "deleted"
+    ):
+        return False
+    from app.routers.admin_panel import is_admin
+    return listing.owner_id == user_id or is_admin(user_id)
+
+
+def _has_release_media(meta, tracks) -> bool:
+    return bool(tracks or (meta and meta.video_file_id) or _load_links(meta.links if meta else None))
+
+
+def _release_caption(listing, meta, artist, tracks, *, hidden: bool = False) -> str:
+    a_name = _e(artist.name if artist else "Неизвестный исполнитель")
+    title = _e(listing.title)
+    t_label = _e(RELEASE_TYPES.get(meta.release_type, meta.release_type) if meta else "")
+    lines = [f"🎵 <b>{a_name} — «{title}»</b>"]
+    if hidden:
+        lines[0:0] = ["🚫 <i>Релиз скрыт</i>", ""]
     sub = [t_label]
     if meta and meta.release_date:
-        sub.append(meta.release_date)
+        sub.append(_e(meta.release_date))
     if meta and meta.genre:
-        sub.append(meta.genre)
+        sub.append(_e(meta.genre))
     lines.append(" · ".join(x for x in sub if x))
     if meta and meta.recorded_at:
-        lines.append(f"🎙 Записано: {meta.recorded_at}")
+        lines.append(f"🎙 Записано: {_e(meta.recorded_at)}")
     if listing.descr:
         lines.append("")
-        lines.append(listing.descr)
-    if tracks:
+        lines.append(_e(listing.descr))
+    playable = _release_is_public(listing, meta, artist, tracks)
+    if tracks and playable:
         lines.append("")
         lines.append("<b>Трек-лист:</b>")
         for t in tracks:
-            lines.append(f"{t.position}. {t.title or 'Трек ' + str(t.position)}")
+            lines.append(f"{t.position}. {_e(t.title or 'Трек ' + str(t.position))}")
     # YouTube в тексте не показываем: как в Услугах, под карточкой идёт
     # отдельная TWA-кнопка «▶️ Смотреть видео» (см. _send_release_yt_button)
-    caption = "\n".join(lines)
-    return caption[:1020] + "…" if len(caption) > 1024 else caption
+    return _fit_html_lines(lines)
 
 
 def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
                 artist=None, back_cb: str = "go_releases",
-                back_label: str = "⬅️ К релизам") -> InlineKeyboardMarkup:
+                back_label: str = "⬅️ К релизам", source: str = "") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    if tracks:
+    playable = _release_is_public(listing, meta, artist, tracks)
+    if tracks and playable:
         rows.append([InlineKeyboardButton(
-            text="▶️ Слушать в Telegram", callback_data=f"rel:listen:{listing.id}")])
+            text="▶️ Слушать в Telegram",
+            callback_data=f"rel:listen:{listing.id}:{source}")])
+    if meta and meta.video_file_id and playable:
+        rows.append([InlineKeyboardButton(
+            text="▶️ Смотреть клип в Telegram",
+            callback_data=f"rel:video:{listing.id}:{source}")])
     if artist is not None:
         rows.append([InlineKeyboardButton(
             text="🎤 Об исполнителе",
-            callback_data=f"art:view:{artist.id}:rel{listing.id}")])
-    links = json.loads(meta.links) if meta and meta.links else []
+            callback_data=f"art:view:{artist.id}:rel{listing.id}.{source}")])
+    links = _load_links(meta.links if meta and playable else None)
     row: list[InlineKeyboardButton] = []
     for l in links:
         if l.get("label") == "YouTube":
@@ -266,7 +439,9 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
         ctl.append(InlineKeyboardButton(text="✅ Показать", callback_data=f"rel:admshow:{listing.id}"))
     if ctl:
         rows.append(ctl)
-    rows.append([InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"rel:report:{listing.id}")])
+    if playable:
+        rows.append([InlineKeyboardButton(
+            text="⚠️ Пожаловаться", callback_data=f"rel:report:{listing.id}")])
     rows.append([InlineKeyboardButton(text=back_label, callback_data=back_cb), _menu_btn()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -277,9 +452,23 @@ def _release_back(src: str, artist=None) -> tuple[str, str]:
         return "rel:sback", "⬅️ К результатам"
     if src == "my":
         return "rel:my", "⬅️ К моим релизам"
-    if src.startswith("a") and src[1:].isdigit():
-        return f"art:view:{src[1:]}:list", "⬅️ К исполнителю"
+    if src.startswith("a"):
+        artist_ref, _, artist_source = src[1:].partition(".")
+        if artist_ref.isdigit():
+            back_source = "search" if artist_source == "s" else "list"
+            return f"art:view:{artist_ref}:{back_source}", "⬅️ К исполнителю"
     return "go_releases", "⬅️ К релизам"
+
+
+def _clean_release_source(src: str) -> str:
+    if src in {"", "s", "my"}:
+        return src
+    if src.startswith("a"):
+        artist_ref, _, artist_source = src[1:].partition(".")
+        if artist_ref.isdigit() and artist_source in {"", "s", "l"}:
+            suffix = f".{artist_source}" if artist_source else ""
+            return f"a{artist_ref[:16]}{suffix}"
+    return ""
 
 
 # ─────────────────────────── лента ───────────────────────────
@@ -307,21 +496,34 @@ async def releases_feed(cb: CallbackQuery, state: FSMContext):
         metas = (await s.execute(
             q.order_by(ReleaseMeta.created_at.desc())
         )).scalars().all()
-        total = len(metas)
-        page = metas[offset:offset + PAGE]
-        rows: list[list[InlineKeyboardButton]] = []
-        for m in page:
+        visible: list[tuple[ReleaseMeta, Listing, Artist]] = []
+        for m in metas:
             listing = (await s.execute(
-                select(Listing).where(Listing.id == m.listing_id)
+                select(Listing).where(Listing.id == m.listing_id, Listing.type == "release")
             )).scalar_one_or_none()
             artist = (await s.execute(
                 select(Artist).where(Artist.id == m.artist_id)
             )).scalar_one_or_none()
-            if not listing:
+            release_tracks = (await s.execute(
+                select(ReleaseTrack).where(ReleaseTrack.listing_id == m.listing_id)
+            )).scalars().all()
+            if not listing or listing.status != "active" or not artist:
                 continue
+            if admin:
+                if m.status != "deleted":
+                    visible.append((m, listing, artist))
+            elif _release_is_public(listing, m, artist, release_tracks):
+                visible.append((m, listing, artist))
+        total = len(visible)
+        page = visible[offset:offset + PAGE]
+        rows: list[list[InlineKeyboardButton]] = []
+        for m, listing, artist in page:
             a_name = artist.name if artist else "?"
             t_label = RELEASE_TYPES.get(m.release_type, "")
-            mark = "🔴 " if m.status != "published" else ""
+            release_tracks = (await s.execute(
+                select(ReleaseTrack).where(ReleaseTrack.listing_id == m.listing_id)
+            )).scalars().all()
+            mark = "🔴 " if not _release_is_public(listing, m, artist, release_tracks) else ""
             rows.append([InlineKeyboardButton(
                 text=f"{mark}🎵 {a_name} — {listing.title} ({t_label})",
                 callback_data=f"rel:view:{listing.id}")])
@@ -351,8 +553,12 @@ async def releases_feed(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("rel:view:"))
 async def release_view(cb: CallbackQuery):
     parts = cb.data.split(":")
-    listing_id = int(parts[2])
-    src = parts[3] if len(parts) > 3 else ""
+    try:
+        listing_id = int(parts[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+    src = _clean_release_source(parts[3] if len(parts) > 3 else "")
     await _show_release_card(cb, listing_id, src)
     try:
         await cb.answer()
@@ -364,41 +570,54 @@ async def _show_release_card(cb: CallbackQuery, listing_id: int, src: str = ""):
     """Рендер карточки релиза. Вызывается и после Скрыть/Показать,
     чтобы экран сразу отражал новый статус."""
     listing, meta, artist, tracks = await _load_release(listing_id)
-    if not listing or not meta or meta.status != "published":
-        # владельцу и админу показываем и скрытые
-        from app.routers.admin_panel import is_admin
-        if not (listing and meta and (cb.from_user.id == listing.owner_id or is_admin(cb.from_user.id))):
-            await cb.answer("Релиз недоступен.", show_alert=True)
-            return
+    if not _can_view_release(cb.from_user.id, listing, meta, artist, tracks):
+        await cb.answer("Релиз недоступен.", show_alert=True)
+        return
 
     from app.routers.admin_panel import is_admin
-    caption = _release_caption(listing, meta, artist, tracks)
-    if meta.status != "published":
-        caption = "🚫 <i>Релиз скрыт</i>\n\n" + caption
+    caption = _release_caption(
+        listing, meta, artist, tracks,
+        hidden=not _release_is_public(listing, meta, artist, tracks),
+    )
     back_cb, back_label = _release_back(src, artist)
     kb = _release_kb(listing, meta, tracks, artist=artist,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id),
-                     back_cb=back_cb, back_label=back_label)
+                     back_cb=back_cb, back_label=back_label, source=src)
     await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
-    links = json.loads(meta.links) if meta and meta.links else []
+    links = _load_links(
+        meta.links if _release_is_public(listing, meta, artist, tracks) else None
+    )
     yt = _youtube_url(links)
     if yt:
         await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
+    source = "search" if src == "s" else "my" if src == "my" else "artist" if src.startswith("a") else "catalog"
     await log_listing_view(listing_id=listing.id, user_id=cb.from_user.id,
-                           section="releases", action="open", source="catalog")
+                           section="releases", action="open", source=source)
 
 
 @router.callback_query(F.data.startswith("rel:listen:"))
 async def release_listen(cb: CallbackQuery):
-    listing_id = int(cb.data.split(":")[2])
-    _, _, _, tracks = await _load_release(listing_id)
+    parts = cb.data.split(":")
+    try:
+        listing_id = int(parts[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+    src = _clean_release_source(parts[3] if len(parts) > 3 else "")
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not _release_is_public(listing, meta, artist, tracks):
+        await cb.answer("Релиз недоступен.", show_alert=True)
+        return
     if not tracks:
         await cb.answer("Треки не найдены.", show_alert=True)
         return
     rows = [[InlineKeyboardButton(
         text=f"{t.position}. {t.title or 'Трек ' + str(t.position)}",
-        callback_data=f"rel:track:{t.id}")] for t in tracks]
-    rows.append([InlineKeyboardButton(text="⬅️ К релизу", callback_data=f"rel:view:{listing_id}")])
+        callback_data=f"rel:track:{t.id}:{src}")] for t in tracks]
+    rows.append([
+        InlineKeyboardButton(text="⬅️ К релизу", callback_data=f"rel:view:{listing_id}:{src}"),
+        _menu_btn(),
+    ])
     # трек-лист отдельным сообщением ПОД карточкой (карточку не сносим)
     msg = await cb.bot.send_message(
         cb.message.chat.id, "Выберите трек:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -407,15 +626,48 @@ async def release_listen(cb: CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(F.data.startswith("rel:video:"))
+async def release_video_play(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    try:
+        listing_id = int(parts[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not _release_is_public(listing, meta, artist, tracks) or not meta.video_file_id:
+        await cb.answer("Клип недоступен.", show_alert=True)
+        return
+    try:
+        msg = await cb.bot.send_video(cb.message.chat.id, meta.video_file_id)
+        last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
+        await register_bot_messages(cb.message.chat.id, [msg.message_id])
+        await log_listing_view(listing_id=listing_id, user_id=cb.from_user.id,
+                               section="releases", action="open", source="video")
+        await cb.answer()
+    except Exception as e:
+        print(f"[releases] send_video failed: {e}")
+        await cb.answer("Не удалось отправить клип.", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("rel:track:"))
 async def release_track_play(cb: CallbackQuery):
-    track_id = int(cb.data.split(":")[2])
+    parts = cb.data.split(":")
+    try:
+        track_id = int(parts[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
     async with SessionLocal() as s:
         t = (await s.execute(
             select(ReleaseTrack).where(ReleaseTrack.id == track_id)
         )).scalar_one_or_none()
     if not t:
         await cb.answer("Трек не найден.", show_alert=True)
+        return
+    listing, meta, artist, tracks = await _load_release(t.listing_id)
+    if not _release_is_public(listing, meta, artist, tracks) or all(x.id != t.id for x in tracks):
+        await cb.answer("Релиз недоступен.", show_alert=True)
         return
     try:
         msg = await cb.bot.send_audio(cb.message.chat.id, t.file_id)
@@ -443,7 +695,15 @@ REPORT_REASONS = {
 @router.callback_query(F.data.startswith("rel:report:"))
 async def release_report_ask(cb: CallbackQuery):
     """Шаг 1 жалобы: выбор причины (отдельным сообщением под карточкой)."""
-    listing_id = int(cb.data.split(":")[2])
+    try:
+        listing_id = int(cb.data.split(":")[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not _release_is_public(listing, meta, artist, tracks):
+        await cb.answer("Релиз недоступен.", show_alert=True)
+        return
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:repdo:{listing_id}:{code}")]
             for code, label in REPORT_REASONS.items()]
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="rel:repcancel"), _menu_btn()])
@@ -467,8 +727,24 @@ async def release_report_cancel(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("rel:repdo:"))
 async def release_report_send(cb: CallbackQuery, state: FSMContext):
     """Шаг 2: жалоба с причиной уходит админам. «Другое» — просим описать."""
-    _, _, lid_raw, reason = cb.data.split(":", 3)
-    listing_id = int(lid_raw)
+    parts = cb.data.split(":", 3)
+    if len(parts) != 4:
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+    _, _, lid_raw, reason = parts
+    try:
+        listing_id = int(lid_raw)
+    except ValueError:
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+
+    if reason not in REPORT_REASONS:
+        await cb.answer("Неизвестная причина.", show_alert=True)
+        return
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not _release_is_public(listing, meta, artist, tracks):
+        await cb.answer("Релиз недоступен.", show_alert=True)
+        return
 
     if reason == "other":
         await cb.answer()
@@ -484,13 +760,27 @@ async def release_report_send(cb: CallbackQuery, state: FSMContext):
             pass
         return
 
+    await state.clear()
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await _notify_report(
+        cb.bot, cb.from_user, listing_id, listing, artist, REPORT_REASONS[reason]
+    )
+    await cb.answer("Жалоба отправлена. Спасибо!", show_alert=True)
+
 
 @router.callback_query(F.data.startswith("rel:repback:"))
 async def release_report_back(cb: CallbackQuery, state: FSMContext):
     """«Назад» из «Другое» — возвращаем список причин на том же сообщении."""
+    try:
+        listing_id = int(cb.data.split(":")[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
     await cb.answer()
     await state.clear()
-    listing_id = int(cb.data.split(":")[2])
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:repdo:{listing_id}:{code}")]
             for code, label in REPORT_REASONS.items()]
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="rel:repcancel"), _menu_btn()])
@@ -499,15 +789,6 @@ async def release_report_back(cb: CallbackQuery, state: FSMContext):
                                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     except Exception:
         pass
-
-    reason_label = REPORT_REASONS.get(reason, "Другое")
-    listing, meta, artist, _ = await _load_release(listing_id)
-    try:
-        await cb.message.delete()  # убираем сообщение с причинами
-    except Exception:
-        pass
-    await _notify_report(cb.bot, cb.from_user, listing_id, listing, artist, reason_label)
-    await cb.answer("Жалоба отправлена. Спасибо!", show_alert=True)
 
 
 @router.message(ReleaseReport.other_text, F.text)
@@ -519,10 +800,18 @@ async def release_report_other(message: Message, state: FSMContext):
         await message.delete()
     except Exception:
         pass
-    await state.clear()
     if not listing_id:
+        await state.clear()
         return
-    listing, meta, artist, _ = await _load_release(listing_id)
+    if not text:
+        await message.answer("Опишите причину текстом.")
+        return
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not _release_is_public(listing, meta, artist, tracks):
+        await state.clear()
+        await message.answer("Релиз уже недоступен.")
+        return
+    await state.clear()
     await _notify_report(message.bot, message.from_user, listing_id, listing, artist,
                          f"Другое: {text}")
     msg = await message.bot.send_message(
@@ -540,9 +829,10 @@ async def _notify_report(bot, from_user, listing_id, listing, artist, reason_lab
             msg = await bot.send_message(
                 admin_id,
                 f"⚠️ Жалоба на релиз #{listing_id} "
-                f"({artist.name if artist else '?'} — {listing.title if listing else '?'})\n"
-                f"Причина: {reason_label}\n"
-                f"От: {from_user.id} (@{from_user.username or '—'})",
+                f"({_e(artist.name if artist else '?')} — "
+                f"{_e(listing.title if listing else '?')})\n"
+                f"Причина: {_e(reason_label)}\n"
+                f"От: {from_user.id} (@{_e(from_user.username or '—')})",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👀 Открыть", callback_data=f"rel:view:{listing_id}"),
                     InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"rel:admhide:{listing_id}"),
@@ -563,10 +853,13 @@ async def release_admin_hide(cb: CallbackQuery):
         return
     listing_id = int(cb.data.split(":")[2])
     async with SessionLocal() as s:
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "release")
+        )).scalar_one_or_none()
         meta = (await s.execute(
             select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
         )).scalar_one_or_none()
-        if not meta:
+        if not listing or not meta or meta.status == "deleted":
             await cb.answer("Не найден.", show_alert=True)
             return
         meta.status = "hidden"
@@ -584,11 +877,35 @@ async def release_admin_show(cb: CallbackQuery):
         return
     listing_id = int(cb.data.split(":")[2])
     async with SessionLocal() as s:
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "release")
+        )).scalar_one_or_none()
         meta = (await s.execute(
             select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
         )).scalar_one_or_none()
-        if not meta:
+        artist = (await s.execute(
+            select(Artist).where(Artist.id == meta.artist_id)
+        )).scalar_one_or_none() if meta else None
+        tracks = (await s.execute(
+            select(ReleaseTrack).where(ReleaseTrack.listing_id == listing_id)
+        )).scalars().all()
+        if (
+            not listing
+            or listing.status != "active"
+            or not meta
+            or meta.status == "deleted"
+        ):
             await cb.answer("Не найден.", show_alert=True)
+            return
+        if (
+            not artist
+            or artist.status != "active"
+            or artist.owner_user_id != listing.owner_id
+        ):
+            await cb.answer("Сначала покажите карточку исполнителя.", show_alert=True)
+            return
+        if not _has_release_media(meta, tracks):
+            await cb.answer("Сначала добавьте трек, клип или ссылку.", show_alert=True)
             return
         meta.status = "published"
         s.add(meta)
@@ -604,7 +921,11 @@ async def my_releases(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     async with SessionLocal() as s:
         listings = (await s.execute(
-            select(Listing).where(Listing.owner_id == cb.from_user.id, Listing.type == "release")
+            select(Listing).where(
+                Listing.owner_id == cb.from_user.id,
+                Listing.type == "release",
+                Listing.status == "active",
+            )
             .order_by(Listing.created_at.desc())
         )).scalars().all()
         rows = []
@@ -614,7 +935,13 @@ async def my_releases(cb: CallbackQuery, state: FSMContext):
             )).scalar_one_or_none()
             if not meta or meta.status == "deleted":
                 continue
-            mark = "" if meta.status == "published" else "🔴 "
+            artist = (await s.execute(
+                select(Artist).where(Artist.id == meta.artist_id)
+            )).scalar_one_or_none()
+            tracks = (await s.execute(
+                select(ReleaseTrack).where(ReleaseTrack.listing_id == l.id)
+            )).scalars().all()
+            mark = "" if _release_is_public(l, meta, artist, tracks) else "🔴 "
             rows.append([InlineKeyboardButton(
                 text=f"{mark}🎵 {l.title}", callback_data=f"rel:view:{l.id}:my")])
     rows.append([InlineKeyboardButton(text="➕ Добавить релиз", callback_data="rel:add")])
@@ -627,9 +954,15 @@ async def my_releases(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("rel:del:"))
 async def release_delete_ask(cb: CallbackQuery):
     listing_id = int(cb.data.split(":")[2])
+    listing, meta, artist, _ = await _load_release(listing_id)
+    if not listing or not meta or not await _can_edit_release(
+        cb.from_user.id, listing, meta, artist
+    ):
+        await cb.answer("Удалить может только автор.", show_alert=True)
+        return
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"rel:delok:{listing_id}"),
-        InlineKeyboardButton(text="✖ Отмена", callback_data=f"rel:view:{listing_id}"),
+        InlineKeyboardButton(text="✖ Отмена", callback_data=f"rel:view:{listing_id}:my"),
     ]])
     await _send_screen(cb.bot, cb.message.chat.id, "Удалить релиз безвозвратно?", kb)
     await cb.answer()
@@ -640,19 +973,25 @@ async def release_delete(cb: CallbackQuery):
     listing_id = int(cb.data.split(":")[2])
     async with SessionLocal() as s:
         listing = (await s.execute(
-            select(Listing).where(Listing.id == listing_id)
+            select(Listing).where(Listing.id == listing_id, Listing.type == "release")
         )).scalar_one_or_none()
         from app.routers.admin_panel import is_admin
-        if not listing or (listing.owner_id != cb.from_user.id and not is_admin(cb.from_user.id)):
+        if (
+            not listing
+            or listing.status != "active"
+            or (listing.owner_id != cb.from_user.id and not is_admin(cb.from_user.id))
+        ):
             await cb.answer("Удалить может только автор.", show_alert=True)
             return
         meta = (await s.execute(
             select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
         )).scalar_one_or_none()
-        if meta:
-            meta.status = "deleted"
-            s.add(meta)
-            await s.commit()
+        if not meta or meta.status == "deleted":
+            await cb.answer("Релиз не найден.", show_alert=True)
+            return
+        meta.status = "deleted"
+        s.add(meta)
+        await s.commit()
     await cb.answer("Релиз удалён.")
     await _send_screen(cb.bot, cb.message.chat.id, "Релиз удалён.",
                        InlineKeyboardMarkup(inline_keyboard=[
@@ -683,8 +1022,24 @@ async def add_start(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("rel:art:"))
 async def add_pick_artist(cb: CallbackQuery, state: FSMContext):
+    try:
+        artist_id = int(cb.data.split(":")[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+    async with SessionLocal() as s:
+        artist = (await s.execute(
+            select(Artist).where(
+                Artist.id == artist_id,
+                Artist.owner_user_id == cb.from_user.id,
+                Artist.status == "active",
+            )
+        )).scalar_one_or_none()
+    if not artist:
+        await cb.answer("Исполнитель недоступен или принадлежит другому пользователю.",
+                        show_alert=True)
+        return
     await cb.answer()
-    artist_id = int(cb.data.split(":")[2])
     await state.update_data(artist_id=artist_id, new_artist=None, created_artist_id=None)
     # убираем экран выбора исполнителя, дальше — цепочка подсказок мастера
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -727,7 +1082,10 @@ async def artist_name_input(message: Message, state: FSMContext):
     if data.get("created_artist_id"):
         async with SessionLocal() as s:
             a = (await s.execute(
-                select(Artist).where(Artist.id == data["created_artist_id"])
+                select(Artist).where(
+                    Artist.id == data["created_artist_id"],
+                    Artist.owner_user_id == message.from_user.id,
+                )
             )).scalar_one_or_none()
             if a:
                 a.name = name
@@ -744,13 +1102,17 @@ async def _ask_arttype(bot, chat_id: int, state: FSMContext):
             for i, t in enumerate(ARTIST_TYPES)]
     rows.append(_nav_row("rel:back:artname"))
     await _replace_prompt(state, bot, chat_id,
-                          f"«{name}» — это:", InlineKeyboardMarkup(inline_keyboard=rows))
+                          f"«{_e(name)}» — это:", InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("rel:atype:"))
 async def artist_type_pick(cb: CallbackQuery, state: FSMContext):
+    try:
+        idx = int(cb.data.split(":")[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
     await cb.answer()
-    idx = int(cb.data.split(":")[2])
     data = await state.get_data()
     new_artist = data.get("new_artist") or {}
     new_artist["type"] = ARTIST_TYPES[idx] if 0 <= idx < len(ARTIST_TYPES) else "Другое"
@@ -758,7 +1120,10 @@ async def artist_type_pick(cb: CallbackQuery, state: FSMContext):
     if data.get("created_artist_id"):  # правка уже созданного (пришли «Назад»)
         async with SessionLocal() as s:
             a = (await s.execute(
-                select(Artist).where(Artist.id == data["created_artist_id"])
+                select(Artist).where(
+                    Artist.id == data["created_artist_id"],
+                    Artist.owner_user_id == cb.from_user.id,
+                )
             )).scalar_one_or_none()
             if a:
                 a.artist_type = new_artist["type"]
@@ -846,7 +1211,10 @@ async def artist_photo_input(message: Message, state: FSMContext):
     if data.get("created_artist_id"):  # правка фото уже созданного
         async with SessionLocal() as s:
             a = (await s.execute(
-                select(Artist).where(Artist.id == data["created_artist_id"])
+                select(Artist).where(
+                    Artist.id == data["created_artist_id"],
+                    Artist.owner_user_id == message.from_user.id,
+                )
             )).scalar_one_or_none()
             if a:
                 a.photo_file_id = new_artist["photo"]
@@ -992,7 +1360,13 @@ async def cover_input(message: Message, state: FSMContext):
 async def media_audio(message: Message, state: FSMContext):
     data = await state.get_data()
     tracks = data.get("tracks") or []
+    if len(tracks) >= MAX_TRACKS:
+        await message.answer(f"Можно прикрепить не больше {MAX_TRACKS} треков.")
+        return
     a = message.audio
+    if any(t.get("file_unique_id") == a.file_unique_id for t in tracks):
+        await message.answer("Этот трек уже добавлен.")
+        return
     tracks.append({
         "file_id": a.file_id,
         "file_unique_id": a.file_unique_id,
@@ -1062,8 +1436,7 @@ async def cover_wrong_type(message: Message, state: FSMContext):
 @router.message(ReleaseAdd.media, F.text)
 async def media_links(message: Message, state: FSMContext):
     """Ссылки принимаются прямо на шаге медиа — вперемешку с файлами."""
-    raw = message.text.replace(",", " ").split()
-    new_links = [{"label": _link_label(u), "url": u} for u in raw if u.startswith("http")]
+    new_links = _parse_link_text(message.text)
     try:
         await message.delete()
     except Exception:
@@ -1078,7 +1451,16 @@ async def media_links(message: Message, state: FSMContext):
                               "Это не похоже на ссылку (нужен адрес с http…). "
                               "Присылайте треки, клип или ссылки — либо жмите «Готово».", kb)
         return
-    links = (data.get("links") or []) + new_links
+    links = []
+    seen: set[str] = set()
+    for link in [*(data.get("links") or []), *new_links]:
+        url = _normalize_http_url(str(link.get("url") or "")) if isinstance(link, dict) else None
+        if not url or url in seen:
+            continue
+        links.append({"label": _link_label(url), "url": url})
+        seen.add(url)
+        if len(links) >= MAX_LINKS:
+            break
     await state.update_data(links=links)
     got = ", ".join(l["label"] for l in new_links)
     await _replace_prompt(
@@ -1090,7 +1472,8 @@ async def media_links(message: Message, state: FSMContext):
 @router.callback_query(F.data == "rel:mdone")
 async def media_done(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if not (data.get("tracks") or data.get("video") or data.get("links")):
+    valid_links = _load_links(json.dumps(data.get("links") or []))
+    if not (data.get("tracks") or data.get("video") or valid_links):
         await cb.answer("Нужен хотя бы один трек, клип или ссылка — иначе слушать нечего 🙂",
                         show_alert=True)
         return
@@ -1139,17 +1522,17 @@ async def _confirm(event, state: FSMContext):
         a = (await s.execute(
             select(Artist).where(Artist.id == data.get("artist_id"))
         )).scalar_one_or_none()
-    artist_line = a.name if a else "не выбран — вернитесь в начало"
+    artist_line = _e(a.name if a else "не выбран — вернитесь в начало")
     parts = [
         "<b>Проверьте:</b>",
         f"Исполнитель: {artist_line}",
         f"Тип: {RELEASE_TYPES.get(data.get('rel_type'), '?')}",
-        f"Название: {data.get('title')}",
+        f"Название: {_e(data.get('title'))}",
         f"Треков: {len(data.get('tracks') or [])}" + (" + клип" if data.get("video") else ""),
-        f"Ссылок: {len(data.get('links') or [])}",
+        f"Ссылок: {len(_load_links(json.dumps(data.get('links') or [])))}",
     ]
     if data.get("descr"):
-        parts.append(f"Описание: {data['descr'][:100]}")
+        parts.append(f"Описание: {_e(data['descr'][:100])}")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Публикую — я автор или представитель",
                               callback_data="rel:pub")],
@@ -1163,8 +1546,78 @@ async def _confirm(event, state: FSMContext):
             pass
 
 
+async def _persist_release(
+    data: dict,
+    *,
+    owner_id: int,
+    username: str | None,
+    city_id: int,
+    category_id: int,
+    links: list[dict],
+    tracks: list[dict],
+) -> int:
+    """Атомарно создаёт listing/meta/tracks и повторно проверяет исполнителя."""
+    async with SessionLocal() as s:
+        artist = (await s.execute(
+            select(Artist).where(
+                Artist.id == data["artist_id"],
+                Artist.owner_user_id == owner_id,
+                Artist.status == "active",
+            )
+        )).scalar_one_or_none()
+        if not artist:
+            raise ValueError("artist unavailable")
+        listing = Listing(
+            city_id=city_id,
+            category_id=category_id,
+            owner_id=owner_id,
+            title=data["title"],
+            descr=data.get("descr"),
+            contact=(f"@{username}" if username else "—"),
+            photo_file_id=data["cover"],
+            created_at=utcnow_naive(),
+            type="release",
+        )
+        s.add(listing)
+        await s.flush()
+        video = data.get("video") or {}
+        meta = ReleaseMeta(
+            listing_id=listing.id,
+            artist_id=artist.id,
+            release_type=data.get("rel_type", "single"),
+            release_date=utcnow_naive().strftime("%d.%m.%Y"),
+            links=json.dumps(links, ensure_ascii=False),
+            video_file_id=video.get("file_id"),
+            video_file_unique_id=video.get("file_unique_id"),
+        )
+        s.add(meta)
+        for position, track in enumerate(tracks, start=1):
+            s.add(ReleaseTrack(
+                listing_id=listing.id,
+                position=position,
+                title=track.get("title"),
+                file_id=track["file_id"],
+                file_unique_id=track.get("file_unique_id"),
+                duration=track.get("duration"),
+                file_name=track.get("file_name"),
+                mime_type=track.get("mime_type"),
+            ))
+        await s.commit()
+        return listing.id
+
+
 @router.callback_query(F.data == "rel:pub")
 async def publish(cb: CallbackQuery, state: FSMContext):
+    """Сериализует финальную публикацию для защиты от двойного callback."""
+    lock = _release_publish_locks.setdefault(cb.from_user.id, asyncio.Lock())
+    if lock.locked():
+        await cb.answer("Публикуем, пожалуйста, подождите.")
+        return
+    async with lock:
+        await _publish_locked(cb, state)
+
+
+async def _publish_locked(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if data.get("rel_publishing"):  # защита от двойного нажатия
         await cb.answer()
@@ -1172,39 +1625,55 @@ async def publish(cb: CallbackQuery, state: FSMContext):
     if not data.get("title") or not data.get("cover") or not data.get("artist_id"):
         await cb.answer("Не хватает данных — начните заново.", show_alert=True)
         return
+    valid_links = _load_links(json.dumps(data.get("links") or []))
+    tracks_data = (data.get("tracks") or [])[:MAX_TRACKS]
+    if not (tracks_data or data.get("video") or valid_links):
+        await cb.answer("Нужен хотя бы один трек, клип или корректная ссылка.",
+                        show_alert=True)
+        return
+    city_id = await _release_city_id()
+    if city_id is None:
+        await cb.answer("Публикация пока невозможна: в базе не настроены города.",
+                        show_alert=True)
+        return
+    artist = await _owned_active_artist(data["artist_id"], cb.from_user.id)
+    if not artist:
+        await cb.answer("Исполнитель недоступен. Начните публикацию заново.",
+                        show_alert=True)
+        return
     await state.update_data(rel_publishing=True)
     await cb.answer("Публикуем…")
-    cat_id = await _ensure_release_category()
-    async with SessionLocal() as s:
-        artist_id = data["artist_id"]
-        listing = Listing(
-            city_id=RELEASES_CITY_ID, category_id=cat_id, owner_id=cb.from_user.id,
-            title=data["title"],
-            descr=data.get("descr"),
-            contact=(f"@{cb.from_user.username}" if cb.from_user.username else "—"),
-            photo_file_id=data["cover"], created_at=utcnow_naive(), type="release",
+    try:
+        cat_id = await _ensure_release_category()
+        listing_id = await _persist_release(
+            data,
+            owner_id=cb.from_user.id,
+            username=cb.from_user.username,
+            city_id=city_id,
+            category_id=cat_id,
+            links=valid_links,
+            tracks=tracks_data,
         )
-        s.add(listing)
-        await s.flush()
-        video = data.get("video") or {}
-        meta = ReleaseMeta(
-            listing_id=listing.id, artist_id=artist_id,
-            release_type=data.get("rel_type", "single"),
-            release_date=utcnow_naive().strftime("%d.%m.%Y"),
-            links=json.dumps(data.get("links") or [], ensure_ascii=False),
-            video_file_id=video.get("file_id"),
-            video_file_unique_id=video.get("file_unique_id"),
+    except ValueError:
+        await state.update_data(rel_publishing=False)
+        await _replace_prompt(
+            state, cb.bot, cb.message.chat.id,
+            "Исполнитель больше недоступен. Начните публикацию заново.",
+            InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_releases")]),
         )
-        s.add(meta)
-        for i, t in enumerate(data.get("tracks") or [], start=1):
-            s.add(ReleaseTrack(
-                listing_id=listing.id, position=i, title=t.get("title"),
-                file_id=t["file_id"], file_unique_id=t.get("file_unique_id"),
-                duration=t.get("duration"), file_name=t.get("file_name"),
-                mime_type=t.get("mime_type"),
-            ))
-        await s.commit()
-        listing_id = listing.id
+        return
+    except Exception as e:
+        print(f"[releases] publish failed: {e}")
+        await state.update_data(rel_publishing=False)
+        await _replace_prompt(
+            state, cb.bot, cb.message.chat.id,
+            "Не удалось опубликовать релиз. Данные сохранены в мастере — попробуйте ещё раз.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Повторить", callback_data="rel:pub")],
+                _nav_row("rel:back:descr"),
+            ]),
+        )
+        return
 
     await state.clear()
     await log_event("listing_created", user_id=cb.from_user.id,
@@ -1216,7 +1685,7 @@ async def publish(cb: CallbackQuery, state: FSMContext):
             continue
         try:
             msg = await cb.bot.send_message(
-                admin_id, f"🆕 Новый релиз #{listing_id}: {data['title']}",
+                admin_id, f"🆕 Новый релиз #{listing_id}: {_e(data['title'])}",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👀 Открыть", callback_data=f"rel:view:{listing_id}"),
                     InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"rel:admhide:{listing_id}"),
@@ -1233,11 +1702,15 @@ async def publish(cb: CallbackQuery, state: FSMContext):
     if data.get("no_username_hint"):
         hint = ("\n\n⚠️ У вас нет ника в Telegram — добавьте контакт на карточку "
                 "исполнителя: Об исполнителе → ✏️ Редактировать → Контакты.")
-    caption = "🎉 Опубликовано!" + hint + "\n\n" + _release_caption(listing, meta, artist, tracks)
+    caption = _fit_html_lines([
+        "🎉 Опубликовано!" + hint,
+        "",
+        *_release_caption(listing, meta, artist, tracks).splitlines(),
+    ])
     kb = _release_kb(listing, meta, tracks, artist=artist,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id))
-    await _send_screen(cb.bot, cb.message.chat.id, caption[:1024], kb, photo=listing.photo_file_id)
-    links_pub = json.loads(meta.links) if meta and meta.links else []
+    await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
+    links_pub = _load_links(meta.links if meta else None)
     yt = _youtube_url(links_pub)
     if yt:
         await _send_release_yt_button(cb.bot, cb.message.chat.id, yt, listing.id)
@@ -1293,13 +1766,13 @@ async def _render_rel_search(bot, chat_id: int, state: FSMContext, offset: int =
     rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="rel:search")])
     rows.append(_nav_row("go_releases"))
     await _send_screen(bot, chat_id,
-                       f"{note}Результаты по запросу: <b>{q}</b>\nНайдено: {total}",
+                       f"{note}Результаты по запросу: <b>{_e(q)}</b>\nНайдено: {total}",
                        InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.message(RelSearch.waiting_query, F.text)
 async def rel_search_do(message: Message, state: FSMContext):
-    q = (message.text or "").strip()
+    q = (message.text or "").strip()[:128]
     try:
         await message.delete()
     except Exception:
@@ -1319,12 +1792,21 @@ async def rel_search_do(message: Message, state: FSMContext):
         )).scalars().all()
         for m in metas:
             listing = (await s.execute(
-                select(Listing).where(Listing.id == m.listing_id)
+                select(Listing).where(
+                    Listing.id == m.listing_id,
+                    Listing.type == "release",
+                    Listing.status == "active",
+                )
             )).scalar_one_or_none()
             artist = (await s.execute(
-                select(Artist).where(Artist.id == m.artist_id)
+                select(Artist).where(Artist.id == m.artist_id, Artist.status == "active")
             )).scalar_one_or_none()
-            if not listing:
+            if not listing or not artist or listing.owner_id != artist.owner_user_id:
+                continue
+            tracks = (await s.execute(
+                select(ReleaseTrack).where(ReleaseTrack.listing_id == listing.id)
+            )).scalars().all()
+            if not _release_is_public(listing, m, artist, tracks):
                 continue
             a_name = artist.name if artist else ""
             items.append((
@@ -1342,7 +1824,7 @@ async def rel_search_do(message: Message, state: FSMContext):
                      results_count=len(outcome.results))
     note = ""
     if outcome.match_mode == "corrected" and outcome.query_effective != outcome.query_normalized:
-        note = (f"🧠 Показаны результаты по запросу: <b>{outcome.query_effective}</b> "
+        note = (f"🧠 Показаны результаты по запросу: <b>{_e(outcome.query_effective)}</b> "
                 f"(учтена возможная опечатка).\n\n")
     await state.update_data(
         rel_s_results=[(it[0], it[1]) for it in outcome.results],
@@ -1378,40 +1860,54 @@ REL_EDIT_FIELDS = {
     "rtype": ("Тип", None),  # кнопками
     "cover": ("Обложка", "Пришлите новую обложку (картинку)."),
     "descr": ("Описание", "Пара слов о релизе:"),
+    "genre": ("Жанр", "Укажите жанр (до 64 символов):"),
+    "recorded_at": ("Где записано", "Студия или место записи (до 128 символов):"),
     "links": ("Ссылки", "Ссылки на площадки одним сообщением —\n"
                         "каждая с новой строки или через пробел:"),
     "video": ("Клип", "Пришлите новый видеоклип файлом."),
 }
-REL_CLEARABLE = {"descr", "links", "video"}
+REL_CLEARABLE = {"descr", "genre", "recorded_at", "links", "video"}
 
 
 class RelEdit(StatesGroup):
     value = State()
 
 
-async def _can_edit_release(user_id: int, listing) -> bool:
+async def _can_edit_release(user_id: int, listing, meta, artist) -> bool:
     from app.routers.admin_panel import is_admin
-    return listing is not None and (listing.owner_id == user_id or is_admin(user_id))
+    return bool(
+        listing
+        and listing.type == "release"
+        and listing.status == "active"
+        and meta
+        and meta.status != "deleted"
+        and artist
+        and artist.id == meta.artist_id
+        and artist.owner_user_id == listing.owner_id
+        and (listing.owner_id == user_id or is_admin(user_id))
+    )
 
 
 async def _render_rel_edit(bot, chat_id: int, user_id: int, listing_id: int):
     listing, meta, artist, tracks = await _load_release(listing_id)
-    if not listing or not await _can_edit_release(user_id, listing):
+    if not listing or not meta or not await _can_edit_release(user_id, listing, meta, artist):
         return
     def short(v, n=40):
         return (str(v)[:n] + "…") if v and len(str(v)) > n else (v or "—")
     try:
-        n_links = len(json.loads(meta.links)) if meta and meta.links else 0
+        n_links = len(_load_links(meta.links if meta else None))
     except Exception:
         n_links = 0
     lines = [
-        f"✏️ <b>Релиз: {listing.title}</b>",
-        f"Исполнитель: {artist.name if artist else '—'} (меняется только пересозданием)",
+        f"✏️ <b>Релиз: {_e(listing.title)}</b>",
+        f"Исполнитель: {_e(artist.name if artist else '—')} (меняется только пересозданием)",
         "",
-        f"Название: {listing.title}",
-        f"Тип: {RELEASE_TYPES.get(meta.release_type, '—') if meta else '—'}",
+        f"Название: {_e(listing.title)}",
+        f"Тип: {_e(RELEASE_TYPES.get(meta.release_type, '—'))}",
         f"Обложка: {'есть' if listing.photo_file_id else '—'}",
-        f"Описание: {short(listing.descr)}",
+        f"Описание: {_e(short(listing.descr))}",
+        f"Жанр: {_e(short(meta.genre))}",
+        f"Где записано: {_e(short(meta.recorded_at))}",
         f"Ссылки: {n_links or '—'}",
         f"Клип: {'есть' if meta and meta.video_file_id else '—'}",
         f"Треки: {len(tracks) or '—'}",
@@ -1437,11 +1933,18 @@ async def rel_edit(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("rel:ref:"))
 async def rel_edit_field(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
     _, _, field, lid = cb.data.split(":")
     listing_id = int(lid)
     if field not in REL_EDIT_FIELDS:
+        await cb.answer("Неизвестное поле.", show_alert=True)
         return
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not listing or not meta or not await _can_edit_release(
+        cb.from_user.id, listing, meta, artist
+    ):
+        await cb.answer("Нет прав или релиз недоступен.", show_alert=True)
+        return
+    await cb.answer()
     if field == "rtype":
         rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:retype:{listing_id}:{code}")]
                 for code, label in RELEASE_TYPES.items()]
@@ -1466,13 +1969,33 @@ async def rel_edit_field(cb: CallbackQuery, state: FSMContext):
 async def _save_release_field(user_id: int, listing_id: int, field: str, value) -> bool:
     async with SessionLocal() as s:
         listing = (await s.execute(
-            select(Listing).where(Listing.id == listing_id)
+            select(Listing).where(Listing.id == listing_id, Listing.type == "release")
         )).scalar_one_or_none()
-        if not listing or not await _can_edit_release(user_id, listing):
-            return False
         meta = (await s.execute(
             select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
         )).scalar_one_or_none()
+        artist = (await s.execute(
+            select(Artist).where(Artist.id == meta.artist_id)
+        )).scalar_one_or_none() if meta else None
+        if (
+            not listing
+            or not meta
+            or not artist
+            or artist.owner_user_id != listing.owner_id
+            or not await _can_edit_release(user_id, listing, meta, artist)
+        ):
+            return False
+        if field not in {"title", "descr", "cover", "rtype", "genre", "recorded_at",
+                         "links", "video"}:
+            return False
+        if field in {"links", "video"} and not value:
+            tracks = (await s.execute(
+                select(ReleaseTrack).where(ReleaseTrack.listing_id == listing_id)
+            )).scalars().all()
+            other_video = meta.video_file_id if field == "links" else None
+            other_links = _load_links(meta.links) if field == "video" else []
+            if not (tracks or other_video or other_links):
+                return False
         if field == "title":
             listing.title = value
             s.add(listing)
@@ -1484,6 +2007,12 @@ async def _save_release_field(user_id: int, listing_id: int, field: str, value) 
             s.add(listing)
         elif field == "rtype" and meta:
             meta.release_type = value
+            s.add(meta)
+        elif field == "genre" and meta:
+            meta.genre = value
+            s.add(meta)
+        elif field == "recorded_at" and meta:
+            meta.recorded_at = value
             s.add(meta)
         elif field == "links" and meta:
             meta.links = value
@@ -1498,19 +2027,32 @@ async def _save_release_field(user_id: int, listing_id: int, field: str, value) 
 
 @router.callback_query(F.data.startswith("rel:retype:"))
 async def rel_edit_type(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
     _, _, lid, code = cb.data.split(":")
-    if code in RELEASE_TYPES:
-        await _save_release_field(cb.from_user.id, int(lid), "rtype", code)
+    saved = code in RELEASE_TYPES and await _save_release_field(
+        cb.from_user.id, int(lid), "rtype", code
+    )
+    if not saved:
+        await cb.answer("Нет прав или релиз недоступен.", show_alert=True)
+        return
+    await cb.answer()
     await _render_rel_edit(cb.bot, cb.message.chat.id, cb.from_user.id, int(lid))
 
 
 @router.callback_query(F.data.startswith("rel:reclr:"))
 async def rel_edit_clear(cb: CallbackQuery, state: FSMContext):
-    await cb.answer("Очищено.")
     _, _, lid, field = cb.data.split(":")
+    saved = False
     if field in REL_CLEARABLE:
-        await _save_release_field(cb.from_user.id, int(lid), field, None)
+        saved = await _save_release_field(cb.from_user.id, int(lid), field, None)
+    if not saved:
+        text = (
+            "Нельзя удалить последний источник: добавьте трек, клип или ссылку."
+            if field in {"links", "video"}
+            else "Нет прав или релиз недоступен."
+        )
+        await cb.answer(text, show_alert=True)
+        return
+    await cb.answer("Очищено.")
     await state.clear()
     await _render_rel_edit(cb.bot, cb.message.chat.id, cb.from_user.id, int(lid))
 
@@ -1534,12 +2076,20 @@ async def rel_edit_text(message: Message, state: FSMContext):
         if not value:
             return
     elif field == "links":
-        raw = text_val.replace(",", " ").split()
-        links = [{"label": _link_label(u), "url": u} for u in raw if u.startswith("http")]
-        value = json.dumps(links, ensure_ascii=False) if links else None
+        links = _parse_link_text(text_val)
+        if not links:
+            await message.answer("Нужна полноценная ссылка с http:// или https://.")
+            return
+        value = json.dumps(links, ensure_ascii=False)
+    elif field == "genre":
+        value = text_val[:64] or None
+    elif field == "recorded_at":
+        value = text_val[:128] or None
     else:
         value = text_val[:600] or None
-    await _save_release_field(message.from_user.id, listing_id, field, value)
+    if not await _save_release_field(message.from_user.id, listing_id, field, value):
+        await message.answer("Не удалось сохранить: нет прав или релиз недоступен.")
+        return
     await state.clear()
     await _render_rel_edit(message.bot, message.chat.id, message.from_user.id, listing_id)
 
@@ -1554,8 +2104,10 @@ async def rel_edit_photo(message: Message, state: FSMContext):
         pass
     if field != "cover" or not listing_id:
         return
-    await _save_release_field(message.from_user.id, listing_id, "cover",
-                              message.photo[-1].file_id)
+    if not await _save_release_field(message.from_user.id, listing_id, "cover",
+                                     message.photo[-1].file_id):
+        await message.answer("Не удалось сохранить: нет прав или релиз недоступен.")
+        return
     await state.clear()
     await _render_rel_edit(message.bot, message.chat.id, message.from_user.id, listing_id)
 
@@ -1570,9 +2122,13 @@ async def rel_edit_video(message: Message, state: FSMContext):
         pass
     if field != "video" or not listing_id:
         return
-    await _save_release_field(message.from_user.id, listing_id, "video",
-                              {"file_id": message.video.file_id,
-                               "file_unique_id": message.video.file_unique_id})
+    if not await _save_release_field(
+        message.from_user.id, listing_id, "video",
+        {"file_id": message.video.file_id,
+         "file_unique_id": message.video.file_unique_id},
+    ):
+        await message.answer("Не удалось сохранить: нет прав или релиз недоступен.")
+        return
     await state.clear()
     await _render_rel_edit(message.bot, message.chat.id, message.from_user.id, listing_id)
 
@@ -1581,7 +2137,7 @@ async def rel_edit_video(message: Message, state: FSMContext):
 
 async def _render_rel_tracks(bot, chat_id: int, user_id: int, listing_id: int):
     listing, meta, artist, tracks = await _load_release(listing_id)
-    if not listing or not await _can_edit_release(user_id, listing):
+    if not listing or not meta or not await _can_edit_release(user_id, listing, meta, artist):
         return
     rows = []
     for t in tracks:
@@ -1595,7 +2151,7 @@ async def _render_rel_tracks(bot, chat_id: int, user_id: int, listing_id: int):
     rows.append([InlineKeyboardButton(text="⬅️ Назад",
                                       callback_data=f"rel:edit:{listing_id}"), _menu_btn()])
     await _send_screen(bot, chat_id,
-                       f"🎼 <b>Треки релиза «{listing.title}»</b>\n\n"
+                       f"🎼 <b>Треки релиза «{_e(listing.title)}»</b>\n\n"
                        "🗑 удаляет трек; порядок пересчитывается автоматически.",
                        InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -1619,13 +2175,32 @@ async def rel_track_delete(cb: CallbackQuery, state: FSMContext):
             await cb.answer("Трек не найден.", show_alert=True)
             return
         listing = (await s.execute(
-            select(Listing).where(Listing.id == t.listing_id)
+            select(Listing).where(Listing.id == t.listing_id, Listing.type == "release")
         )).scalar_one_or_none()
-        if not await _can_edit_release(cb.from_user.id, listing):
+        meta = (await s.execute(
+            select(ReleaseMeta).where(ReleaseMeta.listing_id == t.listing_id)
+        )).scalar_one_or_none()
+        artist = (await s.execute(
+            select(Artist).where(Artist.id == meta.artist_id)
+        )).scalar_one_or_none() if meta else None
+        if not await _can_edit_release(cb.from_user.id, listing, meta, artist):
             await cb.answer("Нет прав.", show_alert=True)
             return
         listing_id = t.listing_id
+        all_tracks = (await s.execute(
+            select(ReleaseTrack).where(ReleaseTrack.listing_id == listing_id)
+            .order_by(ReleaseTrack.position)
+        )).scalars().all()
+        if len(all_tracks) == 1 and not (
+            meta.video_file_id or _load_links(meta.links)
+        ):
+            await cb.answer(
+                "Нельзя удалить последний источник: сначала добавьте клип или ссылку.",
+                show_alert=True,
+            )
+            return
         await s.delete(t)
+        await s.flush()
         # пересчёт позиций
         rest = (await s.execute(
             select(ReleaseTrack).where(ReleaseTrack.listing_id == listing_id)
@@ -1641,8 +2216,17 @@ async def rel_track_delete(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("rel:tadd:"))
 async def rel_track_add(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
     listing_id = int(cb.data.split(":")[2])
+    listing, meta, artist, tracks = await _load_release(listing_id)
+    if not listing or not meta or not await _can_edit_release(
+        cb.from_user.id, listing, meta, artist
+    ):
+        await cb.answer("Нет прав или релиз недоступен.", show_alert=True)
+        return
+    if len(tracks) >= MAX_TRACKS:
+        await cb.answer(f"Можно прикрепить не больше {MAX_TRACKS} треков.", show_alert=True)
+        return
+    await cb.answer()
     await state.set_state(RelEdit.value)
     await state.update_data(redit_field="track", redit_listing_id=listing_id)
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
@@ -1665,14 +2249,27 @@ async def rel_track_add_audio(message: Message, state: FSMContext):
         return
     async with SessionLocal() as s:
         listing = (await s.execute(
-            select(Listing).where(Listing.id == listing_id)
+            select(Listing).where(Listing.id == listing_id, Listing.type == "release")
         )).scalar_one_or_none()
-        if not await _can_edit_release(message.from_user.id, listing):
+        meta = (await s.execute(
+            select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
+        )).scalar_one_or_none()
+        artist = (await s.execute(
+            select(Artist).where(Artist.id == meta.artist_id)
+        )).scalar_one_or_none() if meta else None
+        if not await _can_edit_release(message.from_user.id, listing, meta, artist):
+            await message.answer("Нет прав или релиз недоступен.")
             return
         tracks = (await s.execute(
             select(ReleaseTrack).where(ReleaseTrack.listing_id == listing_id)
         )).scalars().all()
         a = message.audio
+        if len(tracks) >= MAX_TRACKS:
+            await message.answer(f"Можно прикрепить не больше {MAX_TRACKS} треков.")
+            return
+        if any(t.file_unique_id == a.file_unique_id for t in tracks):
+            await message.answer("Этот трек уже добавлен.")
+            return
         s.add(ReleaseTrack(
             listing_id=listing_id, position=len(tracks) + 1,
             title=(a.title or a.file_name or f"Трек {len(tracks) + 1}")[:255],

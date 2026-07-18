@@ -16,6 +16,11 @@ from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 import inspect
 import time
+import re
+import urllib.parse
+from pathlib import Path
+
+from app.db_path import dotenv_value, resolve_sqlite_path
 
 
 
@@ -192,7 +197,7 @@ async def build_menu_keyboard(parent_code="main_menu", lang="ru") -> InlineKeybo
 
 import aiosqlite
 
-DB_PATH = "dev.db"  # Укажите ваш путь или используйте переменную из настроек!
+DB_PATH = resolve_sqlite_path(Path(__file__).resolve().parents[2])
 
 async def get_text(code: str, lang: str = "ru", default=None):
     col = f"text_{lang}" if lang in ("ru", "en") else "text_ru"
@@ -257,10 +262,14 @@ async def get_catalog_categories(parent_id=None):
 
 # ───────────────────────────── FLEX (доп. поля) ─────────────────────────────
 
-def _flex_html(s: Any) -> str:
-    """Простейшее экранирование для HTML-режима."""
-    t = str(s)
+def escape_html(s: Any) -> str:
+    """Экранировать пользовательское значение для Telegram HTML parse mode."""
+    t = "" if s is None else str(s)
     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# Обратная совместимость для внутренних вызовов этого модуля.
+_flex_html = escape_html
 
 def _flex_fmt_value(val: Any) -> Optional[str]:
     if val in (None, "", [], {}):
@@ -452,8 +461,8 @@ async def render_flex_block(session: AsyncSession, listing: Listing, lang: str =
         if val is None:
             continue
 
-        label = labels.get(key, key)
-        lines.append(f"<b>{label}:</b> {val}")
+        label = escape_html(labels.get(key, key))
+        lines.append(f"<b>{label}:</b> {escape_html(val)}")
 
     # Дополнительные категории здесь намеренно НЕ выводим.
     # Текущая категория/подкатегория показывается в заголовке карточки раздела.
@@ -492,13 +501,13 @@ async def render_main_fields(listing) -> str:
     lines = []
 
     if listing.title:
-        lines.append(f"<b>{listing.title.strip()}</b>")
+        lines.append(f"<b>{escape_html(listing.title.strip())}</b>")
 
     if listing.price:
-        lines.append(f"<b>Цена:</b> {listing.price}")
+        lines.append(f"<b>Цена:</b> {escape_html(listing.price)}")
 
     if listing.descr:
-        lines.append(f"<b>Описание:</b> {listing.descr.strip()}")
+        lines.append(f"<b>Описание:</b> {escape_html(listing.descr.strip())}")
 
     return "\n\n".join(lines)
 
@@ -507,10 +516,16 @@ async def render_contact(listing, lang="ru") -> str:
     """
     Контакт всегда в конце, отдельным блоком.
     """
-    if not listing.contact:
+    # Контакты архивных/закрытых объявлений не должны оставаться доступными
+    # через старые callback-кнопки или раздел «Мои объявления».
+    if (
+        not listing.contact
+        or getattr(listing, "status", "active") != "active"
+        or bool(getattr(listing, "is_sold", False))
+    ):
         return ""
     contact_label = await get_text("listing_contact", lang) or "Контакт"
-    return f"<b>{contact_label}:</b> {listing.contact.strip()}"
+    return f"<b>{escape_html(contact_label)}:</b> {escape_html(listing.contact.strip())}"
 
 
 def make_listing_banner(title: str, price: str | None) -> str:
@@ -555,6 +570,29 @@ def make_listing_banner(title: str, price: str | None) -> str:
 
 def build_contact_url(listing_id: int, contact: str, user_id: int, source: str = "direct") -> str:
     username = (contact or "").lstrip("@").strip()
-    if not username:
+    if not username or not re.fullmatch(r"[A-Za-z0-9_]{1,32}", username):
         return ""
-    return f"https://t.me/{username}"
+
+    fallback = f"https://t.me/{username}"
+    root = Path(__file__).resolve().parents[2]
+    webapp_base = (
+        os.getenv("WEBAPP_BASE")
+        or dotenv_value(root / ".env.web", "WEBAPP_BASE")
+        or dotenv_value(root / ".env", "WEBAPP_BASE")
+        or ""
+    ).strip().rstrip("/")
+    if not webapp_base:
+        return fallback
+
+    try:
+        from app.web.security import sign_contact_click_token
+
+        token = sign_contact_click_token(
+            listing_id=int(listing_id),
+            user_id=int(user_id),
+            source=(source or "direct").strip() or "direct",
+        )
+        return f"{webapp_base}/go/contact?t={urllib.parse.quote(token, safe='')}"
+    except Exception as exc:
+        print(f"[utils.py] build_contact_url fallback | listing_id={listing_id} | {exc}")
+        return fallback

@@ -1,11 +1,12 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
+from html import escape
 
 from app.database import SessionLocal
 from app.models import Listing, City, Category
-from app.states import EditListing
 from app.keyboards import get_common_menu_button
 from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 from app.routers.services_edit_overview import _render_overview as _render_services_overview
@@ -19,12 +20,29 @@ from app.routers.user_extra_fields import (
     extra_back,
 )
 
-router = Router()
+router = Router(name="services_edit_legacy")
+
+
+class ServiceLegacyEdit(StatesGroup):
+    """Изолированные состояния старого редактора, не конфликтующие с барахолкой."""
+    waiting_title = State()
+    waiting_descr = State()
+    waiting_price = State()
 
 # -------------------------- ВНУТРЕННИЕ УТИЛИТЫ --------------------------
 
 async def _get_listing(s, listing_id: int) -> Listing:
     return (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+
+
+async def _get_owned_service(s, listing_id: int, user_id: int) -> Listing | None:
+    return (await s.execute(
+        select(Listing).where(
+            Listing.id == listing_id,
+            Listing.owner_id == user_id,
+            Listing.type == "service",
+        )
+    )).scalar_one_or_none()
 
 async def _listing_title(l: Listing) -> str:
     return l.title or "—"
@@ -36,7 +54,7 @@ async def _listing_city_cat(s, l: Listing):
 
 # -------------------------- ОБЗОР --------------------------
 
-@router.callback_query(F.data.startswith("service_edit_overview:"))
+@router.callback_query(F.data.startswith("service_legacy_edit_overview:"))
 async def service_edit_overview(cb: CallbackQuery, state: FSMContext):
     """Алиас: показать новый обзор редактирования Услуги (как в Барахолке)."""
     chat_id = cb.message.chat.id
@@ -47,22 +65,30 @@ async def service_edit_overview(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Некорректный ID", show_alert=True)
         return
 
+    async with SessionLocal() as s:
+        if not await _get_owned_service(s, listing_id, cb.from_user.id):
+            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            return
     await _render_services_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
     await cb.answer()
     print(f"[services_edit.py] service_edit_overview -> services_edit_overview._render_overview | chat_id={chat_id} user_id={cb.from_user.id} listing_id={listing_id} msg_id={cb.message.message_id}")
 
 # -------------------------- ПОЛЯ --------------------------
 
-@router.callback_query(F.data.startswith("edit:title:"))
+@router.callback_query(F.data.startswith("service_legacy_edit:title:"))
 async def edit_title_start(cb: CallbackQuery, state: FSMContext):
-    listing_id = int(cb.data.split(":")[2])
-    await state.set_state(EditListing.waiting_title)
+    listing_id = int(cb.data.rsplit(":", 1)[1])
     await state.update_data(listing_id=listing_id)
     async with SessionLocal() as s:
-        l = await _get_listing(s, listing_id)
+        l = await _get_owned_service(s, listing_id, cb.from_user.id)
+        if not l:
+            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await state.clear()
+            return
         current = l.title or "—"
+    await state.set_state(ServiceLegacyEdit.waiting_title)
     msg = await cb.message.answer(
-        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{escape(current)}</code>\n\n"
         "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
         parse_mode="HTML"
     )
@@ -71,7 +97,7 @@ async def edit_title_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@router.message(EditListing.waiting_title)                    # <-- было EditListing.title
+@router.message(ServiceLegacyEdit.waiting_title)
 async def edit_title_save(msg: Message, state: FSMContext):
     data = await state.get_data()
     listing_id = int(data["listing_id"])
@@ -82,7 +108,11 @@ async def edit_title_save(msg: Message, state: FSMContext):
         await register_bot_messages(msg.chat.id, [err.message_id])
         return
     async with SessionLocal() as s:
-        l = await _get_listing(s, listing_id)
+        l = await _get_owned_service(s, listing_id, msg.from_user.id)
+        if not l:
+            await msg.answer("Можно редактировать только свои услуги.")
+            await state.clear()
+            return
         l.title = title
         s.add(l); await s.commit()
     ok = await msg.answer("Заголовок обновлён.")
@@ -91,16 +121,20 @@ async def edit_title_save(msg: Message, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data.startswith("edit:descr:"))
+@router.callback_query(F.data.startswith("service_legacy_edit:descr:"))
 async def edit_descr_start(cb: CallbackQuery, state: FSMContext):
-    listing_id = int(cb.data.split(":")[2])
-    await state.set_state(EditListing.waiting_descr)
+    listing_id = int(cb.data.rsplit(":", 1)[1])
     await state.update_data(listing_id=listing_id)
     async with SessionLocal() as s:
-        l = await _get_listing(s, listing_id)
+        l = await _get_owned_service(s, listing_id, cb.from_user.id)
+        if not l:
+            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await state.clear()
+            return
         current = l.descr or "—"
+    await state.set_state(ServiceLegacyEdit.waiting_descr)
     msg = await cb.message.answer(
-        f"📝 <b>Описание</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        f"📝 <b>Описание</b>\n\nТекущее значение:\n<code>{escape(current)}</code>\n\n"
         "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
         parse_mode="HTML"
     )
@@ -109,13 +143,17 @@ async def edit_descr_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@router.message(EditListing.waiting_descr)                    # <-- было EditListing.descr
+@router.message(ServiceLegacyEdit.waiting_descr)
 async def edit_descr_save(msg: Message, state: FSMContext):
     data = await state.get_data()
     listing_id = int(data["listing_id"])
     descr = (msg.text or "").strip() or None
     async with SessionLocal() as s:
-        l = await _get_listing(s, listing_id)
+        l = await _get_owned_service(s, listing_id, msg.from_user.id)
+        if not l:
+            await msg.answer("Можно редактировать только свои услуги.")
+            await state.clear()
+            return
         l.descr = descr
         s.add(l); await s.commit()
     ok = await msg.answer("Описание обновлено.")
@@ -124,16 +162,20 @@ async def edit_descr_save(msg: Message, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data.startswith("edit:price:"))
+@router.callback_query(F.data.startswith("service_legacy_edit:price:"))
 async def edit_price_start(cb: CallbackQuery, state: FSMContext):
-    listing_id = int(cb.data.split(":")[2])
-    await state.set_state(EditListing.waiting_price)
+    listing_id = int(cb.data.rsplit(":", 1)[1])
     await state.update_data(listing_id=listing_id)
     async with SessionLocal() as s:
-        l = await _get_listing(s, listing_id)
+        l = await _get_owned_service(s, listing_id, cb.from_user.id)
+        if not l:
+            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await state.clear()
+            return
         current = l.price or "—"
+    await state.set_state(ServiceLegacyEdit.waiting_price)
     msg = await cb.message.answer(
-        f"💰 <b>Стоимость</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        f"💰 <b>Стоимость</b>\n\nТекущее значение:\n<code>{escape(current)}</code>\n\n"
         "Отправьте новую стоимость (или скопируйте текущую ↑ и отредактируйте):",
         parse_mode="HTML"
     )
@@ -142,13 +184,17 @@ async def edit_price_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@router.message(EditListing.waiting_price)                    # <-- было EditListing.price
+@router.message(ServiceLegacyEdit.waiting_price)
 async def edit_price_save(msg: Message, state: FSMContext):
     data = await state.get_data()
     listing_id = int(data["listing_id"])
     price = (msg.text or "").strip()
     async with SessionLocal() as s:
-        l = await _get_listing(s, listing_id)
+        l = await _get_owned_service(s, listing_id, msg.from_user.id)
+        if not l:
+            await msg.answer("Можно редактировать только свои услуги.")
+            await state.clear()
+            return
         l.price = price or "Договорная"
         s.add(l); await s.commit()
     ok = await msg.answer("Стоимость обновлена.")
@@ -159,21 +205,25 @@ async def edit_price_save(msg: Message, state: FSMContext):
 
 # -------------------------- ДОП. ПОЛЯ --------------------------
 
-@router.callback_query(F.data.startswith("edit:extras:"))
+@router.callback_query(F.data.startswith("service_legacy_edit:extras:"))
 async def edit_extras_start(cb: CallbackQuery, state: FSMContext):
     try:
-        _, _, listing_id_s, cat_id_s = cb.data.split(":")
+        _, listing_id_s, cat_id_s = cb.data.rsplit(":", 2)
         listing_id = int(listing_id_s); cat_id = int(cat_id_s)
     except Exception:
         await cb.answer("Некорректные параметры", show_alert=True); return
 
+    async with SessionLocal() as s:
+        if not await _get_owned_service(s, listing_id, cb.from_user.id):
+            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            return
     await state.update_data(listing_id=listing_id)
     # Возврат — в обзор редактирования
     await start_extra_fields_for_category(cb, state, cat_id, resume_data=f"service_edit_overview:{listing_id}")
 
 # -------------------------- ФИНИШ --------------------------
 
-@router.callback_query(F.data.startswith("edit:finish"))
+@router.callback_query(F.data.startswith("service_legacy_edit:finish"))
 async def edit_finish(cb: CallbackQuery):
     await cb.answer("Редактирование завершено.")
     # Можно вернуть в «Мои услуги» или в объявление — оставляю нейтрально:

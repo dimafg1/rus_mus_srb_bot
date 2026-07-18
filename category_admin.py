@@ -3,37 +3,77 @@
 Запуск: python category_admin.py   (или двойной клик на category_admin.command)
 Открыть: http://localhost:8001
 """
+import base64
+import secrets
 import sqlite3, json, datetime, os, re
+from contextlib import contextmanager
 from pathlib import Path
 from collections import defaultdict
+from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse, StreamingResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 import httpx, uvicorn
 
-# Load bot token for Telegram media proxy
-_env_path = Path(__file__).parent / ".env"
-BOT_TOKEN = ""
-if _env_path.exists():
-    for line in _env_path.read_text().splitlines():
-        if line.startswith("BOT_TOKEN="):
-            BOT_TOKEN = line.split("=", 1)[1].strip()
+from app.db_path import config_value, resolve_sqlite_path
 
-DB_PATH = Path(__file__).parent / "dev.db"
+# Load bot token for Telegram media proxy
+_ROOT = Path(__file__).resolve().parent
+BOT_TOKEN = (config_value(_ROOT, "BOT_TOKEN", "") or "").strip()
+
+DB_PATH = resolve_sqlite_path(_ROOT)
 ROOT_IDS = {"market": 30, "services": 80, "vacancy": 90}
 ROOT_NAMES = {"market": "Барахолка", "services": "Услуги", "vacancy": "Вакансии"}
 
 # Логи в файл с ротацией: logs/admin.log, 5 МБ x 5 файлов
 import logging
 from logging.handlers import RotatingFileHandler
-_log_dir = Path(__file__).parent / "logs"
-_log_dir.mkdir(exist_ok=True)
+_log_dir = Path(config_value(_ROOT, "LOG_DIR", "logs") or "logs").expanduser()
+if not _log_dir.is_absolute():
+    _log_dir = (_ROOT / _log_dir).resolve()
+_log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+_log_dir.chmod(0o700)
 _fh = RotatingFileHandler(_log_dir / "admin.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
-_fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[_fh, logging.StreamHandler()])
+
+
+class _SecretRedactingFormatter(logging.Formatter):
+    def format(self, record):
+        rendered = super().format(record)
+        return rendered.replace(BOT_TOKEN, "[REDACTED_BOT_TOKEN]") if BOT_TOKEN else rendered
+
+
+_formatter = _SecretRedactingFormatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+_fh.setFormatter(_formatter)
+_sh = logging.StreamHandler()
+_sh.setFormatter(_formatter)
+_log_level = (config_value(_ROOT, "LOG_LEVEL", "INFO") or "INFO").upper()
+logging.basicConfig(level=_log_level, handlers=[_fh, _sh])
+# HTTPX пишет полный Telegram API URL, в который входит токен бота. Не даём
+# библиотечным INFO-сообщениям попадать ни в admin.log, ни в systemd journal.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 app = FastAPI()
+
+_ADMIN_USER = (config_value(_ROOT, "CATEGORY_ADMIN_USER", "") or "").strip()
+_ADMIN_PASSWORD = config_value(_ROOT, "CATEGORY_ADMIN_PASSWORD", "") or ""
+
+
+def _basic_auth_ok(request: Request) -> bool:
+    if not (_ADMIN_USER and _ADMIN_PASSWORD):
+        return False
+    raw = request.headers.get("authorization", "")
+    if not raw.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(raw[6:], validate=True).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return secrets.compare_digest(username, _ADMIN_USER) and secrets.compare_digest(
+        password, _ADMIN_PASSWORD
+    )
 
 # ── Доступ только с этой машины и из Tailscale-сети ──────────────────────────
 # Приложение слушает 0.0.0.0 (для удалённого доступа через Tailscale),
@@ -45,33 +85,96 @@ _ALLOWED_NETS = [
     ipaddress.ip_network("::1/128"),           # localhost IPv6
     ipaddress.ip_network("100.64.0.0/10"),     # Tailscale
 ]
+_ALLOWED_HOSTNAMES = {
+    value.strip().lower().rstrip(".")
+    for value in (
+        config_value(_ROOT, "CATEGORY_ADMIN_ALLOWED_HOSTS", "") or ""
+    ).split(",")
+    if value.strip()
+}
+
+
+def _admin_host_allowed(request: Request) -> bool:
+    host = (request.url.hostname or "").lower().rstrip(".")
+    if host == "localhost" or host in _ALLOWED_HOSTNAMES:
+        return True
+    try:
+        host_ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(host_ip in net for net in _ALLOWED_NETS)
+
+
+def _same_origin(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    try:
+        parsed = urlparse(origin)
+        origin_host = (parsed.hostname or "").lower().rstrip(".")
+        request_host = (request.url.hostname or "").lower().rstrip(".")
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        request_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == request.url.scheme
+        and origin_host == request_host
+        and origin_port == request_port
+    )
 
 
 @app.middleware("http")
 async def _ip_allowlist(request: Request, call_next):
+    if not _admin_host_allowed(request):
+        return PlainTextResponse("Forbidden host", status_code=403)
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and not _same_origin(request):
+        return PlainTextResponse("Forbidden origin", status_code=403)
+
     client_ip = request.client.host if request.client else ""
     try:
         ip = ipaddress.ip_address(client_ip)
         if not any(ip in net for net in _ALLOWED_NETS):
             logging.warning("Отклонён запрос с недоверенного IP: %s %s", client_ip, request.url.path)
-            from fastapi.responses import PlainTextResponse
             return PlainTextResponse("Forbidden", status_code=403)
     except ValueError:
-        pass  # нераспознанный адрес (unix socket и т.п.) — пропускаем
+        return PlainTextResponse("Forbidden", status_code=403)
+
+    # Если credentials заданы, защищаем ими и прямой доступ, и запрос через
+    # локальный reverse proxy. Без credentials разрешён только localhost.
+    if _ADMIN_USER and _ADMIN_PASSWORD:
+        if not _basic_auth_ok(request):
+            return PlainTextResponse(
+                "Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="category-admin"'},
+            )
+    elif not ip.is_loopback:
+        return PlainTextResponse(
+            "Remote admin access is disabled until credentials are configured",
+            status_code=503,
+        )
     return await call_next(request)
 
 
 # ─────────────────────────── DB helpers ───────────────────────────
 
+@contextmanager
 def db():
     # timeout + busy_timeout: бот и админка работают с базой параллельно,
     # без них конкурентная запись даёт "database is locked".
-    # foreign_keys НЕ включаем: в DDL listing.category_id без ON DELETE,
-    # включение сломает удаление категорий с объявлениями.
     conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.row_factory = sqlite3.Row
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def migrate():
@@ -89,7 +192,9 @@ def migrate():
             conn.commit()
 
 
-migrate()
+@app.on_event("startup")
+def _startup_migrate() -> None:
+    migrate()
 
 
 # ─────────────────────────── API ───────────────────────────
@@ -104,7 +209,9 @@ def get_tree(section: str):
             "SELECT id, name, slug, parent_id, order_num, fields FROM category"
         ).fetchall()
         counts = {r[0]: r[1] for r in conn.execute(
-            "SELECT category_id, COUNT(*) FROM listing WHERE is_sold=0 OR is_sold IS NULL GROUP BY category_id"
+            """SELECT category_id, COUNT(*) FROM listing
+               WHERE status='active' AND COALESCE(is_sold,0)=0
+               GROUP BY category_id"""
         ).fetchall()}
     all_cats = [dict(r) for r in rows]
 
@@ -154,17 +261,46 @@ class BatchField(BaseModel):
     field: Any
 
 
+def _normalized_category_name(value: str) -> str:
+    name = (value or "").strip()
+    if not name or any(ord(ch) < 32 for ch in name):
+        raise HTTPException(400, "Название категории не может быть пустым")
+    if len(name) > 200:
+        raise HTTPException(400, "Название категории длиннее 200 символов")
+    return name
+
+
+def _normalized_category_slug(value: str) -> str:
+    slug = (value or "").strip().lower()
+    if not slug or not re.fullmatch(r"[a-z0-9_-]+", slug):
+        raise HTTPException(
+            400,
+            "Slug должен содержать только a-z, 0-9, дефис или подчёркивание",
+        )
+    if len(slug) > 100:
+        raise HTTPException(400, "Slug длиннее 100 символов")
+    return slug
+
+
 @app.post("/api/categories")
 def create_category(body: CatCreate):
+    name = _normalized_category_name(body.name)
+    slug = _normalized_category_slug(body.slug)
     with db() as conn:
-        if conn.execute("SELECT id FROM category WHERE slug=?", (body.slug,)).fetchone():
-            raise HTTPException(400, f"Slug «{body.slug}» уже занят")
+        if not conn.execute(
+            "SELECT 1 FROM category WHERE id=?", (body.parent_id,)
+        ).fetchone():
+            raise HTTPException(400, "Родительская категория не найдена")
+        if conn.execute(
+            "SELECT id FROM category WHERE lower(trim(slug))=?", (slug,)
+        ).fetchone():
+            raise HTTPException(400, f"Slug «{slug}» уже занят")
         max_order = conn.execute(
             "SELECT COALESCE(MAX(order_num),0) FROM category WHERE parent_id=?", (body.parent_id,)
         ).fetchone()[0]
         cur = conn.execute(
             "INSERT INTO category (name, slug, parent_id, order_num) VALUES (?,?,?,?)",
-            (body.name.strip(), body.slug.strip(), body.parent_id, max_order + 10),
+            (name, slug, body.parent_id, max_order + 10),
         )
         conn.commit()
         return {"id": cur.lastrowid}
@@ -173,17 +309,52 @@ def create_category(body: CatCreate):
 @app.patch("/api/categories/{cat_id}")
 def update_category(cat_id: int, body: CatUpdate):
     with db() as conn:
-        if not conn.execute("SELECT id FROM category WHERE id=?", (cat_id,)).fetchone():
+        current = conn.execute(
+            "SELECT id, parent_id FROM category WHERE id=?", (cat_id,)
+        ).fetchone()
+        if not current:
             raise HTTPException(404)
-        if body.slug:
-            if conn.execute("SELECT id FROM category WHERE slug=? AND id!=?", (body.slug, cat_id)).fetchone():
-                raise HTTPException(400, f"Slug «{body.slug}» уже занят")
+        normalized_slug = None
+        if body.slug is not None:
+            normalized_slug = _normalized_category_slug(body.slug)
+            if conn.execute(
+                "SELECT id FROM category "
+                "WHERE lower(trim(slug))=? AND id!=?",
+                (normalized_slug, cat_id),
+            ).fetchone():
+                raise HTTPException(400, f"Slug «{normalized_slug}» уже занят")
         fields, vals = [], []
         if body.name is not None:
-            fields.append("name=?"); vals.append(body.name.strip())
-        if body.slug is not None:
-            fields.append("slug=?"); vals.append(body.slug.strip())
+            fields.append("name=?"); vals.append(_normalized_category_name(body.name))
+        if normalized_slug is not None:
+            fields.append("slug=?"); vals.append(normalized_slug)
         if body.parent_id is not None:
+            if current["parent_id"] is None:
+                raise HTTPException(400, "Корневую категорию нельзя перемещать")
+            if body.parent_id == cat_id:
+                raise HTTPException(400, "Категория не может быть родителем самой себя")
+            if not conn.execute(
+                "SELECT 1 FROM category WHERE id=?", (body.parent_id,)
+            ).fetchone():
+                raise HTTPException(400, "Родительская категория не найдена")
+            parent_is_descendant = conn.execute(
+                """
+                WITH RECURSIVE descendants(id) AS (
+                    SELECT id FROM category WHERE parent_id=?
+                    UNION
+                    SELECT c.id
+                    FROM category c
+                    JOIN descendants d ON c.parent_id=d.id
+                )
+                SELECT 1 FROM descendants WHERE id=?
+                """,
+                (cat_id, body.parent_id),
+            ).fetchone()
+            if parent_is_descendant:
+                raise HTTPException(
+                    400,
+                    "Категорию нельзя переместить внутрь её подкатегории",
+                )
             fields.append("parent_id=?"); vals.append(body.parent_id)
         if fields:
             vals.append(cat_id)
@@ -220,14 +391,40 @@ def move_category(cat_id: int, body: MoveDir):
 @app.delete("/api/categories/{cat_id}")
 def delete_category(cat_id: int):
     with db() as conn:
+        if not conn.execute("SELECT 1 FROM category WHERE id=?", (cat_id,)).fetchone():
+            raise HTTPException(404, "Категория не найдена")
         if conn.execute("SELECT COUNT(*) FROM category WHERE parent_id=?", (cat_id,)).fetchone()[0]:
             raise HTTPException(400, "Сначала удалите подкатегории")
         listings = conn.execute(
-            "SELECT COUNT(*) FROM listing WHERE category_id=? AND (is_sold=0 OR is_sold IS NULL)", (cat_id,)
+            """SELECT COUNT(*) FROM listing
+               WHERE category_id=? OR extra_category_id1=? OR extra_category_id2=?""",
+            (cat_id, cat_id, cat_id),
         ).fetchone()[0]
         if listings:
-            raise HTTPException(400, f"В категории {listings} активных объявлений")
-        conn.execute("DELETE FROM category WHERE id=?", (cat_id,))
+            raise HTTPException(
+                400,
+                f"Категория используется в {listings} объявлениях (включая архивные)",
+            )
+        items = conn.execute(
+            "SELECT COUNT(*) FROM item WHERE category_id=?", (cat_id,)
+        ).fetchone()[0]
+        profiles = conn.execute(
+            "SELECT COUNT(*) FROM profile WHERE category_id=?", (cat_id,)
+        ).fetchone()[0]
+        if items or profiles:
+            refs = []
+            if items:
+                refs.append(f"анкеты: {items}")
+            if profiles:
+                refs.append(f"профили: {profiles}")
+            raise HTTPException(
+                400,
+                "Категория используется: " + ", ".join(refs),
+            )
+        try:
+            conn.execute("DELETE FROM category WHERE id=?", (cat_id,))
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "Категория всё ещё используется") from exc
         conn.commit()
     return {"ok": True}
 
@@ -317,7 +514,10 @@ def analytics_overview():
             },
             "listings": {
                 "total":    q("SELECT COUNT(*) FROM listing"),
-                "active":   q("SELECT COUNT(*) FROM listing WHERE is_sold=0 OR is_sold IS NULL"),
+                "active":   q(
+                    "SELECT COUNT(*) FROM listing "
+                    "WHERE status='active' AND COALESCE(is_sold,0)=0"
+                ),
                 "new_week": q("SELECT COUNT(*) FROM listing WHERE created_at >= datetime('now','-7 days')"),
                 "new_prev": q("SELECT COUNT(*) FROM listing WHERE created_at >= datetime('now','-14 days') AND created_at < datetime('now','-7 days')"),
             },
@@ -361,7 +561,8 @@ def analytics_top_categories():
                     COUNT(CASE WHEN lv.action='contact' THEN 1 END) AS contacts,
                     COUNT(DISTINCT l.id) AS listings
                 FROM category c
-                LEFT JOIN listing l        ON l.category_id=c.id AND (l.is_sold=0 OR l.is_sold IS NULL)
+                LEFT JOIN listing l        ON l.category_id=c.id
+                    AND l.status='active' AND COALESCE(l.is_sold,0)=0
                 LEFT JOIN listing_views lv ON lv.listing_id=l.id
                 WHERE c.parent_id IS NOT NULL
                 GROUP BY c.id, c.name
@@ -544,7 +745,9 @@ def analytics_cities():
         rows = conn.execute("""
             SELECT c.id, c.name,
                    COUNT(DISTINCT l.id) AS total,
-                   COUNT(DISTINCT CASE WHEN COALESCE(l.is_sold,0)=0 THEN l.id END) AS active,
+                   COUNT(DISTINCT CASE
+                       WHEN l.status='active' AND COALESCE(l.is_sold,0)=0 THEN l.id
+                   END) AS active,
                    SUM(CASE WHEN lv.action='open' THEN 1 ELSE 0 END) AS views,
                    COUNT(DISTINCT CASE WHEN lv.action='open' THEN lv.user_id END) AS viewers,
                    SUM(CASE WHEN lv.action='contact' THEN 1 ELSE 0 END) AS contacts
@@ -584,7 +787,10 @@ def analytics_owners(offset: int = 0, limit: int = 15):
                 SELECT l.owner_id,
                        GROUP_CONCAT(DISTINCT l.contact) AS contacts_raw,
                        COUNT(DISTINCT l.id) AS listings_count,
-                       (SELECT COUNT(*) FROM listing ll WHERE ll.owner_id=l.owner_id AND COALESCE(ll.is_sold,0)=0) AS active,
+                       (SELECT COUNT(*) FROM listing ll
+                        WHERE ll.owner_id=l.owner_id
+                          AND ll.status='active'
+                          AND COALESCE(ll.is_sold,0)=0) AS active,
                        COUNT(lv.id) AS opens,
                        COUNT(DISTINCT lv.user_id) AS unique_viewers,
                        MAX(l.created_at) AS last_at
@@ -611,8 +817,8 @@ def analytics_owner(owner_id: int, listing_offset: int = 0, listing_limit: int =
                 SELECT l.owner_id,
                        GROUP_CONCAT(DISTINCT l.contact) AS contacts_raw,
                        COUNT(DISTINCT l.id) AS listings_count,
-                       SUM(CASE WHEN COALESCE(l.is_sold,0)=0 THEN 1 ELSE 0 END) AS active,
-                       SUM(CASE WHEN COALESCE(l.is_sold,0)=1 THEN 1 ELSE 0 END) AS sold,
+                       COUNT(DISTINCT CASE WHEN l.status='active' AND COALESCE(l.is_sold,0)=0 THEN l.id END) AS active,
+                       COUNT(DISTINCT CASE WHEN l.status!='active' OR COALESCE(l.is_sold,0)=1 THEN l.id END) AS sold,
                        COUNT(lv.id) AS opens,
                        COUNT(DISTINCT lv.user_id) AS unique_viewers,
                        SUM(CASE WHEN lv.source='search' THEN 1 ELSE 0 END) AS search_opens,
@@ -650,6 +856,8 @@ def _parse_video(flex_str: str) -> dict:
     try:
         flex = json.loads(flex_str or "{}")
     except Exception:
+        flex = {}
+    if not isinstance(flex, dict):
         flex = {}
     raw = flex.get("video", "") or ""
     if not raw:
@@ -696,7 +904,12 @@ def _video_from_release(conn, listing_id: int) -> dict:
             return {}
         if row[0]:
             return {"video_type": "telegram", "video_id": row[0]}
-        for l in json.loads(row[1] or "[]"):
+        links = json.loads(row[1] or "[]")
+        if not isinstance(links, list):
+            return {}
+        for l in links:
+            if not isinstance(l, dict):
+                continue
             url = (l.get("url") or "")
             if "youtube.com" in url or "youtu.be" in url:
                 v = _video_from_url(url)
@@ -818,6 +1031,8 @@ def get_listing(listing_id: int):
         flex_data = json.loads(row[17]) if row[17] else {}
     except Exception:
         flex_data = {}
+    if not isinstance(flex_data, dict):
+        flex_data = {}
     return {
         "id": row[0], "title": row[1] or "", "descr": row[2] or "",
         "price": row[3] or "", "contact": row[4] or "",
@@ -902,17 +1117,25 @@ def update_listing(listing_id: int, body: ListingUpdate):
             raise HTTPException(404, "Listing not found")
         fields, vals = [], []
         if body.title is not None:
-            fields.append("title=?"); vals.append(body.title.strip() or None)
+            title = body.title.strip()
+            if not title:
+                raise HTTPException(400, "Название не может быть пустым")
+            fields.append("title=?"); vals.append(title)
         if body.descr is not None:
             fields.append("descr=?"); vals.append(body.descr.strip() or None)
         if body.price is not None:
             fields.append("price=?"); vals.append(body.price.strip() or None)
         if body.contact is not None:
-            fields.append("contact=?"); vals.append(body.contact.strip() or None)
+            contact = body.contact.strip()
+            if not contact:
+                raise HTTPException(400, "Контакт не может быть пустым")
+            fields.append("contact=?"); vals.append(contact)
         if body.flex is not None:
             try:
                 existing_flex = json.loads(row[1]) if row[1] else {}
             except Exception:
+                existing_flex = {}
+            if not isinstance(existing_flex, dict):
                 existing_flex = {}
             existing_flex.update(body.flex)
             fields.append("flex=?"); vals.append(json.dumps(existing_flex, ensure_ascii=False))
@@ -1016,12 +1239,30 @@ def remove_photo(listing_id: int, body: RemovePhotoBody):
 # Файл отправляется ботом в чат админа (UPLOAD_CHAT_ID) → Telegram возвращает
 # file_id → он сохраняется в объявление. Байты хранятся у Telegram, как и все
 # медиа бота. Побочный эффект: в вашем чате с ботом появляется сообщение-носитель.
-UPLOAD_CHAT_ID = 519335258  # Telegram ID админа (@snd_producer)
-MAX_PHOTOS = 3              # как в мастере добавления объявления в боте
+try:
+    UPLOAD_CHAT_ID = int(
+        config_value(_ROOT, "CATEGORY_ADMIN_UPLOAD_CHAT_ID", "519335258")
+        or "519335258"
+    )
+except ValueError as exc:
+    raise RuntimeError("CATEGORY_ADMIN_UPLOAD_CHAT_ID must be an integer") from exc
+PHOTO_LIMIT_BY_TYPE = {
+    "market": 3,
+    "service": 3,
+    # Карточки Афиши и релизов отправляют одну обложку через answer_photo.
+    "events": 1,
+    "release": 1,
+}
+
+
+def _listing_photo_limit(listing_type: str | None) -> int:
+    return PHOTO_LIMIT_BY_TYPE.get((listing_type or "").strip().lower(), 0)
 
 
 async def _tg_upload(kind: str, filename: str, data: bytes) -> str:
     """kind: 'photo' | 'video'. Возвращает file_id."""
+    if not BOT_TOKEN:
+        raise HTTPException(503, "Bot token not configured")
     method = "sendPhoto" if kind == "photo" else "sendVideo"
     field = "photo" if kind == "photo" else "video"
     async with httpx.AsyncClient(timeout=120) as client:
@@ -1052,19 +1293,33 @@ async def add_photo(listing_id: int, request: Request, filename: str = ""):
     if not BOT_TOKEN:
         raise HTTPException(503, "Bot token not configured")
     with db() as conn:
-        row = conn.execute("SELECT photo_file_id FROM listing WHERE id=?", (listing_id,)).fetchone()
+        row = conn.execute(
+            "SELECT type, photo_file_id FROM listing WHERE id=?", (listing_id,)
+        ).fetchone()
         if not row:
             raise HTTPException(404, "Listing not found")
-        photos = [p.strip() for p in (row[0] or "").split(",") if p.strip()]
-        if len(photos) >= MAX_PHOTOS:
-            raise HTTPException(400, f"Максимум {MAX_PHOTOS} фото")
+        limit = _listing_photo_limit(row[0])
+        if not limit:
+            raise HTTPException(400, "Для этого типа объявления фото не поддерживаются")
+        photos = [p.strip() for p in (row[1] or "").split(",") if p.strip()]
+        if len(photos) >= limit:
+            raise HTTPException(400, f"Максимум {limit} фото")
     data = await request.body()
     if not data:
         raise HTTPException(400, "Пустой файл")
     file_id = await _tg_upload("photo", filename, data)
     with db() as conn:
-        row = conn.execute("SELECT photo_file_id FROM listing WHERE id=?", (listing_id,)).fetchone()
-        photos = [p.strip() for p in (row[0] or "").split(",") if p.strip()]
+        row = conn.execute(
+            "SELECT type, photo_file_id FROM listing WHERE id=?", (listing_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Listing not found")
+        limit = _listing_photo_limit(row[0])
+        if not limit:
+            raise HTTPException(409, "Для этого типа объявления фото не поддерживаются")
+        photos = [p.strip() for p in (row[1] or "").split(",") if p.strip()]
+        if len(photos) >= limit:
+            raise HTTPException(409, f"Максимум {limit} фото")
         photos.append(file_id)
         conn.execute("UPDATE listing SET photo_file_id=? WHERE id=?", (",".join(photos), listing_id))
         conn.commit()
@@ -1124,7 +1379,7 @@ async def add_video(listing_id: int, request: Request, filename: str = ""):
     if not BOT_TOKEN:
         raise HTTPException(503, "Bot token not configured")
     with db() as conn:
-        row = conn.execute("SELECT flex FROM listing WHERE id=?", (listing_id,)).fetchone()
+        row = conn.execute("SELECT type, flex FROM listing WHERE id=?", (listing_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Listing not found")
     data = await request.body()
@@ -1134,14 +1389,27 @@ async def add_video(listing_id: int, request: Request, filename: str = ""):
         raise HTTPException(400, "Видео больше 20 МБ: Bot API не сможет отдать его в приложении")
     file_id = await _tg_upload("video", filename, data)
     with db() as conn:
-        row = conn.execute("SELECT flex FROM listing WHERE id=?", (listing_id,)).fetchone()
-        try:
-            flex = json.loads(row[0]) if row[0] else {}
-        except Exception:
-            flex = {}
-        flex["video"] = file_id  # заменяет существующее видео
-        conn.execute("UPDATE listing SET flex=? WHERE id=?",
-                     (json.dumps(flex, ensure_ascii=False), listing_id))
+        row = conn.execute("SELECT type, flex FROM listing WHERE id=?", (listing_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Listing not found")
+        if row[0] == "release":
+            updated = conn.execute(
+                "UPDATE release_meta SET video_file_id=?, video_file_unique_id=NULL "
+                "WHERE listing_id=?",
+                (file_id, listing_id),
+            ).rowcount
+            if not updated:
+                raise HTTPException(409, "У релиза отсутствует release_meta")
+        else:
+            try:
+                flex = json.loads(row[1]) if row[1] else {}
+            except Exception:
+                flex = {}
+            if not isinstance(flex, dict):
+                flex = {}
+            flex["video"] = file_id  # заменяет существующее видео
+            conn.execute("UPDATE listing SET flex=? WHERE id=?",
+                         (json.dumps(flex, ensure_ascii=False), listing_id))
         conn.commit()
     return {"ok": True, "file_id": file_id}
 
@@ -1154,6 +1422,51 @@ _MIME_BY_EXT = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".gif": "image/gif", ".webp": "image/webp",
 }
+
+_BYTE_RANGE_RE = re.compile(r"bytes=([0-9]*)-([0-9]*)", re.IGNORECASE)
+
+
+def _parse_byte_range(raw: str, total: int) -> tuple[int, int]:
+    """Parse one byte range, including ``bytes=-N`` suffix ranges."""
+    match = _BYTE_RANGE_RE.fullmatch((raw or "").strip())
+    if not match or total <= 0:
+        raise HTTPException(
+            416,
+            "Invalid range",
+            headers={"Content-Range": f"bytes */{max(total, 0)}"},
+        )
+    start_s, end_s = match.groups()
+    if not start_s and not end_s:
+        raise HTTPException(
+            416,
+            "Invalid range",
+            headers={"Content-Range": f"bytes */{total}"},
+        )
+    if len(start_s) > 20 or len(end_s) > 20:
+        raise HTTPException(
+            416,
+            "Invalid range",
+            headers={"Content-Range": f"bytes */{total}"},
+        )
+    if not start_s:
+        suffix = int(end_s)
+        if suffix <= 0:
+            raise HTTPException(
+                416,
+                "Invalid range",
+                headers={"Content-Range": f"bytes */{total}"},
+            )
+        return max(0, total - suffix), total - 1
+
+    start = int(start_s)
+    end = int(end_s) if end_s else total - 1
+    if start >= total or end < start:
+        raise HTTPException(
+            416,
+            "Invalid range",
+            headers={"Content-Range": f"bytes */{total}"},
+        )
+    return start, min(end, total - 1)
 
 
 async def _fetch_tg_file(file_id: str):
@@ -1203,17 +1516,8 @@ async def tg_photo(file_id: str, request: Request):
     # Range-запросы обязательны для видео: Safari не воспроизводит <video>
     # без ответа 206 Partial Content. Нарезаем на своей стороне.
     range_header = request.headers.get("range")
-    if range_header and range_header.startswith("bytes="):
-        try:
-            spec = range_header[6:].split(",")[0].strip()
-            start_s, _, end_s = spec.partition("-")
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else total - 1
-            end = min(end, total - 1)
-            if start > end or start >= total:
-                raise ValueError
-        except ValueError:
-            raise HTTPException(416, "Invalid range")
+    if range_header:
+        start, end = _parse_byte_range(range_header, total)
         chunk = content[start:end + 1]
         return StreamingResponse(
             iter([chunk]), status_code=206, media_type=content_type,
@@ -1363,14 +1667,42 @@ _ADMIN_LINK_LABELS = {
 }
 
 
+def _validated_http_url(raw: str) -> str:
+    """Return a safe absolute HTTP(S) URL or reject the whole update."""
+    value = (raw or "").strip()
+    if (
+        not value
+        or any(ord(ch) < 32 for ch in value)
+        or any(ch in value for ch in {'"', "'", "<", ">", "\\"})
+    ):
+        raise HTTPException(400, f"Некорректная ссылка: {raw!r}")
+    try:
+        parsed = urlparse(value)
+        port = parsed.port  # validates malformed ports as well
+    except ValueError:
+        raise HTTPException(400, f"Некорректная ссылка: {raw!r}")
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None and not (1 <= port <= 65535)
+    ):
+        raise HTTPException(400, f"Разрешены только полные ссылки http:// или https://: {raw!r}")
+    return value
+
+
 def _links_json_from_text(text_val: str | None) -> str | None:
     """Строки/пробелы с URL → JSON [{label,url}] (метка по домену)."""
     if not text_val or not text_val.strip():
         return None
+    raw_urls = text_val.replace(",", " ").split()
+    if len(raw_urls) > 10:
+        raise HTTPException(400, "Можно сохранить не больше 10 ссылок")
     links = []
-    for u in text_val.replace(",", " ").split():
-        if not u.startswith("http"):
-            continue
+    for raw_url in raw_urls:
+        u = _validated_http_url(raw_url)
         label = "Ссылка"
         for dom, lb in _ADMIN_LINK_LABELS.items():
             if dom in u.lower():
@@ -1414,12 +1746,18 @@ def artist_patch(artist_id: int, body: ArtistPatch):
 
 @app.post("/api/artist/{artist_id}/photo")
 async def artist_photo_upload(artist_id: int, request: Request, filename: str = ""):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM artist WHERE id=?", (artist_id,)).fetchone():
+            raise HTTPException(404, "Artist not found")
     data = await request.body()
     if not data:
         raise HTTPException(400, "Empty file")
     file_id = await _tg_upload("photo", filename, data)
     with db() as conn:
-        conn.execute("UPDATE artist SET photo_file_id=? WHERE id=?", (file_id, artist_id))
+        if not conn.execute(
+            "UPDATE artist SET photo_file_id=? WHERE id=?", (file_id, artist_id)
+        ).rowcount:
+            raise HTTPException(404, "Artist not found")
     return {"ok": True, "file_id": file_id}
 
 
@@ -1429,6 +1767,135 @@ class ReleasePatch(BaseModel):
     recorded: str | None = None
     links_text: str | None = None
     artist_id: int | None = None
+
+
+class ReleaseTrackRename(BaseModel):
+    id: int
+    title: str
+
+
+class ReleaseFullPatch(BaseModel):
+    """One transaction for the listing, release metadata and track names."""
+    title: str
+    descr: str | None = None
+    price: str | None = None
+    contact: str
+    flex: dict[str, Any] | None = None
+    release: ReleasePatch
+    tracks: list[ReleaseTrackRename] = Field(default_factory=list)
+
+
+@app.patch("/api/release/{listing_id}/full")
+def release_full_patch(listing_id: int, body: ReleaseFullPatch):
+    title = body.title.strip()
+    contact = body.contact.strip()
+    if not title:
+        raise HTTPException(400, "Название не может быть пустым")
+    if not contact:
+        raise HTTPException(400, "Контакт не может быть пустым")
+
+    release = body.release
+    allowed_types = {"single", "ep", "album", "clip", "live"}
+    if release.rtype is not None and release.rtype not in allowed_types:
+        raise HTTPException(400, "Неизвестный тип релиза")
+    links_json = (
+        _links_json_from_text(release.links_text)
+        if release.links_text is not None else None
+    )
+
+    normalized_tracks: list[tuple[int, str]] = []
+    seen_track_ids: set[int] = set()
+    for track in body.tracks:
+        if track.id in seen_track_ids:
+            raise HTTPException(400, "Один трек передан дважды")
+        seen_track_ids.add(track.id)
+        track_title = track.title.strip()[:255]
+        if not track_title:
+            raise HTTPException(400, "Название трека не может быть пустым")
+        normalized_tracks.append((track.id, track_title))
+
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        listing = conn.execute(
+            "SELECT type, flex FROM listing WHERE id=?", (listing_id,)
+        ).fetchone()
+        if not listing:
+            raise HTTPException(404, "Listing not found")
+        if listing["type"] != "release":
+            raise HTTPException(400, "Это объявление не является релизом")
+        if not conn.execute(
+            "SELECT 1 FROM release_meta WHERE listing_id=?", (listing_id,)
+        ).fetchone():
+            raise HTTPException(409, "У релиза отсутствует release_meta")
+        if release.artist_id is not None and not conn.execute(
+            "SELECT 1 FROM artist WHERE id=?", (release.artist_id,)
+        ).fetchone():
+            raise HTTPException(404, "Artist not found")
+
+        for track_id, _ in normalized_tracks:
+            track_row = conn.execute(
+                "SELECT listing_id FROM release_track WHERE id=?", (track_id,)
+            ).fetchone()
+            if not track_row:
+                raise HTTPException(404, f"Track {track_id} not found")
+            if track_row["listing_id"] != listing_id:
+                raise HTTPException(400, "Трек не принадлежит этому релизу")
+
+        listing_sets = ["title=?", "contact=?"]
+        listing_vals: list[Any] = [title, contact]
+        if body.descr is not None:
+            listing_sets.append("descr=?")
+            listing_vals.append(body.descr.strip() or None)
+        if body.price is not None:
+            listing_sets.append("price=?")
+            listing_vals.append(body.price.strip() or None)
+        if body.flex is not None:
+            try:
+                existing_flex = json.loads(listing["flex"]) if listing["flex"] else {}
+            except (TypeError, ValueError):
+                existing_flex = {}
+            if not isinstance(existing_flex, dict):
+                existing_flex = {}
+            existing_flex.update(body.flex)
+            listing_sets.append("flex=?")
+            listing_vals.append(json.dumps(existing_flex, ensure_ascii=False))
+        conn.execute(
+            f"UPDATE listing SET {', '.join(listing_sets)} WHERE id=?",
+            listing_vals + [listing_id],
+        )
+
+        release_sets: list[str] = []
+        release_vals: list[Any] = []
+        for column, value in (
+            ("release_type", release.rtype),
+            ("release_date", release.date.strip()[:32] or None if release.date is not None else None),
+            ("recorded_at", release.recorded.strip()[:128] or None if release.recorded is not None else None),
+            ("links", links_json),
+            ("artist_id", release.artist_id),
+        ):
+            supplied = {
+                "release_type": release.rtype is not None,
+                "release_date": release.date is not None,
+                "recorded_at": release.recorded is not None,
+                "links": release.links_text is not None,
+                "artist_id": release.artist_id is not None,
+            }[column]
+            if supplied:
+                release_sets.append(f"{column}=?")
+                release_vals.append(value)
+        if release_sets:
+            conn.execute(
+                f"UPDATE release_meta SET {', '.join(release_sets)} WHERE listing_id=?",
+                release_vals + [listing_id],
+            )
+
+        for track_id, track_title in normalized_tracks:
+            conn.execute(
+                "UPDATE release_track SET title=? WHERE id=?",
+                (track_title, track_id),
+            )
+        conn.commit()
+    return {"ok": True}
 
 
 @app.patch("/api/release/{listing_id}")
@@ -1462,21 +1929,52 @@ class TrackPatch(BaseModel):
 
 @app.patch("/api/release_track/{track_id}")
 def track_patch(track_id: int, body: TrackPatch):
+    title = body.title.strip()[:255]
+    if not title:
+        raise HTTPException(400, "Название трека не может быть пустым")
     with db() as conn:
         if not conn.execute("SELECT 1 FROM release_track WHERE id=?", (track_id,)).fetchone():
             raise HTTPException(404, "Track not found")
         conn.execute("UPDATE release_track SET title=? WHERE id=?",
-                     (body.title.strip()[:255] or None, track_id))
+                     (title, track_id))
     return {"ok": True}
 
 
 @app.delete("/api/release_track/{track_id}")
 def track_delete(track_id: int):
     with db() as conn:
-        row = conn.execute("SELECT listing_id FROM release_track WHERE id=?",
-                           (track_id,)).fetchone()
+        row = conn.execute(
+            """SELECT rt.listing_id, rm.video_file_id, rm.links,
+                      (SELECT COUNT(*) FROM release_track all_rt
+                       WHERE all_rt.listing_id=rt.listing_id) AS track_count
+               FROM release_track rt
+               JOIN release_meta rm ON rm.listing_id=rt.listing_id
+               WHERE rt.id=?""",
+            (track_id,),
+        ).fetchone()
         if not row:
             raise HTTPException(404, "Track not found")
+        try:
+            links = json.loads(row["links"] or "[]")
+        except (TypeError, ValueError):
+            links = []
+        has_links = False
+        if isinstance(links, list):
+            for item in links:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    _validated_http_url(str(item.get("url") or ""))
+                except HTTPException:
+                    continue
+                has_links = True
+                break
+        if row["track_count"] <= 1 and not row["video_file_id"] and not has_links:
+            raise HTTPException(
+                409,
+                "Нельзя удалить единственный медиаисточник релиза: "
+                "сначала добавьте трек, видео или ссылку",
+            )
         conn.execute("DELETE FROM release_track WHERE id=?", (track_id,))
         rest = conn.execute("SELECT id FROM release_track WHERE listing_id=? "
                             "ORDER BY position", (row[0],)).fetchall()
@@ -1487,6 +1985,8 @@ def track_delete(track_id: int):
 
 async def _tg_upload_audio(filename: str, data: bytes) -> dict:
     """Загрузка аудио в Telegram (как _tg_upload, но sendAudio → весь объект)."""
+    if not BOT_TOKEN:
+        raise HTTPException(503, "Bot token not configured")
     async with httpx.AsyncClient(timeout=120) as client:
         r = await client.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio",
@@ -1509,6 +2009,16 @@ async def _tg_upload_audio(filename: str, data: bytes) -> dict:
 
 @app.post("/api/release/{listing_id}/track")
 async def track_add(listing_id: int, request: Request, filename: str = ""):
+    max_tracks = 50
+    with db() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM release_meta WHERE listing_id=?", (listing_id,)
+        ).fetchone():
+            raise HTTPException(404, "Release not found")
+        if conn.execute(
+            "SELECT COUNT(*) FROM release_track WHERE listing_id=?", (listing_id,)
+        ).fetchone()[0] >= max_tracks:
+            raise HTTPException(400, f"Максимум {max_tracks} треков")
     data = await request.body()
     if not data:
         raise HTTPException(400, "Empty file")
@@ -1519,6 +2029,8 @@ async def track_add(listing_id: int, request: Request, filename: str = ""):
             raise HTTPException(404, "Release not found")
         n = conn.execute("SELECT COUNT(*) FROM release_track WHERE listing_id=?",
                          (listing_id,)).fetchone()[0] or 0
+        if n >= max_tracks:
+            raise HTTPException(409, f"Максимум {max_tracks} треков")
         conn.execute(
             "INSERT INTO release_track (listing_id, position, title, file_id, "
             "file_unique_id, duration, file_name, mime_type) VALUES (?,?,?,?,?,?,?,?)",
@@ -2384,7 +2896,7 @@ function renderNode(n, section, isRoot, parentId) {
         <button class="btn btn-sm btn-add"    title="${T('tt_add')}"    onclick="openAdd(${n.id},'${section}')">+</button>
         <button class="btn btn-sm btn-fields" title="${T('tt_fields')}" onclick="openFields(${n.id},'${section}')">⚙</button>
         <button class="btn btn-sm btn-move"   title="${T('tt_move')}"   onclick="openMove(${n.id},'${section}')">↕</button>
-        <button class="btn btn-sm btn-del"    title="${T('tt_delete')}" onclick="deleteCat(${n.id},'${section}','${esc(n.name)}')">✕</button>
+        <button class="btn btn-sm btn-del"    title="${T('tt_delete')}" onclick="deleteCat(${n.id},${jsArg(section)},${jsArg(n.name)})">✕</button>
       </div>
     </div>
     ${kids}
@@ -2399,6 +2911,13 @@ function toggleNode(el) {
   el.textContent = open ? '▶' : '▼';
 }
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+function jsArg(value){ return esc(JSON.stringify(String(value ?? ''))) }
+function safeHttpUrl(raw) {
+  try {
+    const u = new URL(String(raw || ''));
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : '';
+  } catch (_) { return ''; }
+}
 
 // ── selection ──
 function toggleSelect(id, section, chk) {
@@ -2920,7 +3439,10 @@ async function openArtistCard(id) {
     ['Владелец', a.username ? '@'+a.username : a.owner_id],
     ['Создан', a.created_at],
     ['Статус', a.status==='active' ? '🟢 активен' : '⚪ скрыт'],
-    ['Ссылки', (a.links||[]).map(l=>`<a href="${l.url}" target="_blank">${esc(l.label)}</a>`).join(' · ')],
+    ['Ссылки', (a.links||[]).map(l=>{
+      const u = safeHttpUrl(l.url);
+      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>` : '';
+    }).filter(Boolean).join(' · ')],
   ].filter(([,v])=>v).map(([k,v]) =>
     `<span class="listing-meta-key">${k}</span><span class="listing-meta-val">${k==='Ссылки'?v:esc(String(v))}</span>`).join('');
   el.innerHTML = `
@@ -3067,14 +3589,14 @@ async function catalogShowSections() {
   catalogSetBreadcrumb();
   const rows = await fetch('/api/catalog/sections').then(r=>r.json());
   el.innerHTML = `<div class="cat-tree-list">${rows.map(s => `
-    <div class="cat-tree-row" onclick="catalogOpenSection('${s.type}', '${esc(s.name)}', ${s.root_id})">
+    <div class="cat-tree-row" onclick="catalogOpenSection(${jsArg(s.type)},${jsArg(s.name)},${s.root_id})">
       <span class="cat-tree-icon">${SECTION_ICONS[s.type]||'📦'}</span>
       <span class="cat-tree-name">${esc(s.name)}</span>
       <span class="cat-tree-subcount" style="opacity:.3">—</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillListings(0,'${s.type}','${esc(s.name)}')"><b>${s.listings}</b> объявл.</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(0,'${s.type}','${esc(s.name)}','open')"><b>${s.views}</b> просм.</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillUsers(0,'${s.type}','${esc(s.name)}')"><b>${s.viewers}</b> польз.</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(0,'${s.type}','${esc(s.name)}','contact')"><b>${s.contacts}</b> контакт.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillListings(0,${jsArg(s.type)},${jsArg(s.name)})"><b>${s.listings}</b> объявл.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(0,${jsArg(s.type)},${jsArg(s.name)},'open')"><b>${s.views}</b> просм.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillUsers(0,${jsArg(s.type)},${jsArg(s.name)})"><b>${s.viewers}</b> польз.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(0,${jsArg(s.type)},${jsArg(s.name)},'contact')"><b>${s.contacts}</b> контакт.</span>
       <span class="cat-tree-arrow">›</span>
     </div>`).join('')}</div>`;
 }
@@ -3096,14 +3618,14 @@ async function catalogShowCats(parentId, stype) {
   }
   const hasSubcats = data.rows.some(r => r.subcats > 0);
   el.innerHTML = `<div class="cat-tree-list">${data.rows.map(r => `
-    <div class="cat-tree-row" onclick="catalogOpenCat(${r.id}, '${esc(r.name)}', '${stype||''}')">
+    <div class="cat-tree-row" onclick="catalogOpenCat(${r.id},${jsArg(r.name)},${jsArg(stype||'')})">
       <span class="cat-tree-icon">📁</span>
       <span class="cat-tree-name">${esc(r.name)}</span>
       <span class="cat-tree-subcount">${r.subcats ? `<span>${r.subcats} подкат.</span>` : '<span style="opacity:.2">—</span>'}</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillListings(${r.id},0,'${esc(r.name)}')"><b>${r.listings}</b> объявл.</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(${r.id},0,'${esc(r.name)}','open')"><b>${r.views}</b> просм.</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillUsers(${r.id},0,'${esc(r.name)}')"><b>${r.viewers}</b> польз.</span>
-      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(${r.id},0,'${esc(r.name)}','contact')"><b>${r.contacts||0}</b> контакт.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillListings(${r.id},0,${jsArg(r.name)})"><b>${r.listings}</b> объявл.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(${r.id},0,${jsArg(r.name)},'open')"><b>${r.views}</b> просм.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillUsers(${r.id},0,${jsArg(r.name)})"><b>${r.viewers}</b> польз.</span>
+      <span class="cat-tree-col cat-drill" onclick="event.stopPropagation();openDrillViews(${r.id},0,${jsArg(r.name)},'contact')"><b>${r.contacts||0}</b> контакт.</span>
       <span class="cat-tree-arrow">›</span>
     </div>`).join('')}</div>`;
 }
@@ -3632,9 +4154,11 @@ function renderListingModal(d) {
     return y && m && day ? `${day}.${m}.${y} ${time.slice(0,5)}` : s;
   };
 
+  const tgUsername = d.contact && /^@[A-Za-z0-9_]{1,32}$/.test(d.contact)
+    ? d.contact.slice(1) : '';
   const contact = d.contact
-    ? (d.contact.startsWith('@')
-        ? `<a href="https://t.me/${d.contact.slice(1)}" target="_blank">${esc(d.contact)}</a>`
+    ? (tgUsername
+        ? `<a href="https://t.me/${encodeURIComponent(tgUsername)}" target="_blank" rel="noopener noreferrer">${esc(d.contact)}</a>`
         : esc(d.contact))
     : '—';
 
@@ -3800,8 +4324,10 @@ function lmStartEdit() {
     bar.id = 'lm-media-add';
     bar.style.cssText = 'display:flex;gap:8px;margin:6px 0 12px';
     const nPhotos = (d.photo_ids || []).length;
+    const photoLimit = ['market','service'].includes(d.type)
+      ? 3 : (['events','release'].includes(d.type) ? 1 : 0);
     bar.innerHTML = `
-      ${nPhotos < 3 ? `<button class="btn btn-sm" style="background:#1a3a6a;color:#7af" onclick="document.getElementById('lm-file-photo').click()">➕ Фото (${nPhotos}/3)</button>` : ''}
+      ${photoLimit && nPhotos < photoLimit ? `<button class="btn btn-sm" style="background:#1a3a6a;color:#7af" onclick="document.getElementById('lm-file-photo').click()">➕ Фото (${nPhotos}/${photoLimit})</button>` : ''}
       <button class="btn btn-sm" style="background:#1a3a6a;color:#7af" onclick="document.getElementById('lm-file-video').click()">🎥 ${d.video_type ? 'Заменить видео' : 'Добавить видео'}</button>
       <span id="lm-upload-status" style="color:#9bc;font-size:12px;align-self:center"></span>
       <input type="file" id="lm-file-photo" accept="image/*" style="display:none" onchange="lmUploadMedia(this, 'photo')">
@@ -3967,6 +4493,10 @@ async function lmSaveEdit() {
     ...(flexUpdate ? {flex: flexUpdate} : {}),
     ...(eventUpdate ? {event: eventUpdate} : {}),
   };
+  body.title = String(body.title ?? '').trim();
+  body.contact = String(body.contact ?? '').trim();
+  if (!body.title) { alert('Название не может быть пустым'); return; }
+  if (!body.contact) { alert('Контакт не может быть пустым'); return; }
   try {
     // Поля релиза: тип, дата, «записано», ссылки, исполнитель, названия треков
     if (d.release) {
@@ -3978,32 +4508,32 @@ async function lmSaveEdit() {
       };
       const aSel = document.getElementById('lm-rel-artist');
       if (aSel && aSel.value) relBody.artist_id = parseInt(aSel.value);
-      const rr = await fetch(`/api/release/${d.id}`, {
-        method: 'PATCH', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(relBody)
-      });
-      if (!rr.ok) throw new Error((await rr.json()).detail || rr.status);
+      const tracks = [];
       for (const inp of document.querySelectorAll('[data-track-id]')) {
         const orig = (d.release.tracks_list || []).find(t => t.id == inp.dataset.trackId);
         if (orig && inp.value.trim() !== orig.title) {
-          await fetch(`/api/release_track/${inp.dataset.trackId}`, {
-            method: 'PATCH', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({title: inp.value.trim()})
-          });
+          tracks.push({id: parseInt(inp.dataset.trackId), title: inp.value.trim()});
         }
       }
+      const rr = await fetch(`/api/release/${d.id}/full`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({...body, release: relBody, tracks})
+      });
+      if (!rr.ok) {
+        let detail = rr.status;
+        try { detail = (await rr.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      openListing(d.id);         // перечитать всё с сервера, включая мету
+      refreshCatalogIfOpen();
+      if (currentTab === 'releases') loadReleases();
+      return;
     }
     const r = await fetch(`/api/listing/${d.id}`, {
       method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
     });
     const saved = await r.json();
     if (!r.ok) throw new Error(saved.detail || r.status);
-    if (d.release) {
-      openListing(d.id);         // перечитать всё с сервера, включая мету
-      refreshCatalogIfOpen();
-      if (currentTab === 'releases') loadReleases();
-      return;
-    }
     // Обновляем локальный объект и перерисовываем
     Object.assign(window._currentListing, {
       title: body.title, descr: body.descr, price: body.price, contact: body.contact,
@@ -4216,7 +4746,7 @@ async function openDrillViews(catId, stype, title, action='open', offset=0) {
 async function anCities(el) {
   const rows = await fetch('/api/analytics/cities').then(r=>r.json());
   if (!rows.length) { el.innerHTML = '<div class="empty">Нет данных по городам</div>'; return; }
-  const TYPE_NAMES = {market:'Барахолка', service:'Услуги', vacancy:'Вакансии', events:'Афиша'};
+  const TYPE_NAMES = {market:'Барахолка', service:'Услуги', vacancy:'Вакансии', events:'Афиша', release:'Релизы'};
   el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
     <thead><tr style="color:#556;font-size:11px;border-bottom:2px solid #1a2050">
       <th style="padding:9px 10px;text-align:left">Город</th>
@@ -4262,12 +4792,26 @@ async function loadAnalytics() {
 </html>
 """
 
+@app.get("/healthz")
+def healthz():
+    with db() as conn:
+        conn.execute("SELECT 1").fetchone()
+    return {"ok": True}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML
 
 if __name__ == "__main__":
-    print("Open: http://localhost:8001")
-    print("Удалённо (Tailscale): http://<tailscale-ip>:8001")
-    # 0.0.0.0 + IP-фильтр выше: пускаем только localhost и Tailscale-сеть
-    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="warning")
+    host = (
+        config_value(_ROOT, "CATEGORY_ADMIN_HOST", "127.0.0.1")
+        or "127.0.0.1"
+    ).strip()
+    if host not in {"127.0.0.1", "localhost", "::1"} and not (_ADMIN_USER and _ADMIN_PASSWORD):
+        raise RuntimeError(
+            "Remote category admin requires CATEGORY_ADMIN_USER and "
+            "CATEGORY_ADMIN_PASSWORD"
+        )
+    print(f"Open: http://{host}:8001")
+    uvicorn.run(app, host=host, port=8001, log_level="warning")

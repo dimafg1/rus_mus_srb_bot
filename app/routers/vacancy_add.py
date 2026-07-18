@@ -57,6 +57,7 @@ from app.routers.utils import (
     clear_bot_messages,
     last_bot_messages,
     safe_edit_or_send,
+    register_bot_messages,
 )
 
 from datetime import datetime
@@ -127,6 +128,20 @@ async def _city_id_by_slug(slug: str) -> int | None:
     async with SessionLocal() as s:
         return (await s.execute(select(City.id).where(City.slug == slug))).scalar_one_or_none()
 
+
+async def _is_vacancy_category(session, category: Category | None) -> bool:
+    """Проверить принадлежность категории дереву вакансий и оборвать циклы."""
+    current = category
+    seen: set[int] = set()
+    while current is not None and current.id not in seen:
+        if current.id == VACANCY_ROOT_CATEGORY_ID:
+            return True
+        seen.add(current.id)
+        if current.parent_id is None:
+            return False
+        current = await session.get(Category, current.parent_id)
+    return False
+
 async def _vacancy_categories_kb_add(city_slug: str, parent_id: int | None) -> InlineKeyboardMarkup:
     """Клавиатура категорий для публикации вакансий (без лишних пунктов) с авто «🔽»."""
     pid = parent_id if parent_id is not None else VACANCY_ROOT_CATEGORY_ID
@@ -164,6 +179,7 @@ def _flex_from_db(raw):
 
 
 router = Router(name="vacancy_add")
+_vacancy_publish_locks: dict[int, asyncio.Lock] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -357,7 +373,7 @@ async def vacancy_preview_and_confirm(m_or_cbmsg, state: FSMContext):
         preview_lines.append(flex_block)
     preview_text = "\n".join(preview_lines)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Опубликовать", callback_data="vac_confirm")],
+        [InlineKeyboardButton(text="✅ Опубликовать", callback_data="vac_publish")],
         [InlineKeyboardButton(text="❌ Отменить", callback_data="vac_cancel")],
     ])
     msg = await m_or_cbmsg.answer(preview_text, reply_markup=kb, parse_mode="HTML")
@@ -439,8 +455,11 @@ async def vacancy_choose_city(cb: CallbackQuery, state: FSMContext):
 
     city_slug = cb.data.split(":", 1)[1]
     async with SessionLocal() as s:
-        city_id = (await s.execute(select(City.id).where(City.slug == city_slug))).scalar_one()
-    await state.update_data(city_id=city_id, city_slug=city_slug)
+        city = (await s.execute(select(City).where(City.slug == city_slug))).scalar_one_or_none()
+    if city is None:
+        await cb.answer("Город не найден.", show_alert=True)
+        return
+    await state.update_data(city_id=city.id, city_slug=city.slug, city_name=city.name)
 
     # базовая клавиатура ДЛЯ ПУБЛИКАЦИИ (только категории, без навигации)
     kb_base = await _vacancy_categories_kb_add(city_slug, parent_id=None)
@@ -457,12 +476,12 @@ async def vacancy_choose_city(cb: CallbackQuery, state: FSMContext):
 
     await safe_edit_or_send(
         cb,
-        f"Город: <b>{city_slug}</b>\nВыберите категорию:",
+        f"Город: <b>{_esc(city.name or city.slug)}</b>\nВыберите категорию:",
         reply_markup=kb,
         parse_mode="HTML",
     )
     await cb.answer()
-    print(f"[vacancy_add.py] handler=vacancy_choose_city chat_id={chat_id} city_slug={city_slug} city_id={city_id}")
+    print(f"[vacancy_add.py] handler=vacancy_choose_city chat_id={chat_id} city_slug={city.slug} city_id={city.id}")
 
 
 
@@ -499,17 +518,24 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
 
     # 3) Парсим колбэк: vac_add_cat:<city_slug>:<cat_id>
-    _, city_slug, cat_id_s = cb.data.split(":", 2)
-    cat_id = int(cat_id_s)
+    try:
+        _, city_slug, cat_id_s = cb.data.split(":", 2)
+        cat_id = int(cat_id_s)
+    except (TypeError, ValueError):
+        await cb.answer("Некорректная категория.", show_alert=True)
+        return
 
     # 4) Грузим детей и родителя
     async with SessionLocal() as s:
+        city = (await s.execute(select(City).where(City.slug == city_slug))).scalar_one_or_none()
+        category = await s.get(Category, cat_id)
+        if city is None or category is None or not await _is_vacancy_category(s, category):
+            await cb.answer("Город или категория больше недоступны.", show_alert=True)
+            return
         children = (await s.execute(
             select(Category).where(Category.parent_id == cat_id)
         )).scalars().all()
-        parent_id = (await s.execute(
-            select(Category.parent_id).where(Category.id == cat_id)
-        )).scalar_one_or_none()
+        parent_id = category.parent_id
 
     # 5А) Есть подкатегории → показываем их
     if children:
@@ -539,7 +565,13 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
         return
 
     # 5Б) Листовая категория → фиксируем и спрашиваем заголовок
-    await state.update_data(category_id=cat_id, city_slug=city_slug)
+    await state.update_data(
+        category_id=cat_id,
+        cat_name=category.name,
+        city_id=city.id,
+        city_name=city.name,
+        city_slug=city.slug,
+    )
 
     # back_to_id нужен для «Назад» на следующих шагах; если корень — «Назад» не рисуем
     back_to_id = parent_id  # None для корня
@@ -723,6 +755,14 @@ async def vacancy_input_title(m: Message, state: FSMContext):
     except Exception:
         pass
 
+    title = (m.text or "").strip()
+    if not title:
+        msg = await m.answer("Заголовок не может быть пустым. Введите заголовок вакансии:")
+        await state.update_data(prompt_id=msg.message_id)
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
+        return
+
     # 1) удалить прошлые «Возврат» и подсказку
     data = await state.get_data()
     for key in ("nav_msg_id", "prompt_id"):
@@ -742,7 +782,6 @@ async def vacancy_input_title(m: Message, state: FSMContext):
     await clear_bot_messages(chat_id, m.bot)
 
     # 3) сохранить заголовок и перейти к описанию
-    title = (m.text or "").strip()
     await state.update_data(title=title)
     await state.set_state(VacForm.descr)
 
@@ -875,9 +914,13 @@ async def vacancy_input_descr(m: Message, state: FSMContext):
 # RU: Публикация → быстрый выбор цены кнопками «Бесплатно / По договоренности».
 #     Удаляем текущую клавиатуру и «Возврат», записываем цену и запускаем тот же
 #     сценарий, что и при ручном вводе цены (VacForm.price, F.text).
-@router.callback_query(F.data.startswith("vac_price_choice:"))
+@router.callback_query(VacForm.price, F.data.regexp(r"^vac_price_choice:(free|deal)$"))
 async def vacancy_price_choice(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
+
+    if await state.get_state() != VacForm.price.state:
+        await cb.answer("Этот шаг публикации уже завершён.", show_alert=True)
+        return
 
     # 1) удалить сообщение с клавиатурой (то, по которому кликнули)
     try:
@@ -1046,7 +1089,26 @@ async def vac_back_to_descr(cb: CallbackQuery, state: FSMContext):
 # ─────────────────────────────────────────────────────────────────────────────
 @router.message(VacForm.price)
 async def vacancy_input_price(m: Message, state: FSMContext):
+    """Финализировать публикацию ровно один раз даже при повторной отправке."""
+    lock = _vacancy_publish_locks.setdefault(m.from_user.id, asyncio.Lock())
+    if lock.locked():
+        await m.answer("Публикуем, пожалуйста, подождите.")
+        return
+    async with lock:
+        if await state.get_state() != VacForm.price.state:
+            return
+        await _vacancy_input_price_locked(m, state)
+
+
+async def _vacancy_input_price_locked(m: Message, state: FSMContext):
     chat_id = m.chat.id
+
+    price_text = (m.text or "").strip()
+    if not price_text:
+        msg = await m.answer("Введите стоимость оплаты или воспользуйтесь кнопкой быстрого выбора.")
+        last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
+        await register_bot_messages(chat_id, [msg.message_id])
+        return
 
     # 0) удалить сообщение пользователя (канон)
     try:
@@ -1065,14 +1127,22 @@ async def vacancy_input_price(m: Message, state: FSMContext):
 
     # 2) забрать данные мастера и сохранить цену
     data = await state.get_data()
-    price_text = (m.text or "").strip()
     await state.update_data(price=price_text)
     data = await state.get_data()
 
     title = (data.get("title") or "").strip()
     descr = (data.get("descr") or "").strip()
-    city_id = int(data["city_id"])
-    cat_id = int(data["category_id"])
+    try:
+        city_id = int(data["city_id"])
+        cat_id = int(data["category_id"])
+    except (KeyError, TypeError, ValueError):
+        await m.answer("Не хватает данных города или категории. Начните публикацию заново.")
+        await state.clear()
+        return
+    if not title or not price_text:
+        await m.answer("Заголовок и стоимость не могут быть пустыми. Начните публикацию заново.")
+        await state.clear()
+        return
 
     # 3) сформировать контакт по умолчанию (как в других разделах)
     username = (m.from_user.username or "").strip()
@@ -1080,34 +1150,51 @@ async def vacancy_input_price(m: Message, state: FSMContext):
 
     # 4) создать и сохранить объявление
     from datetime import datetime
-    async with SessionLocal() as s:
-        city = await s.get(City, city_id)
-        cat  = await s.get(Category, cat_id)
+    try:
+        async with SessionLocal() as s:
+            city = await s.get(City, city_id)
+            cat  = await s.get(Category, cat_id)
+            if city is None or cat is None or not await _is_vacancy_category(s, cat):
+                await m.answer("Город или категория больше не существует. Начните публикацию заново.")
+                await state.clear()
+                return
 
-        l = Listing(
-            city_id=city.id,
-            category_id=cat.id,
-            owner_id=m.from_user.id,
-            title=title,
-            price=price_text,
-            descr=descr,
-            contact=contact,
-            photo_file_id=None,     # фото в вакансиях не используем
-            is_sold=False,
-            created_at=utcnow_naive(),
-            type="vacancy",
-            flex=None,              # доп.поля редактируются ПОСЛЕ публикации
-            extra_category_id1=None,
-            extra_category_id2=None,
-        )
-        ensure_expires_at(l)  # срок жизни 30 дней
-        s.add(l)
-        await s.commit()
-        await s.refresh(l)
+            l = Listing(
+                city_id=city.id,
+                category_id=cat.id,
+                owner_id=m.from_user.id,
+                title=title,
+                price=price_text,
+                descr=descr,
+                contact=contact,
+                photo_file_id=None,     # фото в вакансиях не используем
+                is_sold=False,
+                created_at=utcnow_naive(),
+                type="vacancy",
+                flex=None,              # доп.поля редактируются ПОСЛЕ публикации
+                extra_category_id1=None,
+                extra_category_id2=None,
+            )
+            ensure_expires_at(l)  # срок жизни 30 дней
+            s.add(l)
+            await s.flush()
+            listing_id = l.id
+            await s.commit()
+    except Exception as e:
+        await m.answer("Не удалось сохранить вакансию. Попробуйте ещё раз.")
+        print(f"[vacancy_add.py] vacancy_input_price DB error: {e}")
+        return
+
+    # После успешного commit очищаем FSM до любых необязательных действий.
+    # Поэтому сбой аналитики или Telegram не создаст дубль при повторе.
+    await state.clear()
 
     from app.analytics import log_event
-    await log_event("listing_created", user_id=cb.from_user.id,
-                    section="vacancy", entity_type="listing", entity_id=l.id)
+    try:
+        await log_event("listing_created", user_id=m.from_user.id,
+                        section="vacancy", entity_type="listing", entity_id=listing_id)
+    except Exception as e:
+        print(f"[vacancy_add.py] vacancy_input_price analytics error listing_id={listing_id}: {e}")
 
     # 5) собрать пост-публикационное меню (аналогично Услугам/Барахолке)
     from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -1121,9 +1208,9 @@ async def vacancy_input_price(m: Message, state: FSMContext):
     t_menu = (await get_text("vac_to_menu", "ru")) or "≡ Меню вакансий"
 
     # 1) Редактирование всех полей
-    kb.row(InlineKeyboardButton(text=t_edit, callback_data=f"vacancy_edit_overview:{l.id}"))
-    # 2) К объявлению (унифицированный роутер 'listing:' как в Услугах/Барахолке)
-    kb.row(InlineKeyboardButton(text=t_open, callback_data=f"listing:{l.id}:{city.slug}:{cat.slug}:my"))
+    kb.row(InlineKeyboardButton(text=t_edit, callback_data=f"vacancy_edit_overview:{listing_id}"))
+    # 2) К объявлению (собственный роутер вакансий)
+    kb.row(InlineKeyboardButton(text=t_open, callback_data=f"vac_view:{listing_id}:::my"))
     # 3) Меню вакансий
     kb.row(InlineKeyboardButton(text=t_menu, callback_data="go_isk"))
     # 4) Главное меню (если есть)
@@ -1132,11 +1219,12 @@ async def vacancy_input_price(m: Message, state: FSMContext):
         kb.row(main_btn)
 
     # 6) сообщить пользователю и очистить состояние
-    await m.answer(f"{t_pub}\n\n{t_off}", reply_markup=kb.as_markup(), parse_mode="HTML")
-    await state.clear()
+    msg = await m.answer(f"{t_pub}\n\n{t_off}", reply_markup=kb.as_markup(), parse_mode="HTML")
+    last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
 
     # 7) обязательный debug-print по канонам
-    print(f"[vacancy_add.py] handler=vacancy_input_price published_id={l.id} city_id={city.id} cat_id={cat.id}")
+    print(f"[vacancy_add.py] handler=vacancy_input_price published_id={listing_id} city_id={city.id} cat_id={cat.id}")
 
 
 @router.callback_query(F.data.startswith("vac_flex_select:"), VacForm.flex)
@@ -1172,8 +1260,20 @@ async def vacancy_flex_skip(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@router.callback_query(F.data == "vac_publish")
+@router.callback_query(VacForm.confirm, F.data == "vac_publish")
 async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
+    lock = _vacancy_publish_locks.setdefault(cb.from_user.id, asyncio.Lock())
+    if lock.locked():
+        await cb.answer("Публикуем, пожалуйста, подождите.")
+        return
+    async with lock:
+        if await state.get_state() != VacForm.confirm.state:
+            await cb.answer("Объявление уже опубликовано.")
+            return
+        await _vacancy_publish_locked(cb, state)
+
+
+async def _vacancy_publish_locked(cb: CallbackQuery, state: FSMContext):
     """RU: финальный шаг — коммит в БД и показ меню редактирования/просмотра."""
     chat_id = cb.message.chat.id
 
@@ -1236,15 +1336,20 @@ async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
         listing_id = obj.id
         await s.commit()
 
-    from app.analytics import log_event
-    await log_event("listing_created", user_id=cb.from_user.id,
-                    section="vacancy", entity_type="listing", entity_id=listing_id)
-
+    # Commit завершён: очищаем мастер до аналитики/Telegram, чтобы повторный
+    # callback не создал вторую запись при сбое необязательного шага.
     await state.clear()
+
+    from app.analytics import log_event
+    try:
+        await log_event("listing_created", user_id=cb.from_user.id,
+                        section="vacancy", entity_type="listing", entity_id=listing_id)
+    except Exception as e:
+        print(f"[vacancy_add.py] vacancy_publish analytics error listing_id={listing_id}: {e}")
 
     # 4) Пост-публикационное меню (аналог других разделов)
     buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="✏️ Редактировать объявление", callback_data=f"edit_vacancy_overview:{listing_id}")],
+        [InlineKeyboardButton(text="✏️ Редактировать объявление", callback_data=f"vacancy_edit_overview:{listing_id}")],
         [InlineKeyboardButton(text="🔎 Посмотреть", callback_data=f"vac_view:{listing_id}:::my")],
         [InlineKeyboardButton(text="≡ Меню вакансий", callback_data="go_isk")],
     ]
@@ -1253,7 +1358,10 @@ async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
         buttons.append([main_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await cb.message.answer("✅ Объявление опубликовано.", reply_markup=kb, parse_mode="HTML")
+    msg = await cb.message.answer("✅ Объявление опубликовано.", reply_markup=kb, parse_mode="HTML")
+    last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
+    await cb.answer()
 
     print(f"[vacancy_add.py] handler=vacancy_publish listing_id={listing_id} user_id={cb.from_user.id}")
 

@@ -19,7 +19,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import City, Category, Listing
@@ -34,6 +34,7 @@ from app.routers.utils import (
     sent_photo_messages,
     delete_photo_prompts,
     get_text,
+    register_bot_messages,
 )
 
 # Клавиатуры (как в Барахолке)
@@ -55,12 +56,51 @@ router = Router(name="services_add")
 SERVICES_ROOT_CATEGORY_ID = 80  # корень дерева категорий «Услуги»
 
 # ========== КЭШИ для альбомов (своё пространство имён!) ==========
-media_group_cache: dict[int, list[str]] = {}
-media_group_tasks: dict[int, asyncio.Task] = {}
-media_group_wait_msg: dict[int, int] = {}
+AlbumKey = tuple[int, str]
+media_group_cache: dict[AlbumKey, list[str]] = {}
+media_group_tasks: dict[AlbumKey, asyncio.Task] = {}
+media_group_wait_msg: dict[AlbumKey, int] = {}
+
+
+async def _clear_album_cache(chat_id: int, bot=None) -> None:
+    """Отменить только задачи текущего чата, не затрагивая других пользователей."""
+    current = asyncio.current_task()
+    keys = {key for key in media_group_cache if key[0] == chat_id}
+    keys.update(key for key in media_group_tasks if key[0] == chat_id)
+    keys.update(key for key in media_group_wait_msg if key[0] == chat_id)
+    wait_ids: list[int] = []
+    for key in keys:
+        task = media_group_tasks.pop(key, None)
+        if task and task is not current and not task.done():
+            task.cancel()
+        media_group_cache.pop(key, None)
+        wait_id = media_group_wait_msg.pop(key, None)
+        if isinstance(wait_id, int) and wait_id > 0:
+            wait_ids.append(wait_id)
+    if bot is not None:
+        for wait_id in wait_ids:
+            try:
+                await bot.delete_message(chat_id, wait_id)
+            except Exception:
+                pass
 
 # RU: фиксируем и чистим пользовательские медиа-сообщения (фото/видео/URL)
 _user_media_msgs = defaultdict(list)
+_service_publish_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+async def _is_services_category(session, category: Category | None) -> bool:
+    """Проверить, что категория действительно находится в дереве «Услуги»."""
+    current = category
+    seen: set[int] = set()
+    while current is not None and current.id not in seen:
+        if current.id == SERVICES_ROOT_CATEGORY_ID:
+            return True
+        seen.add(current.id)
+        if current.parent_id is None:
+            return False
+        current = await session.get(Category, current.parent_id)
+    return False
 
 async def _remember_and_delete_user_media(msg: Message):
     """Запомнить и удалить пользовательское медиа/текст (с URL-превью)."""
@@ -148,6 +188,7 @@ def _photo_skip_kb() -> InlineKeyboardMarkup:
 async def service_start(cb: CallbackQuery, state: FSMContext):
     """Старт публикации услуги: выбор города (как в Барахолке)."""
     await clear_bot_messages(cb.message.chat.id, cb.bot)
+    await _clear_album_cache(cb.message.chat.id, cb.bot)
     try: await cb.message.delete()
     except Exception: pass
     await state.clear()
@@ -176,6 +217,7 @@ async def service_start(cb: CallbackQuery, state: FSMContext):
     msg = await cb.message.answer(header, reply_markup=kb)
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
+    await cb.answer()
     print(f"[services_add.py] service_start ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}")
 
 
@@ -185,14 +227,18 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
     try:
         city_id = int(cb.data.split(":")[3])
     except Exception:
-        city_id = 1
+        await cb.answer("Некорректный город.", show_alert=True)
+        return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     try: await cb.message.delete()
     except Exception: pass
 
     async with SessionLocal() as s:
-        city = (await s.execute(select(City).where(City.id == city_id))).scalar_one()
+        city = (await s.execute(select(City).where(City.id == city_id))).scalar_one_or_none()
+        if city is None:
+            await cb.answer("Город не найден.", show_alert=True)
+            return
         cats = (await s.execute(
             select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(Category.name)
         )).scalars().all()
@@ -212,6 +258,7 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
     msg = await cb.message.answer(text, reply_markup=kb)
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
+    await cb.answer()
     print(f"[services_add.py] services_add_select_city ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id}")
 
 
@@ -222,19 +269,25 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
         _, _, _, cat_id_str, city_id_str = cb.data.split(":")
         cat_id = int(cat_id_str); city_id = int(city_id_str)
     except Exception:
-        cat_id = SERVICES_ROOT_CATEGORY_ID; city_id = 1
+        await cb.answer("Некорректная категория.", show_alert=True)
+        return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     try: await cb.message.delete()
     except Exception: pass
 
     async with SessionLocal() as s:
-        cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
-        cnt = (await s.scalar(select(func.count()).select_from(Category).where(Category.parent_id == cat_id))) or 0
+        city = await s.get(City, city_id)
+        cat = await s.get(Category, cat_id)
+        if city is None or cat is None or not await _is_services_category(s, cat):
+            await cb.answer("Город или категория больше недоступны.", show_alert=True)
+            return
+        cats = (await s.execute(
+            select(Category).where(Category.parent_id == cat_id).order_by(Category.name)
+        )).scalars().all()
 
-    if cnt > 0:
-        async with SessionLocal() as s:
-            cats = (await s.execute(select(Category).where(Category.parent_id == cat_id).order_by(Category.name))).scalars().all()
+    await state.update_data(city_id=city.id, city_name=city.name, city_slug=city.slug)
+    if cats:
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"services:add:cat:{c.id}:{city_id}")] for c in cats]
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"services:add:city:{city_id}")])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -243,12 +296,14 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
         msg = await cb.message.answer(text, reply_markup=kb)
         last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
         await register_bot_messages(cb.message.chat.id, [msg.message_id])
-        print(f"[services_add.py] services_add_select_category → deepen ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id} parent_id={cat_id} children={cnt}")
+        await cb.answer()
+        print(f"[services_add.py] services_add_select_category → deepen ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id} parent_id={cat_id} children={len(cats)}")
         return
 
     await state.update_data(cat_id=cat.id, cat_name=cat.name)
     await state.set_state(ServiceForm.title)
     await _send_with_services_nav(cb.message, "Введите заголовок объявления (1 строка):")
+    await cb.answer()
     print(f"[services_add.py] services_add_select_category → leaf ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id} category_id={cat_id}")
 
 
@@ -267,6 +322,9 @@ async def service_title_set(m: Message, state: FSMContext):
         pass
 
     title = (m.text or "").strip()
+    if not title:
+        await _send_with_services_nav(m, "Заголовок не может быть пустым. Введите заголовок объявления:")
+        return
     await state.update_data(title=title)
     await state.set_state(ServiceForm.descr)
 
@@ -371,12 +429,22 @@ async def service_price_set(m: Message, state: FSMContext):
         pass
 
     raw = (m.text or "").strip()
-    # здесь оставьте вашу валидацию цены/нормализацию, если есть
+    if not raw:
+        await _send_with_services_nav(
+            m,
+            "Введите стоимость услуг или нажмите «Договорная».",
+            reply_markup=_deal_price_kb(),
+        )
+        return
+
     await state.update_data(price=raw)
+    # Без смены состояния присланное фото не попадало в service_photo и мастер
+    # выглядел зависшим после ручного ввода цены.
+    await state.set_state(ServiceForm.photo)
     await state.update_data(photo_prompt_msgs=[])
     await _send_photo_prompt(m, 0, state)
 
-    print(f"[services_add.py] service_price_set ✓ | chat_id={chat_id} user_id={m.from_user.id} price={price!r}")
+    print(f"[services_add.py] service_price_set ✓ | chat_id={chat_id} user_id={m.from_user.id} price={raw!r}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -444,24 +512,25 @@ async def _send_photo_prompt(m: Message, photo_count: int, state: FSMContext, la
 async def service_photo(m: Message, state: FSMContext):
     """Обработка фото на шаге: одиночные и media_group (альбом)."""
     if m.media_group_id:
-        gid = m.media_group_id
-        media_group_cache.setdefault(gid, []).append(m.photo[-1].file_id)
+        key: AlbumKey = (m.chat.id, str(m.media_group_id))
+        media_group_cache.setdefault(key, []).append(m.photo[-1].file_id)
         await _remember_and_delete_user_media(m)
 
 
         # Показываем «ожидалку» ОДИН раз на альбом.
         # ВАЖНО: сначала ставим плейсхолдер, потом await — чтобы не получить гонку и дубликат.
-        if gid not in media_group_wait_msg:
-            media_group_wait_msg[gid] = -1  # плейсхолдер, предотвращает двойной показ
+        if key not in media_group_wait_msg:
+            media_group_wait_msg[key] = -1  # плейсхолдер, предотвращает двойной показ
             wait_text = (await get_text('sell_wait_photos', 'ru')) \
                         or "⏳ Пожалуйста, подождите — загружаем фотографии…"
             msg = await m.answer(wait_text)
-            media_group_wait_msg[gid] = msg.message_id
+            media_group_wait_msg[key] = msg.message_id
 
         # Переинициализируем задачу финализации (аналог Барахолки)
-        if gid in media_group_tasks and not media_group_tasks[gid].done():
-            media_group_tasks[gid].cancel()
-        media_group_tasks[gid] = asyncio.create_task(_finalize_album(m, state, gid))
+        previous = media_group_tasks.get(key)
+        if previous and not previous.done():
+            previous.cancel()
+        media_group_tasks[key] = asyncio.create_task(_finalize_album(m, state, key))
         return
 
 
@@ -487,17 +556,24 @@ async def service_photo(m: Message, state: FSMContext):
 
 # RU: финализация альбома — собираем file_id, убираем «ожидалку»,
 #     удаляем предыдущие подсказки, показываем следующий шаг.
-async def _finalize_album(m: Message, state: FSMContext, gid: str | int):
+async def _finalize_album(m: Message, state: FSMContext, key: AlbumKey):
     try:
         # даём Telegram доклеить все части альбома
         await asyncio.sleep(0.6)
-    except Exception:
-        pass
+    except asyncio.CancelledError:
+        # Выход из мастера/новый черновик отменяет отложенную финализацию.
+        raise
+
+    # Пользователь мог уйти через общую кнопку «Главное меню», пока Telegram
+    # собирал альбом. Не воскрешаем очищенный FSM и старый экран мастера.
+    if await state.get_state() != ServiceForm.photo.state:
+        await _clear_album_cache(m.chat.id, m.bot)
+        return
 
     # забираем накопленные фото для этого альбома
-    ids = media_group_cache.pop(gid, [])
+    ids = media_group_cache.pop(key, [])
     # убрать «ожидалку», если показывали
-    wait_mid = media_group_wait_msg.pop(gid, None)
+    wait_mid = media_group_wait_msg.pop(key, None)
     if wait_mid and isinstance(wait_mid, int) and wait_mid > 0:
         try:
             await m.bot.delete_message(m.chat.id, wait_mid)
@@ -524,19 +600,20 @@ async def _finalize_album(m: Message, state: FSMContext, gid: str | int):
     else:
         await _send_photo_prompt(m, len(photos), state)
 
-    print(f"[services_add.py] _finalize_album ✓ | chat_id={m.chat.id} user_id={m.from_user.id} photos={len(photos)} gid={gid}")
+    media_group_tasks.pop(key, None)
+    print(f"[services_add.py] _finalize_album ✓ | chat_id={m.chat.id} user_id={m.from_user.id} photos={len(photos)} gid={key[1]}")
 
 
 @router.message(ServiceForm.photo)
 async def service_not_photo(m: Message, state: FSMContext):
     """Защита от неверного типа контента на шаге фото."""
-    if m.photo or getattr(m, "video", None):
+    if m.photo:
         return
     btn = await get_common_menu_button('delete_message', 'ru')
     kb = InlineKeyboardMarkup(inline_keyboard=[[btn]] if btn else [])
     await m.answer(
         (await get_text('sell_not_photo', 'ru')) or
-        "Пожалуйста, отправляйте только фото (или видео).",
+        "Пожалуйста, отправляйте только фото.",
         reply_markup=kb
     )
     print(f"[services_add.py] service_not_photo ✓ | chat_id={m.chat.id} user_id={m.from_user.id}")
@@ -546,6 +623,7 @@ async def service_not_photo(m: Message, state: FSMContext):
 async def service_skip_photo(cb: CallbackQuery, state: FSMContext):
     """Пропуск шага фото → предпросмотр и подтверждение."""
     await delete_photo_prompts(cb.message, state)
+    await _clear_album_cache(cb.message.chat.id, cb.bot)
     await _clear_user_media(cb.message.chat.id, cb.bot)
 
     await _preview_and_confirm(cb.message, state)
@@ -570,6 +648,7 @@ async def _text(key: str, lang: str, default: str) -> str:
 async def service_cancel_photo(cb: CallbackQuery, state: FSMContext):
     """Отмена публикации услуги на шаге фото: подчистка всего и выход в главное меню."""
     chat_id = cb.message.chat.id
+    await _clear_album_cache(chat_id, cb.bot)
 
     # 0) Удаляем сообщение, по которому нажали
     try:
@@ -638,13 +717,13 @@ async def _preview_and_confirm(m: Message, state: FSMContext):
     data = await state.get_data()
     photos = data.get("photos", [])
 
-    header = f"<b>{data['city_name']} → {data['cat_name']}</b>\n"
+    header = f"<b>{escape(str(data['city_name']))} → {escape(str(data['cat_name']))}</b>\n"
 
     # Порядок: Название → Описание → Стоимость услуг
-    title_line = f"{data['title']}".strip()
-    descr_line = (data.get('descr') or "").strip()
+    title_line = escape(str(data['title']).strip())
+    descr_line = escape((data.get('descr') or "").strip())
     price_label = (await get_text('service_price', 'ru')) or (await get_text('listing_price','ru')) or "Стоимость услуг"
-    price_line = f"{price_label}: {data.get('price', '')}".strip()
+    price_line = f"{escape(str(price_label))}: {escape(str(data.get('price', '')))}".strip()
 
     # Собираем список строк (без пустых) и добавляем их к header через перенос строк.
     lines = []
@@ -682,13 +761,25 @@ async def _preview_and_confirm(m: Message, state: FSMContext):
 
 @router.callback_query(ServiceForm.confirm, F.data == "sell_ok")
 async def service_ok(cb: CallbackQuery, state: FSMContext):
+    """Не допускаем параллельную публикацию двойным нажатием кнопки."""
+    lock = _service_publish_locks[cb.from_user.id]
+    if lock.locked():
+        await cb.answer("Публикуем, пожалуйста, подождите.")
+        return
+    async with lock:
+        # Второй update мог попасть в диспетчер до очистки FSM первым update.
+        if await state.get_state() != ServiceForm.confirm.state:
+            await cb.answer("Объявление уже опубликовано.")
+            return
+        await _service_ok_locked(cb, state)
+
+
+async def _service_ok_locked(cb: CallbackQuery, state: FSMContext):
     """Сохраняем Listing (type=service), показываем экран «Опубликовано!» и кнопки."""
     chat_id = cb.message.chat.id
 
-    # Сброс временных кешей альбома
-    for d in (media_group_cache, media_group_tasks, media_group_wait_msg):
-        try: d.clear()
-        except Exception: pass
+    # Сброс временных кешей альбома только для текущего пользователя.
+    await _clear_album_cache(chat_id, cb.bot)
 
     data = await state.get_data()
     # обязательные поля
@@ -698,11 +789,19 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
             print(f"[services_add.py] service_ok | MISSING {k} | data_keys={list(data.keys())}")
             return
 
+    # Транзакция БД отделена от отправки интерфейса: если Telegram временно
+    # недоступен после commit, сохранённая услуга не должна считаться ошибкой и
+    # повторный клик не должен создавать дубль.
     try:
         async with SessionLocal() as s:
+            city = await s.get(City, int(data["city_id"]))
+            category = await s.get(Category, int(data["cat_id"]))
+            if city is None or category is None or not await _is_services_category(s, category):
+                await cb.answer("Город или категория больше недоступны.", show_alert=True)
+                return
             l = Listing(
-                city_id   = int(data["city_id"]),
-                category_id = int(data["cat_id"]),
+                city_id   = city.id,
+                category_id = category.id,
                 owner_id  = cb.from_user.id,
                 title     = data["title"],
                 price     = data["price"],
@@ -722,33 +821,38 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
             ensure_expires_at(l)  # срок жизни 30 дней
 
             s.add(l)
+            await s.flush()
+            listing_id = l.id
             await s.commit()
-            await s.refresh(l)
 
-            from app.analytics import log_event
-            await log_event("listing_created", user_id=cb.from_user.id,
-                            section="services", entity_type="listing", entity_id=l.id)
+    except Exception as e:
+        await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
+        print(f"[services_add.py] service_ok | DB ERROR {e}")
+        return
 
-            await state.update_data(listing_id=l.id)
+    await state.clear()
 
-            # Низ: «Услуги» + «Главное меню»
-            services_btn = await get_common_menu_button('go_services', 'ru')
-            main_btn     = await get_common_menu_button('main_menu',   'ru')
+    try:
+        from app.analytics import log_event
+        await log_event("listing_created", user_id=cb.from_user.id,
+                        section="services", entity_type="listing", entity_id=listing_id)
+    except Exception as e:
+        print(f"[services_add.py] service_ok | analytics error listing_id={listing_id}: {e}")
 
-            # Верхние действия
-            city = (await s.execute(select(City).where(City.id == l.city_id))).scalar_one()
-            cat  = (await s.execute(select(Category).where(Category.id == l.category_id))).scalar_one()
-
+    try:
         await clear_bot_messages(chat_id, cb.bot)
         await _clear_user_media(chat_id, cb.bot)
+
+        services_btn = await get_common_menu_button('go_services', 'ru')
+        main_btn = await get_common_menu_button('main_menu', 'ru')
 
 
         text_pub   = (await get_text('sell_published', 'ru')) or "✅ Объявление опубликовано!"
         text_extra = (await get_text('sell_extras_offer', 'ru')) or "При желании укажите дополнительные сведения для этой категории:"
 
         rows = [
-            [InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"service_edit_overview:{l.id}")],
-            [InlineKeyboardButton(text="📄 К объявлению", callback_data=f"listing:{l.id}:{city.slug}:{cat.slug}:my")],
+            [InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"service_edit_overview:{listing_id}")],
+            [InlineKeyboardButton(text="📄 К объявлению", callback_data=f"sv:item:{listing_id}:{l.city_id}:{l.category_id}:m")],
         ]
         nav = []
         if services_btn:
@@ -764,12 +868,14 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
         await register_bot_messages(chat_id, [msg.message_id])
 
         await cb.answer()
-        print(f"[services_add.py] service_ok ✓ | SAVED listing_id={l.id} | chat_id={chat_id} user_id={cb.from_user.id} msg_id={msg.message_id}")
+        print(f"[services_add.py] service_ok ✓ | SAVED listing_id={listing_id} | chat_id={chat_id} user_id={cb.from_user.id} msg_id={msg.message_id}")
 
     except Exception as e:
-        await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
-        await cb.message.answer(f"❌ Не удалось сохранить объявление.\n<code>{e}</code>", parse_mode="HTML")
-        print(f"[services_add.py] service_ok | ERROR {e}")
+        try:
+            await cb.answer("Услуга сохранена, но экран не удалось обновить.", show_alert=True)
+        except Exception:
+            pass
+        print(f"[services_add.py] service_ok | UI ERROR listing_id={listing_id}: {e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Отмена на этапе подтверждения (как в Барахолке)
@@ -781,12 +887,7 @@ async def service_cancel_confirm(cb: CallbackQuery, state: FSMContext):
     Полностью сбрасывает мастер создания услуги и показывает сообщение об отмене.
     """
     chat_id = cb.message.chat.id
-    # Очистим все кеши альбома (аналогично service_cancel_photo)
-    for d in (media_group_cache, media_group_tasks, media_group_wait_msg):
-        try:
-            d.clear()
-        except Exception:
-            pass
+    await _clear_album_cache(chat_id, cb.bot)
     # Очищаем все сообщения бота в чате
     await clear_bot_messages(chat_id, cb.message.bot)
     try:
@@ -822,6 +923,7 @@ async def service_cancel_confirm(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "services:back")
 async def services_back(cb: CallbackQuery, state: FSMContext):
     """Кнопка «Назад» со своих шагов публикации (без конфликтов с Барахолкой)."""
+    await _clear_album_cache(cb.message.chat.id, cb.bot)
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     try: await cb.message.delete()
     except Exception: pass
@@ -833,11 +935,13 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
     if cur == ServiceForm.descr.state:
         await state.set_state(ServiceForm.title)
         await _send_with_services_nav(cb.message, "Введите заголовок объявления (1 строка):")
+        await cb.answer()
         print(f"[services_add.py] services_back → title ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
 
     if cur == ServiceForm.price.state:
         await state.set_state(ServiceForm.descr)
         await _send_with_services_nav(cb.message, "Опишите услугу")
+        await cb.answer()
         print(f"[services_add.py] services_back → descr ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
 
     if cur == ServiceForm.photo.state:
@@ -847,6 +951,7 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
             "Введите стоимость (прейскурант) услуг\nили нажмите «Договорная».",
             reply_markup=_deal_price_kb()
         )
+        await cb.answer()
         print(f"[services_add.py] services_back → price ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
 
     if cur == ServiceForm.confirm.state:
@@ -856,6 +961,7 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
         cnt = len((data.get("photos") or []))
         await state.update_data(photo_prompt_msgs=[])
         await _send_photo_prompt(cb.message, cnt, state)
+        await cb.answer()
         print(f"[services_add.py] services_back → photo ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
 
     # Возврат к списку категорий
@@ -871,4 +977,5 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"services:add:city:{city_id}")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await safe_edit_or_send(cb, "Выберите категорию", reply_markup=kb)
+    await cb.answer()
     print(f"[services_add.py] services_back → categories ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id}")

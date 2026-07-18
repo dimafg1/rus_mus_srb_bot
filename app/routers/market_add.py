@@ -45,7 +45,6 @@ from app.routers.utils import (
     sent_photo_messages,
 )
 
-import sys; print("PYTHONPATH:", sys.path)
 from app.routers.utils import safe_edit_or_send
 import json
 
@@ -57,15 +56,40 @@ from app.routers.utils_kb import grid3
 
 
 
-print("my_listing_messages:", type(my_listing_messages))
 
 
 router = Router(name="market_addl")
 
 # ========== КЭШИ для альбомов ==========
-media_group_cache = {}
-media_group_tasks = {}
-media_group_wait_msg = {}
+# Telegram не гарантирует уникальность media_group_id между разными чатами,
+# поэтому все временные данные изолированы ключом (chat_id, media_group_id).
+AlbumKey = tuple[int, str]
+media_group_cache: dict[AlbumKey, list[str]] = {}
+media_group_tasks: dict[AlbumKey, asyncio.Task | None] = {}
+media_group_wait_msg: dict[AlbumKey, int] = {}
+
+
+async def _clear_market_album_cache(chat_id: int, bot=None) -> None:
+    """Отменить незавершённые альбомы только текущего чата."""
+    current = asyncio.current_task()
+    keys = {key for key in media_group_cache if key[0] == chat_id}
+    keys.update(key for key in media_group_tasks if key[0] == chat_id)
+    keys.update(key for key in media_group_wait_msg if key[0] == chat_id)
+    wait_ids: list[int] = []
+    for key in keys:
+        task = media_group_tasks.pop(key, None)
+        if task and task is not current and not task.done():
+            task.cancel()
+        media_group_cache.pop(key, None)
+        wait_id = media_group_wait_msg.pop(key, None)
+        if isinstance(wait_id, int) and wait_id > 0:
+            wait_ids.append(wait_id)
+    if bot is not None:
+        for wait_id in wait_ids:
+            try:
+                await bot.delete_message(chat_id, wait_id)
+            except Exception:
+                pass
 
 # RU: фиксируем и чистим пользовательские медиа-сообщения (фото/видео/URL)
 _user_media_msgs = defaultdict(list)
@@ -347,6 +371,8 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lan
 @router.message(Command(commands=["sell"]))
 async def cmd_sell(m: Message, state: FSMContext):
     await clear_bot_messages(m.chat.id, m.bot)
+    await _clear_market_album_cache(m.chat.id, m.bot)
+    await state.clear()
     async with SessionLocal() as s:
         cities = (await s.execute(select(City))).scalars().all()
     kb = await cities_inline(cities)
@@ -367,6 +393,8 @@ async def sell_start_button(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await clear_bot_messages(chat_id, cb.bot)
+    await _clear_market_album_cache(chat_id, cb.bot)
+    await state.clear()
     async with SessionLocal() as s:
         cities = (await s.execute(select(City))).scalars().all()
     header = await get_text('sell_choose_city', 'ru') or "Create a listing.\nFirst, choose a city:"
@@ -564,18 +592,20 @@ async def sell_price(m: Message, state: FSMContext):
 @router.message(Sell.photo, F.photo)
 async def sell_photo(m: Message, state: FSMContext):
     if m.media_group_id:
-        group_id = m.media_group_id
-        if group_id not in media_group_cache:
-            media_group_cache[group_id] = []
-        media_group_cache[group_id].append(m.photo[-1].file_id)
+        key: AlbumKey = (m.chat.id, str(m.media_group_id))
+        if key not in media_group_cache:
+            media_group_cache[key] = []
+        media_group_cache[key].append(m.photo[-1].file_id)
         await _remember_and_delete_user_media(m)
 
-        if group_id not in media_group_tasks:
-            media_group_tasks[group_id] = None
+        if key not in media_group_tasks:
+            # Плейсхолдер ставим до первого await, иначе две части альбома
+            # могут одновременно создать две задачи финализации.
+            media_group_tasks[key] = None
             template = await get_text('sell_wait_photos', 'ru') or "⏳ Please wait — uploading photos…"
             wait_msg = await m.answer(template)
-            media_group_wait_msg[group_id] = wait_msg.message_id
-            media_group_tasks[group_id] = asyncio.create_task(finalize_album(m, state, group_id))
+            media_group_wait_msg[key] = wait_msg.message_id
+            media_group_tasks[key] = asyncio.create_task(finalize_album(m, state, key))
         return
     data = await state.get_data()
     photos = data.get("photos", []) or []
@@ -594,11 +624,19 @@ async def sell_photo(m: Message, state: FSMContext):
         await send_photo_prompt(m, len(photos), state)
 
 # ================== ФИНАЛИЗАЦИЯ АЛЬБОМА ==================
-async def finalize_album(m: Message, state: FSMContext, group_id):
-    await asyncio.sleep(1.5)
+async def finalize_album(m: Message, state: FSMContext, key: AlbumKey):
+    try:
+        await asyncio.sleep(1.5)
+    except asyncio.CancelledError:
+        raise
 
-    album_photos = media_group_cache.pop(group_id, [])
-    media_group_tasks.pop(group_id, None)
+    # Общая навигация могла очистить FSM, пока Telegram собирал альбом.
+    if await state.get_state() != Sell.photo.state:
+        await _clear_market_album_cache(m.chat.id, m.bot)
+        return
+
+    album_photos = media_group_cache.pop(key, [])
+    media_group_tasks.pop(key, None)
 
     data = await state.get_data()
     photos = data.get("photos", []) or []
@@ -608,7 +646,7 @@ async def finalize_album(m: Message, state: FSMContext, group_id):
     photos = photos[:3]
     await state.update_data(photos=photos)
 
-    wait_msg_id = media_group_wait_msg.pop(group_id, None)
+    wait_msg_id = media_group_wait_msg.pop(key, None)
     if wait_msg_id:
         try:
             await m.bot.delete_message(m.chat.id, wait_msg_id)
@@ -864,12 +902,8 @@ async def preview_and_confirm(m: Message, state: FSMContext):
 async def sell_ok(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
 
-    # Подчистим временные кеши альбома (безопасно)
-    for d in (media_group_cache, media_group_tasks, media_group_wait_msg):
-        try:
-            d.clear()
-        except Exception:
-            pass
+    # Подчистим временные кеши альбома только текущего пользователя.
+    await _clear_market_album_cache(chat_id, cb.bot)
 
     data = await state.get_data()
     # Жёсткая проверка обязательных полей
@@ -976,8 +1010,7 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(Sell.confirm, F.data == "sell_cancel")
 async def sell_cancel(cb: CallbackQuery, state: FSMContext):
-    for d in (media_group_cache, media_group_tasks, media_group_wait_msg):
-        d.clear()
+    await _clear_market_album_cache(cb.message.chat.id, cb.bot)
     await state.clear()
     # Текст берём из БД, если нет — английский дефолт
     cancel_text = (await get_text('sell_cancelled', 'ru')) or "❌ Listing creation cancelled."

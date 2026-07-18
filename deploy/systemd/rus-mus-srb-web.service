@@ -1,0 +1,25 @@
+[Unit]
+Description=Rus Mus Srb signed redirects and media proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rusmus
+Group=rusmus
+WorkingDirectory=/opt/rus_mus_srb_bot
+EnvironmentFile=/etc/rus-mus-srb-bot/bot.env
+Environment=PYTHONUNBUFFERED=1
+# Signed contact/media tokens are query parameters; do not copy them to journal.
+ExecStart=/opt/rus_mus_srb_bot/.venv/bin/uvicorn app.web.app:app --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rus-mus-srb-bot /var/log/rus-mus-srb-bot
+
+[Install]
+WantedBy=multi-user.target

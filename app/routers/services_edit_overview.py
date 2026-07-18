@@ -13,6 +13,8 @@ from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
 import json
 import re
+from html import escape as html_escape
+from urllib.parse import urlsplit
 
 from app.database import SessionLocal
 from app.models import Listing, City, Category
@@ -93,10 +95,76 @@ def _fmt(v):
     if v is None or v == "" or (isinstance(v, (list, dict)) and not v):
         return "<i>—</i>"
     if isinstance(v, list):
-        return f"<i>{', '.join(map(str, v))}</i>"
+        return f"<i>{html_escape(', '.join(map(str, v)))}</i>"
     if isinstance(v, dict):
-        return f"<i>{json.dumps(v, ensure_ascii=False)}</i>"
-    return f"<i>{str(v)}</i>"
+        return f"<i>{html_escape(json.dumps(v, ensure_ascii=False))}</i>"
+    return f"<i>{html_escape(str(v))}</i>"
+
+
+async def _owned_service_in_session(s, listing_id: int, user_id: int) -> Listing | None:
+    """Вернуть только принадлежащую пользователю запись типа service."""
+    return (await s.execute(
+        select(Listing).where(
+            Listing.id == listing_id,
+            Listing.owner_id == user_id,
+            Listing.type == "service",
+        )
+    )).scalar_one_or_none()
+
+
+async def _authorize_service_callback(cb: CallbackQuery, listing_id: int) -> bool:
+    async with SessionLocal() as s:
+        listing = await _owned_service_in_session(s, listing_id, cb.from_user.id)
+    if listing is None:
+        await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+        return False
+    return True
+
+
+async def _service_extra_field_def(s, listing: Listing, key: str) -> dict | None:
+    category = await s.get(Category, listing.category_id)
+    try:
+        defs = json.loads((category.fields or "[]") if category else "[]")
+    except Exception:
+        defs = []
+    if not isinstance(defs, list):
+        return None
+    return next((
+        field for field in defs if isinstance(field, dict)
+        and str(field.get("key", "")).strip().lower() == key
+    ), None)
+
+
+async def _owned_service_extra_field(
+    s,
+    listing_id: int,
+    user_id: int,
+    key: str,
+    expected_type: str,
+) -> Listing | None:
+    listing = await _owned_service_in_session(s, listing_id, user_id)
+    if listing is None:
+        return None
+    fdef = await _service_extra_field_def(s, listing, key)
+    if str((fdef or {}).get("type", "")).strip().lower() != expected_type:
+        return None
+    return listing
+
+
+def _valid_http_url(value: str) -> bool:
+    raw = value.strip()
+    if not raw or any(ord(ch) < 33 for ch in raw) or any(ch in raw for ch in {'"', "'", "<", ">", "\\"}):
+        return False
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 # Короткое RU-пояснение: нормализовать ввод согласно типу flex-поля.
 def _normalize_value_for_type(raw, ftype: str):
@@ -183,8 +251,8 @@ def _build_overview_text(listing: Listing, city: City | None, cat: Category | No
     """Вернуть текст «шапки» + список текущих значений всех полей (title/descr/price + flex), с доп. отступами."""
     lines = []
     lines.append("🛠️ <b>Редактирование объявления</b>")
-    if city: lines.append(f"Город: {city.name}")
-    if cat:  lines.append(f"Категория: {cat.name}")
+    if city: lines.append(f"Город: {html_escape(city.name or '')}")
+    if cat:  lines.append(f"Категория: {html_escape(cat.name or '')}")
     lines.append("")
 
     # Порядок: Заголовок → Описание → Стоимость услуг
@@ -213,14 +281,14 @@ def _build_overview_text(listing: Listing, city: City | None, cat: Category | No
                 low = cur.lower()
                 if "http" in low or "://" in cur:
                     # Печатаем сам URL
-                    lines.append(f"<b>{label}:</b> <i>{cur}</i>")
+                    lines.append(f"<b>{html_escape(str(label))}:</b> <i>{html_escape(cur)}</i>")
                 else:
                     # file_id не раскрываем
-                    lines.append(f"<b>{label}:</b> <i>добавлено</i>")
+                    lines.append(f"<b>{html_escape(str(label))}:</b> <i>добавлено</i>")
             else:
-                lines.append(f"<b>{label}:</b> <i>—</i>")
+                lines.append(f"<b>{html_escape(str(label))}:</b> <i>—</i>")
         else:
-            lines.append(f"<b>{label}:</b> { _fmt(cur) }")
+            lines.append(f"<b>{html_escape(str(label))}:</b> { _fmt(cur) }")
 
         lines.append("")
 
@@ -350,7 +418,7 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
 
     rows.append([InlineKeyboardButton(
         text="⬅️ Назад к объявлению",
-        callback_data=f"sv:item:{listing_id}:{listing.city_id}:{listing.category_id}"
+        callback_data=f"sv:item:{listing_id}:{listing.city_id}:{listing.category_id}:m"
     )])
 
     # 6) сначала показываем фото, потом карточку редактирования
@@ -405,19 +473,6 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
     )
 
 
-def _allow_extra_for_category(cat: Category) -> bool:
-    """Читаем из category.fields флаг allow_extra_categories (opt-in)."""
-    try:
-        data = json.loads(cat.fields or "{}")
-        return bool(data.get("allow_extra_categories"))
-    except Exception:
-        return False
-
-def _extra_used(lst: Listing) -> int:
-    """Сколько слотов доп. категорий занято у объявления (0..2)."""
-    return int(bool(lst.extra_category_id1)) + int(bool(lst.extra_category_id2))
-
-
 # -----------------------------------------------------------------------------
 # Точки входа (включая алиасы)
 # -----------------------------------------------------------------------------
@@ -434,6 +489,8 @@ async def service_edit_overview(cb: CallbackQuery):
         await cb.answer("Некорректный идентификатор.", show_alert=True)
         print(f"[services_edit_overview.py] service_edit_overview ✗ bad_id | data={cb.data}")
         return
+    if not await _authorize_service_callback(cb, listing_id):
+        return
     await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
     await cb.answer()
     _pp("services_edit_overview.py", "service_edit_overview", chat_id=chat_id, user_id=cb.from_user.id, listing_id=listing_id, msg_id=cb.message.message_id)
@@ -449,6 +506,8 @@ async def services_edit_overview_alias(cb: CallbackQuery):
         await cb.answer("Некорректный идентификатор.", show_alert=True)
         print(f"[services_edit_overview.py] services_edit_overview_alias ✗ bad_id | data={cb.data}")
         return
+    if not await _authorize_service_callback(cb, listing_id):
+        return
     await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
     await cb.answer()
     _pp("services_edit_overview.py", "services_edit_overview_alias", chat_id=chat_id, user_id=cb.from_user.id, listing_id=listing_id, msg_id=cb.message.message_id)
@@ -462,6 +521,8 @@ async def sv_edit_alias(cb: CallbackQuery):
     if not listing_id:
         await cb.answer("Некорректный идентификатор.", show_alert=True)
         print(f"[services_edit_overview.py] sv_edit_alias ✗ bad_id | data={cb.data}")
+        return
+    if not await _authorize_service_callback(cb, listing_id):
         return
     await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
     await cb.answer()
@@ -486,7 +547,7 @@ async def _ask_main_value(message: Message, listing_id: int, field: str, prompt:
     cur = (current_text or "").strip()
     txt = (
         f"{prompt}\n"
-        f"Текущее: <code>{cur if cur else '—'}</code>\n\n"
+        f"Текущее: <code>{html_escape(cur) if cur else '—'}</code>\n\n"
         f"Отправьте новое значение (или нажмите на текущее выше, чтобы скопировать)."
     )
     msg = await message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
@@ -501,10 +562,12 @@ async def sef_main_title(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
     listing_id = int(cb.data.split(":")[3])
+    if not await _authorize_service_callback(cb, listing_id):
+        return
 
     # получаем текущее значение
     async with SessionLocal() as s:
-        l = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        l = await _owned_service_in_session(s, listing_id, cb.from_user.id)
 
     await state.set_state(_MainFieldState.waiting)
     await state.update_data(sef_listing_id=listing_id, sef_field="title")
@@ -520,9 +583,11 @@ async def sef_main_descr(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
     listing_id = int(cb.data.split(":")[3])
+    if not await _authorize_service_callback(cb, listing_id):
+        return
 
     async with SessionLocal() as s:
-        l = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        l = await _owned_service_in_session(s, listing_id, cb.from_user.id)
 
     await state.set_state(_MainFieldState.waiting)
     await state.update_data(sef_listing_id=listing_id, sef_field="descr")
@@ -537,9 +602,11 @@ async def sef_main_price(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
     listing_id = int(cb.data.split(":")[3])
+    if not await _authorize_service_callback(cb, listing_id):
+        return
 
     async with SessionLocal() as s:
-        l = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        l = await _owned_service_in_session(s, listing_id, cb.from_user.id)
 
     await state.set_state(_MainFieldState.waiting)
     await state.update_data(sef_listing_id=listing_id, sef_field="price")
@@ -563,10 +630,24 @@ async def sef_main_value_entered(message: Message, state: FSMContext):
     field      = data["sef_field"]
 
     async with SessionLocal() as s:
-        l = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        l = await _owned_service_in_session(s, listing_id, message.from_user.id)
+        if l is None:
+            await state.clear()
+            await message.answer("Можно редактировать только свои услуги.")
+            return
         val = message.text or message.caption or ""
-        if field == "title":       l.title = val
-        elif field == "price":     l.price = val
+        if field == "title":
+            val = val.strip()
+            if not val:
+                await message.answer("Заголовок не может быть пустым.")
+                return
+            l.title = val
+        elif field == "price":
+            val = val.strip()
+            if not val:
+                await message.answer("Стоимость не может быть пустой.")
+                return
+            l.price = val
         elif field == "descr":     l.descr = val
         await s.commit()
 
@@ -590,6 +671,8 @@ async def sefx_start(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.message.bot)
     _, _, key, listing_id_str = cb.data.split(":")
     listing_id = int(listing_id_str)
+    if not await _authorize_service_callback(cb, listing_id):
+        return
 
     # берём схему и текущие значения flex
     listing, _, _, defs, flex_vals = await _load_listing_bundle(listing_id)
@@ -626,8 +709,8 @@ async def sefx_start(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⬅️ Отменить и вернуться", callback_data=f"sef:cancel:{listing_id}")],
     ])
     txt = (
-        f"Поле: <b>{label}</b>\n"
-        f"Текущее: <code>{(current_text or '—')}</code>\n\n"
+        f"Поле: <b>{html_escape(str(label))}</b>\n"
+        f"Текущее: <code>{html_escape(str(current_text)) if current_text else '—'}</code>\n\n"
         f"Отправьте новое значение (или нажмите на текущее выше, чтобы скопировать)."
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
@@ -656,7 +739,18 @@ async def sefx_value_entered(message: Message, state: FSMContext):
     v_norm = _normalize_value_for_type(v_raw, (fdef.get("type") or "text"))
 
     async with SessionLocal() as s:
-        l = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        l = await _owned_service_in_session(s, listing_id, message.from_user.id)
+        if l is None:
+            await state.clear()
+            await message.answer("Можно редактировать только свои услуги.")
+            return
+        expected_type = str(fdef.get("type") or "text").strip().lower()
+        current_def = await _service_extra_field_def(s, l, key)
+        current_type = str((current_def or {}).get("type", "")).strip().lower()
+        if current_type != expected_type or current_type.startswith("__"):
+            await state.clear()
+            await message.answer("Поле больше недоступно для редактирования.")
+            return
         try:
             flex = json.loads(l.flex or "{}")
             if not isinstance(flex, dict):
@@ -687,9 +781,18 @@ async def sefx_video_start(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.message.bot)
     _, _, _, listing_id_str, key = cb.data.split(":")
     listing_id = int(listing_id_str)
+    if not await _authorize_service_callback(cb, listing_id):
+        return
 
     # текущее значение видео
     _, _, _, defs, flex_vals = await _load_listing_bundle(listing_id)
+    fdef = next((
+        field for field in defs if isinstance(field, dict)
+        and str(field.get("key", "")).strip().lower() == key
+    ), None)
+    if str((fdef or {}).get("type", "")).strip().lower() != "video":
+        await cb.answer("Поле видео не найдено.", show_alert=True)
+        return
     current = None
     for k, v in (flex_vals or {}).items():
         if str(k).strip().lower() == key:
@@ -706,7 +809,7 @@ async def sefx_video_start(cb: CallbackQuery, state: FSMContext):
     ])
     txt = (
         "Отправьте видеофайл <b>или</b> ссылку (YouTube/веб). Разрешено только одно видео.\n"
-        f"Текущее: <i>{(current_text or '—')}</i>"
+        f"Текущее: <i>{html_escape(str(current_text)) if current_text else '—'}</i>"
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
@@ -732,8 +835,18 @@ async def sefx_video_link(message: Message, state: FSMContext):
     key  = data["sef_key"]
     url  = (message.text or "").strip()
 
+    if not _valid_http_url(url):
+        msg = await message.answer("Отправьте корректную ссылку, начинающуюся с http:// или https://.")
+        last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
+        return
+
     async with SessionLocal() as s:
-        l = (await s.execute(select(Listing).where(Listing.id == l_id))).scalar_one()
+        l = await _owned_service_extra_field(s, l_id, message.from_user.id, key, "video")
+        if l is None:
+            await state.clear()
+            await message.answer("Можно редактировать только свои услуги.")
+            return
         try:
             flex = json.loads(l.flex or "{}")
             if not isinstance(flex, dict):
@@ -765,7 +878,11 @@ async def sefx_video_file(message: Message, state: FSMContext):
     file_id = message.video.file_id
 
     async with SessionLocal() as s:
-        l = (await s.execute(select(Listing).where(Listing.id == l_id))).scalar_one()
+        l = await _owned_service_extra_field(s, l_id, message.from_user.id, key, "video")
+        if l is None:
+            await state.clear()
+            await message.answer("Можно редактировать только свои услуги.")
+            return
         try:
             flex = json.loads(l.flex or "{}")
             if not isinstance(flex, dict):
@@ -811,6 +928,9 @@ async def sef_cancel(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
     listing_id = int(cb.data.split(":")[2])
+    if not await _authorize_service_callback(cb, listing_id):
+        await state.clear()
+        return
     await state.clear()
     await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
     await cb.answer()
@@ -853,6 +973,9 @@ async def extra_open_services(cb: CallbackQuery, state: FSMContext):
                 await cb.answer("Объявление не найдено.", show_alert=True)
                 print(f"[services_edit_overview.py] handler=extra_open_services ERROR no_listing | chat_id={chat_id} listing_id={listing_id}")
                 return
+            if listing.owner_id != cb.from_user.id or listing.type != "service":
+                await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+                return
 
             category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
 
@@ -878,7 +1001,7 @@ async def extra_open_services(cb: CallbackQuery, state: FSMContext):
 
         # Показ меню
         msg = await cb.message.answer(
-            f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+            f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
             parse_mode="HTML",
         )
@@ -934,6 +1057,8 @@ async def sextra_back_services(cb: CallbackQuery, state: FSMContext):
     # парсим id объявления
     m = re.match(r"^sextra:back:(\d+)$", cb.data or "")
     listing_id = int(m.group(1)) if m else 0
+    if not listing_id or not await _authorize_service_callback(cb, listing_id):
+        return
 
     # возврат в обзор редактирования
     await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
@@ -973,6 +1098,9 @@ async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
             await cb.answer("Объявление не найдено.", show_alert=True)
             print(f"[services_edit_overview.py] handler=sextra_del_services ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
             return
+        if listing.owner_id != cb.from_user.id or listing.type != "service":
+            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            return
 
         if slot == 1:
             listing.extra_category_id1 = None
@@ -1001,7 +1129,7 @@ async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
         kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
 
     msg = await cb.message.answer(
-        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
         parse_mode="HTML",
     )
@@ -1056,7 +1184,18 @@ async def sextra_add_services(cb: CallbackQuery, state: FSMContext):
         print(f"[services_edit_overview.py] handler=sextra_add_services ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
 
+    if not await _authorize_service_callback(cb, listing_id):
+        return
+
     async with SessionLocal() as s:
+        listing = await _owned_service_in_session(s, listing_id, cb.from_user.id)
+        category = await s.get(Category, listing.category_id)
+        if category is None or not _allow_extra_for_category(category):
+            await cb.answer("Для этой категории доп. категории выключены.", show_alert=True)
+            return
+        if _extra_used(listing) >= 2:
+            await cb.answer("Все два слота уже заняты.", show_alert=True)
+            return
         cats = (await s.execute(select(Category).where(Category.parent_id == 80))).scalars().all()
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"sextra:pick:{listing_id}:{c.id}")] for c in cats]
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
@@ -1119,7 +1258,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
                 rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")])
 
             msg = await cb.message.answer(
-                f"Категория: <b>{cat.name}</b>\nВыберите подкатегорию:",
+                f"Категория: <b>{html_escape(cat.name or '')}</b>\nВыберите подкатегорию:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
                 parse_mode="HTML",
             )
@@ -1133,6 +1272,15 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
         if not listing:
             await cb.answer("Объявление не найдено.", show_alert=True)
             print(f"[services_edit_overview.py] handler=sextra_pick_services ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
+            return
+
+        if listing.owner_id != cb.from_user.id or listing.type != "service":
+            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            return
+
+        category = await s.get(Category, listing.category_id)
+        if category is None or not _allow_extra_for_category(category):
+            await cb.answer("Для этой категории доп. категории выключены.", show_alert=True)
             return
 
         if not await _is_services_branch(s, cat_id):
@@ -1179,7 +1327,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
                 kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"sextra:del:{listing_id}:2")])
             kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
             msg = await cb.message.answer(
-                f"Доп. категории для «{listing.title}»\nЗанято слотов: 2/2",
+                f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: 2/2",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
                 parse_mode="HTML",
             )
@@ -1211,7 +1359,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
         kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
 
     msg = await cb.message.answer(
-        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
         parse_mode="HTML",
     )
@@ -1250,6 +1398,9 @@ async def sextra_up_services(cb: CallbackQuery, state: FSMContext):
         print(f"[services_edit_overview.py] handler=sextra_up_services ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
 
+    if not await _authorize_service_callback(cb, listing_id):
+        return
+
     async with SessionLocal() as s:
         parent = (await s.execute(select(Category).where(Category.id == parent_id))).scalar_one_or_none()
         if not parent or parent.id == 80:
@@ -1275,7 +1426,7 @@ async def sextra_up_services(cb: CallbackQuery, state: FSMContext):
             rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")])
 
     msg = await cb.message.answer(
-        f"Категория: <b>{parent.name}</b>\nВыберите подкатегорию:",
+        f"Категория: <b>{html_escape(parent.name or '')}</b>\nВыберите подкатегорию:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML",
     )

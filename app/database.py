@@ -1,5 +1,8 @@
 # app/database.py
 from typing import AsyncGenerator
+import os
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 from sqlmodel import SQLModel
@@ -7,14 +10,36 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import event, text
 
+from app.db_path import (
+    absolutize_sqlite_url,
+    dotenv_value,
+    resolve_sqlite_path,
+    sqlite_url_for_path,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
 # --------------------------------------------------------------------------- #
 # Настройки из .env (DATABASE_URL=sqlite+aiosqlite:///./dev.db)
 # --------------------------------------------------------------------------- #
 class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./dev.db"
-    model_config = ConfigDict(extra="ignore", env_file=".env")
+    model_config = ConfigDict(extra="ignore", env_file=ROOT / ".env")
 
 settings = Settings()
+
+# ``sqlite:///./...`` is otherwise resolved from the launcher's cwd. Keep the
+# async bot/web engine on the same file as sync admin/backup tools even when a
+# developer starts Python via an absolute path from another directory.
+_database_path_override = (
+    os.getenv("DATABASE_PATH")
+    or dotenv_value(ROOT / ".env", "DATABASE_PATH")
+)
+if _database_path_override:
+    settings.database_url = sqlite_url_for_path(resolve_sqlite_path(ROOT))
+else:
+    settings.database_url = absolutize_sqlite_url(settings.database_url, ROOT)
 
 # --------------------------------------------------------------------------- #
 # ЕДИНСТВЕННОЕ создание движка (без повторных переопределений!)

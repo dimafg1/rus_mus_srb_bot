@@ -46,12 +46,44 @@ from app.search.fuzzy import search_items
 from app.analytics.search_log import log_search
 from app.analytics.listing_views import log_listing_view
 from app.lifecycle import days_left_text, should_show_extend_button, extend_listing
-from app.routers.utils import build_contact_url
+from app.routers.utils import build_contact_url, escape_html
 
 
 VACANCY_ROOT_ID = 90
 
 VACANCY_SEARCH_PAGE_SIZE = 10
+
+
+def _vacancy_public_predicates():
+    """Единые условия публичной выдачи вакансий."""
+    return (
+        Listing.type == "vacancy",
+        Listing.status == "active",
+        Listing.is_sold.is_(False),
+    )
+
+
+async def _load_public_vacancy_ids(ids: list[int]) -> tuple[list[int], list[Listing]]:
+    clean_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in ids or []:
+        try:
+            listing_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if listing_id not in seen:
+            seen.add(listing_id)
+            clean_ids.append(listing_id)
+    if not clean_ids:
+        return [], []
+
+    async with SessionLocal() as s:
+        db_rows = (await s.execute(
+            select(Listing).where(Listing.id.in_(clean_ids), *_vacancy_public_predicates())
+        )).scalars().all()
+    by_id = {row.id: row for row in db_rows}
+    valid_ids = [listing_id for listing_id in clean_ids if listing_id in by_id]
+    return valid_ids, [by_id[listing_id] for listing_id in valid_ids]
 
 async def _category_chain_by_db(cat: Category | None) -> str:
     if not cat:
@@ -151,7 +183,7 @@ async def vacancy_view_city(cb: CallbackQuery):
 
     await safe_edit_or_send(
         cb,
-        f"🤝 Вакансии → <b>{city_name}</b>\nВыберите категорию:",
+        f"🤝 Вакансии → <b>{escape_html(city_name)}</b>\nВыберите категорию:",
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -179,7 +211,7 @@ async def vacancy_list(cb: CallbackQuery):
         pass
     async with SessionLocal() as s:
         cat_path = await render_category_path(s, cat_id, root_id=VACANCY_ROOT_ID)
-    crumbs = f"🤝 Вакансии → <b>{city_name}</b> → {cat_path}"
+    crumbs = f"🤝 Вакансии → <b>{escape_html(city_name)}</b> → {cat_path}"
 
     # Если есть подкатегории — углубляемся
     children = await _category_children(cat_id)
@@ -299,9 +331,15 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
         is_my_suffix = (len(parts) > 4 and parts[4] == "my")
 
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
-        city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one()
-        cat = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
+        stmt = select(Listing).where(Listing.id == listing_id, Listing.type == "vacancy")
+        if not is_my_suffix:
+            stmt = stmt.where(Listing.status == "active", Listing.is_sold.is_(False))
+        listing = (await s.execute(stmt)).scalar_one_or_none()
+        if not listing or (is_my_suffix and listing.owner_id != cb.from_user.id):
+            await cb.answer("Вакансия недоступна или перенесена в архив.", show_alert=True)
+            return
+        city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one_or_none()
+        cat = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one_or_none()
         flex_block = await render_flex_block(s, listing, lang="ru")
 
         current_category_id = cat_id or listing.category_id
@@ -324,13 +362,13 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
     )
 
 
-    is_owner = (listing.owner_id == cb.from_user.id) or is_my_suffix
+    is_owner = listing.owner_id == cb.from_user.id
 
-    from html import escape as _esc
+    _esc = escape_html
     lines = []
 
     # Сразу под заголовком — город и категория
-    lines.append(f"Город: <b>{_esc(city.name)}</b>")
+    lines.append(f"Город: <b>{_esc(city.name if city else '—')}</b>")
     lines.append(f"Категория: <b>Вакансии → {cat_path}</b>" if cat_path else "Категория: <b>Вакансии</b>")
     lines.append("")
 
@@ -380,7 +418,7 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
         if contact and contact.startswith("@"):
             buttons.append([InlineKeyboardButton(
                 text="💬 Связаться",
-                url=build_contact_url(listing.id, contact, cb.from_user.id, "vacancy"),
+                url=build_contact_url(listing.id, contact, cb.from_user.id, source),
             )])
 
     # Назад — строго по источнику открытия карточки
@@ -433,7 +471,9 @@ async def vac_extend_listing(cb: CallbackQuery):
         cat_id = None
 
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "vacancy")
+        )).scalar_one_or_none()
         if not listing:
             await cb.answer("Вакансия не найдена.", show_alert=True)
             return
@@ -735,8 +775,7 @@ async def vac_search_do(m: Message, state: FSMContext):
         db_rows = (await s.execute(
             select(Listing)
             .where(
-                Listing.type == "vacancy",
-                Listing.is_sold == False,  # noqa: E712
+                *_vacancy_public_predicates(),
             )
             .order_by(Listing.created_at.desc())
             .limit(1000)
@@ -820,12 +859,12 @@ async def vac_search_do(m: Message, state: FSMContext):
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
         correction_note = (
             f"🧠 Показаны результаты по запросу: "
-            f"<b>{search_query_effective}</b> "
+            f"<b>{escape_html(search_query_effective)}</b> "
             f"(учтена возможная опечатка).\n\n"
         )
 
     msg = await m.answer(
-        f"{correction_note}Результаты по запросу: <b>{q}</b>\nНайдено: {total_count}",
+        f"{correction_note}Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {total_count}",
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -897,16 +936,9 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
         _dbg("vacancy_view.vac_search_results.empty_ctx", chat_id=chat_id)
         return
 
-    page_ids = ids[offset:offset + VACANCY_SEARCH_PAGE_SIZE]
-
-    async with SessionLocal() as s:
-        db_rows = (await s.execute(
-            select(Listing).where(Listing.id.in_(page_ids))
-        )).scalars().all()
-
-
-    by_id = {x.id: x for x in db_rows}
-    rows = [by_id[i] for i in page_ids if i in by_id]
+    ids, valid_rows = await _load_public_vacancy_ids(ids)
+    await state.update_data(vac_search_result_ids=ids)
+    rows = valid_rows[offset:offset + VACANCY_SEARCH_PAGE_SIZE]
 
     buttons: List[List[InlineKeyboardButton]] = []
 
@@ -931,7 +963,7 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
 
     msg = await cb.bot.send_message(
         chat_id,
-        f"Результаты по запросу: <b>{q}</b>\nНайдено: {len(rows)}",
+        f"Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {len(ids)}",
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -1039,15 +1071,9 @@ async def vac_search_page(cb: CallbackQuery, state: FSMContext):
     search_match_mode = data.get("vac_search_match_mode") or "none"
     ids = data.get("vac_search_result_ids") or []
 
-    page_ids = ids[offset:offset + VACANCY_SEARCH_PAGE_SIZE]
-
-    async with SessionLocal() as s:
-        db_rows = (await s.execute(
-            select(Listing).where(Listing.id.in_(page_ids))
-        )).scalars().all()
-
-    by_id = {x.id: x for x in db_rows}
-    rows = [by_id[i] for i in page_ids if i in by_id]
+    ids, valid_rows = await _load_public_vacancy_ids(ids)
+    await state.update_data(vac_search_result_ids=ids)
+    rows = valid_rows[offset:offset + VACANCY_SEARCH_PAGE_SIZE]
 
     total_count = len(ids)
     page = (offset // VACANCY_SEARCH_PAGE_SIZE) + 1
@@ -1106,13 +1132,13 @@ async def vac_search_page(cb: CallbackQuery, state: FSMContext):
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
         correction_note = (
             f"🧠 Показаны результаты по запросу: "
-            f"<b>{search_query_effective}</b> "
+            f"<b>{escape_html(search_query_effective)}</b> "
             f"(учтена возможная опечатка).\n\n"
         )
 
     msg = await cb.bot.send_message(
         chat_id,
-        f"{correction_note}Результаты по запросу: <b>{q}</b>\nНайдено: {total_count}",
+        f"{correction_note}Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {total_count}",
         reply_markup=kb,
         parse_mode="HTML",
     )

@@ -9,48 +9,26 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from sqlalchemy import text as sql
 from app.database import SessionLocal
-from app.routers.utils import clear_bot_messages, last_bot_messages, log
+from app.events_meta import ensure_events_meta
+from app.routers.utils import clear_bot_messages, last_bot_messages, log, escape_html
 from app.routers.admin_panel import is_admin
 
 
 router = Router(name="events_admin")
 
 PAGE = 10
-
-
-async def _ensure_events_meta():
-    try:
-        async with SessionLocal() as s:
-            await s.execute(sql("""
-                CREATE TABLE IF NOT EXISTS events_meta (
-                    listing_id   INTEGER PRIMARY KEY
-                        REFERENCES listing(id) ON DELETE CASCADE ON UPDATE CASCADE,
-                    start_at_utc INTEGER NOT NULL,
-                    timezone     TEXT    NOT NULL DEFAULT 'Europe/Belgrade',
-                    venue_text   TEXT,
-                    city_text    TEXT,
-                    lat          REAL,
-                    lon          REAL,
-                    price_text   TEXT,
-                    status       TEXT    NOT NULL DEFAULT 'pending',
-                    created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    CHECK (status IN ('pending','published','rejected'))
-                );
-            """))
-            await s.commit()
-    except Exception as e:
-        print(f"[AFISHA][ADMIN] ensure_events_meta error: {e}")
+_TZ = ZoneInfo("Europe/Belgrade")
 
 
 async def _fetch_pending(offset: int) -> list[dict]:
-    await _ensure_events_meta()
+    now_utc = int(datetime.now(timezone.utc).timestamp())
     q = sql("""
         SELECT
             l.id AS id,
@@ -58,13 +36,18 @@ async def _fetch_pending(offset: int) -> list[dict]:
             em.start_at_utc AS start_at_utc
         FROM listing l
         JOIN events_meta em ON em.listing_id = l.id
-        WHERE l.type='events' AND em.status='pending'
+        WHERE l.type='events'
+          AND l.status='active'
+          AND l.is_sold=0
+          AND em.status='pending'
+          AND em.start_at_utc >= :now_utc
         ORDER BY em.start_at_utc ASC
         LIMIT :limit OFFSET :offset
     """)
     try:
+        await ensure_events_meta()
         async with SessionLocal() as s:
-            res = await s.execute(q, {"limit": PAGE, "offset": offset})
+            res = await s.execute(q, {"limit": PAGE, "offset": offset, "now_utc": now_utc})
             return [dict(r._mapping) for r in res.fetchall()]
     except Exception as e:
         print(f"[AFISHA][ADMIN] fetch_pending error: {e}")
@@ -72,7 +55,7 @@ async def _fetch_pending(offset: int) -> list[dict]:
 
 
 async def _fetch_one(event_id: int) -> dict | None:
-    await _ensure_events_meta()
+    now_utc = int(datetime.now(timezone.utc).timestamp())
     q = sql("""
         SELECT
             l.id AS id,
@@ -80,7 +63,12 @@ async def _fetch_one(event_id: int) -> dict | None:
             l.descr AS descr,
             l.contact AS contact,
             l.photo_file_id AS photo_file_id,
-            COALESCE(c.name, em.city_text) AS city_name,
+            CASE
+                WHEN lower(COALESCE(c.slug, '')) = 'other'
+                     AND NULLIF(trim(em.city_text), '') IS NOT NULL
+                THEN em.city_text
+                ELSE COALESCE(c.name, em.city_text)
+            END AS city_name,
             em.venue_text AS venue_text,
             em.price_text AS price_text,
             em.start_at_utc AS start_at_utc,
@@ -89,11 +77,17 @@ async def _fetch_one(event_id: int) -> dict | None:
         JOIN events_meta em ON em.listing_id = l.id
         LEFT JOIN city c ON c.id=l.city_id
         WHERE l.id=:id
+          AND l.type='events'
+          AND l.status='active'
+          AND l.is_sold=0
+          AND em.status='pending'
+          AND em.start_at_utc >= :now_utc
         LIMIT 1
     """)
     try:
+        await ensure_events_meta()
         async with SessionLocal() as s:
-            res = await s.execute(q, {"id": event_id})
+            res = await s.execute(q, {"id": event_id, "now_utc": now_utc})
             row = res.first()
             return dict(row._mapping) if row else None
     except Exception as e:
@@ -197,14 +191,19 @@ async def admin_event_view(cb: CallbackQuery):
         await cb.answer()
         return
 
-    dt = datetime.fromtimestamp(int(row.get("start_at_utc") or 0), tz=timezone.utc)
-    when = dt.strftime("%d.%m.%Y %H:%M UTC") if row.get("start_at_utc") else "—"
+    dt = datetime.fromtimestamp(int(row.get("start_at_utc") or 0), tz=timezone.utc).astimezone(_TZ)
+    when = dt.strftime("%d.%m.%Y %H:%M") if row.get("start_at_utc") else "—"
+    title = escape_html(row.get("title") or "Событие")
+    city = escape_html(row.get("city_name") or "Город")
+    venue = escape_html(row.get("venue_text") or "")
+    price = escape_html(row.get("price_text") or "—")
+    descr = escape_html((row.get("descr") or "").strip())
     txt = (
-        f"🧾 <b>{row.get('title') or 'Событие'}</b>\n"
+        f"🧾 <b>{title}</b>\n"
         f"📅 {when}\n"
-        f"📍 {row.get('city_name') or 'Город'}{(', ' + row['venue_text']) if row.get('venue_text') else ''}\n"
-        f"💲 {row.get('price_text') or '—'}\n\n"
-        f"{(row.get('descr') or '').strip()}"
+        f"📍 {city}{(', ' + venue) if venue else ''}\n"
+        f"💲 {price}\n\n"
+        f"{descr}"
     ).strip()
 
     kb = _kb_event(event_id, back_offset)
@@ -216,18 +215,30 @@ async def admin_event_view(cb: CallbackQuery):
     await cb.answer()
 
 
-async def _set_status(event_id: int, status: str):
-    await _ensure_events_meta()
+async def _set_status(event_id: int, status: str) -> bool:
+    if status not in {"published", "rejected"}:
+        return False
+    now_utc = int(datetime.now(timezone.utc).timestamp())
     try:
+        await ensure_events_meta()
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE events_meta
                 SET status=:st, updated_at=strftime('%s','now')
                 WHERE listing_id=:id
-            """), {"st": status, "id": event_id})
+                  AND status='pending'
+                  AND start_at_utc >= :now_utc
+                  AND EXISTS (
+                      SELECT 1 FROM listing l
+                      WHERE l.id=:id AND l.type='events'
+                        AND l.status='active' AND l.is_sold=0
+                  )
+            """), {"st": status, "id": event_id, "now_utc": now_utc})
             await s.commit()
+            return bool(result.rowcount)
     except Exception as e:
         print(f"[AFISHA][ADMIN] set_status error: {e}")
+        return False
 
 
 @router.callback_query(F.data.startswith("admin:event:pub:"))
@@ -235,11 +246,16 @@ async def admin_event_publish(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    parts = cb.data.split(":")
-    event_id = int(parts[3])
-    back_offset = int(parts[4])
-    await _set_status(event_id, "published")
-    await cb.answer("Опубликовано")
+    try:
+        parts = (cb.data or "").split(":")
+        event_id = int(parts[3])
+        back_offset = max(0, int(parts[4]))
+    except (IndexError, TypeError, ValueError):
+        await cb.answer("Некорректная или устаревшая кнопка.", show_alert=True)
+        return
+    if not await _set_status(event_id, "published"):
+        await cb.answer("Событие уже обработано или недоступно.", show_alert=True)
+        return
     cb.data = f"admin:events:{back_offset}"
     await admin_events_list(cb)
 
@@ -249,10 +265,15 @@ async def admin_event_reject(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    parts = cb.data.split(":")
-    event_id = int(parts[3])
-    back_offset = int(parts[4])
-    await _set_status(event_id, "rejected")
-    await cb.answer("Отклонено")
+    try:
+        parts = (cb.data or "").split(":")
+        event_id = int(parts[3])
+        back_offset = max(0, int(parts[4]))
+    except (IndexError, TypeError, ValueError):
+        await cb.answer("Некорректная или устаревшая кнопка.", show_alert=True)
+        return
+    if not await _set_status(event_id, "rejected"):
+        await cb.answer("Событие уже обработано или недоступно.", show_alert=True)
+        return
     cb.data = f"admin:events:{back_offset}"
     await admin_events_list(cb)

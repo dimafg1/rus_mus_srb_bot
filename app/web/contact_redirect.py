@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import RedirectResponse
 from sqlalchemy import select
+import re
 
 from app.database import SessionLocal
 from app.models import Listing
@@ -8,6 +9,13 @@ from app.analytics.listing_views import log_listing_view
 from app.web.security import verify_contact_click_token
 
 router = APIRouter(prefix="/rus_mus_srb_bot/go")
+
+_SECTION_BY_LISTING_TYPE = {
+    "service": "services",
+    "events": "events",
+    "vacancy": "vacancy",
+    "release": "releases",
+}
 
 
 def _is_telegram_preview(user_agent: str) -> bool:
@@ -41,12 +49,16 @@ async def go_contact(request: Request, t: str):
 
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
+    if listing.status != "active" or listing.is_sold:
+        raise HTTPException(status_code=404, detail="Listing is not active")
 
     contact = (listing.contact or "").strip()
     if not contact.startswith("@"):
         raise HTTPException(status_code=404, detail="Telegram contact not found")
 
     username = contact.lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,32}", username):
+        raise HTTPException(status_code=404, detail="Telegram contact is invalid")
     user_agent = request.headers.get("user-agent", "")
 
     # ВАЖНО: превью Telegram не считаем реальным кликом
@@ -54,12 +66,18 @@ async def go_contact(request: Request, t: str):
         await log_listing_view(
             listing_id=listing.id,
             user_id=auth.user_id,
-            section="market",
+            section=_SECTION_BY_LISTING_TYPE.get(listing.type or "", "market"),
             action="contact",
             source=auth.source,
         )
 
-    return RedirectResponse(
+    response = RedirectResponse(
         url=f"https://t.me/{username}",
         status_code=302,
     )
+    response.headers.update({
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    })
+    return response

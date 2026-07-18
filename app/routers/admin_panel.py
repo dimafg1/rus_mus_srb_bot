@@ -6,14 +6,16 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 from sqlalchemy import select, text, func, and_, or_
 from app.database import SessionLocal
-from app.models import Category, BotUser
+from app.models import Category, BotUser, Item, Listing, Profile
 from app.states import AdminCategoryStates, AdminFieldStates
 from aiogram.types import ReplyKeyboardRemove
 import inspect
+import re
 from datetime import datetime
 from app.models import utcnow_naive
 import json
 import pytz
+from html import escape as html_escape
 SERBIA_TZ = pytz.timezone("Europe/Belgrade")
 FEEDBACK_PAGE_SIZE = 10
 
@@ -21,6 +23,24 @@ FEEDBACK_PAGE_SIZE = 10
 router = Router()
 
 ADMIN_IDS = [519335258]  # замените на свой Telegram ID
+
+
+def _normalized_category_name(value: str | None) -> str:
+    name = (value or "").strip()
+    if not name or any(ord(ch) < 32 for ch in name):
+        raise ValueError("Название категории не может быть пустым")
+    if len(name) > 200:
+        raise ValueError("Название категории длиннее 200 символов")
+    return name
+
+
+def _normalized_category_slug(value: str | None) -> str:
+    slug = (value or "").strip().lower()
+    if not slug or not re.fullmatch(r"[a-z0-9_-]+", slug):
+        raise ValueError("Недопустимый slug")
+    if len(slug) > 100:
+        raise ValueError("Slug длиннее 100 символов")
+    return slug
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -208,7 +228,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
         chain_names: list[str] = []
         cur = parent_category
         while cur:
-            chain_names.append(cur.name)
+            chain_names.append(html_escape(cur.name or ""))
             if cur.parent_id is None:
                 break
             cur = (await session.execute(
@@ -370,7 +390,13 @@ async def admin_add_category_name(message: Message, state: FSMContext):
     await clear_bot_messages(message.chat.id, message.bot)
     data = await state.get_data()
     parent_id = data.get("parent_id")
-    category_name = message.text.strip()
+    try:
+        category_name = _normalized_category_name(message.text)
+    except ValueError as exc:
+        msg = await message.answer(f"❗️{html_escape(str(exc))}. Введите название снова:")
+        last_bot_messages[message.chat.id] = [msg.message_id]
+        await register_bot_messages(message.chat.id, [msg.message_id])
+        return
     await state.update_data(category_name=category_name)
 
     menu = InlineKeyboardMarkup(inline_keyboard=[
@@ -420,7 +446,10 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
     data = await state.get_data()
     parent_id = data.get("parent_id")
     category_name = data.get("category_name")
-    slug = message.text.strip().lower()
+    try:
+        slug = _normalized_category_slug(message.text)
+    except ValueError:
+        slug = ""
 
     import re
     if not re.fullmatch(r'[a-z0-9_\-]+', slug):
@@ -451,13 +480,12 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
     async with SessionLocal() as session:
         exists = (await session.execute(
             select(Category).where(
-                Category.parent_id == parent_id,
-                Category.slug == slug
+                func.lower(func.trim(Category.slug)) == slug
             )
         )).first()
         if exists:
             msg = await message.answer(
-                f"❗️Категория с таким slug уже существует на этом уровне. Введите другой slug:",
+                "❗️Категория с таким slug уже существует. Введите другой slug:",
                 parse_mode="HTML",
                 reply_markup=ReplyKeyboardRemove()
             )
@@ -480,7 +508,11 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
         await session.commit()
 
     await state.clear()
-    await admin_send_success(message, f"✅ Категория <b>{category_name}</b> ({slug}) добавлена.", parent_id)
+    await admin_send_success(
+        message,
+        f"✅ Категория <b>{html_escape(category_name)}</b> ({slug}) добавлена.",
+        parent_id,
+    )
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"step: category_added | "
@@ -516,7 +548,7 @@ async def admin_rename_category_start(cb: CallbackQuery, state: FSMContext):
     ])
     menu_msg = await cb.message.answer("Возврат", reply_markup=menu)
     msg = await cb.message.answer(
-        f"✏️ Переименование категории:\n<b>{category.name}</b>\n\nВведите новое название:",
+        f"✏️ Переименование категории:\n<b>{html_escape(category.name or '')}</b>\n\nВведите новое название:",
         parse_mode="HTML"
     )
     last_bot_messages[cb.message.chat.id] = [menu_msg.message_id, msg.message_id]
@@ -564,7 +596,13 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
     data = await state.get_data()
     cat_id = data.get("rename_cat_id")
     old_slug = data.get("old_slug")
-    new_name = message.text.strip()
+    try:
+        new_name = _normalized_category_name(message.text)
+    except ValueError as exc:
+        msg = await message.answer(f"❗️{html_escape(str(exc))}. Введите название снова:")
+        last_bot_messages[message.chat.id] = [msg.message_id]
+        await register_bot_messages(message.chat.id, [msg.message_id])
+        return
     await state.update_data(new_name=new_name)
 
     menu = InlineKeyboardMarkup(inline_keyboard=[
@@ -585,7 +623,7 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
     ])
     msg = await message.answer(
         f"✏️ Введите <b>slug</b> для категории (или нажмите кнопку ниже для старого slug):\n"
-        f"Текущий slug: <code>{old_slug}</code>",
+        f"Текущий slug: <code>{html_escape(old_slug or '')}</code>",
         parse_mode="HTML",
         reply_markup=slug_menu
     )
@@ -638,7 +676,10 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
     if hasattr(message, "data") and message.data == f"admin:keep_slug:{cat_id}":
         slug = old_slug
     else:
-        slug = message.text.strip().lower()
+        try:
+            slug = _normalized_category_slug(message.text)
+        except ValueError:
+            slug = ""
 
     import re
     if not slug or not re.fullmatch(r'[a-z0-9_\-]+', slug):
@@ -658,8 +699,9 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
             reply_markup=menu,
             parse_mode="HTML"
         )
-        last_bot_messages[chat_id] = [menu_msg.message_id, msg.message_id]
-        await register_bot_messages(chat_id, [menu_msg.message_id, msg.message_id])
+        chat_id = message.chat.id
+        last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
         print(
             f"FUNC: {inspect.currentframe().f_code.co_name} | "
             f"step: renaming_category_slug_fail | "
@@ -680,8 +722,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
         parent_id = category.parent_id
         exists = (await session.execute(
             select(Category).where(
-                Category.parent_id == parent_id,
-                Category.slug == slug,
+                func.lower(func.trim(Category.slug)) == slug,
                 Category.id != cat_id
             )
         )).first()
@@ -697,12 +738,14 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
                 ]
             ])
             msg = await message.answer(
-                f"❗️Категория с таким slug уже существует на этом уровне. Введите другой slug или нажмите кнопку ниже, чтобы оставить прежний (⬇️):",
+                "❗️Категория с таким slug уже существует. Введите другой slug "
+                "или нажмите кнопку ниже, чтобы оставить прежний (⬇️):",
                 reply_markup=menu,
                 parse_mode="HTML"
             )
-            last_bot_messages[chat_id] = [menu_msg.message_id, msg.message_id]
-            await register_bot_messages(chat_id, [menu_msg.message_id, msg.message_id])
+            chat_id = message.chat.id
+            last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
             print(
                 f"FUNC: {inspect.currentframe().f_code.co_name} | "
                 f"step: renaming_category_slug_duplicate | "
@@ -722,7 +765,11 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
         await session.commit()
 
     await state.clear()
-    await admin_send_success(message, f"✅ Категория <b>{new_name}</b> ({slug}) успешно переименована.", parent_id)
+    await admin_send_success(
+        message,
+        f"✅ Категория <b>{html_escape(new_name)}</b> ({slug}) успешно переименована.",
+        parent_id,
+    )
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"step: renaming_category_slug_done | "
@@ -746,8 +793,13 @@ async def admin_keep_slug_cb(cb: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     cat_id = int(cb.data.split(":")[-1])
-    new_name = data.get("new_name")
-    old_slug = data.get("old_slug")
+    try:
+        new_name = _normalized_category_name(data.get("new_name"))
+        old_slug = _normalized_category_slug(data.get("old_slug"))
+    except ValueError:
+        await state.clear()
+        await cb.answer("Данные формы устарели. Начните переименование снова.", show_alert=True)
+        return
 
     async with SessionLocal() as session:
         category = (await session.execute(
@@ -760,7 +812,11 @@ async def admin_keep_slug_cb(cb: CallbackQuery, state: FSMContext):
         await session.commit()
 
     await state.clear()
-    await admin_send_success(cb, f"✅ Категория <b>{new_name}</b> ({old_slug}) успешно переименована.", parent_id)
+    await admin_send_success(
+        cb,
+        f"✅ Категория <b>{html_escape(new_name or '')}</b> ({html_escape(old_slug or '')}) успешно переименована.",
+        parent_id,
+    )
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"step: keep_slug_done | "
@@ -794,7 +850,7 @@ async def admin_delete_category_confirm(cb: CallbackQuery, state: FSMContext):
         ]
     )
     msg = await cb.message.answer(
-        f"⚠️ <b>Удалить категорию?</b>\n\n<b>{category.name}</b>\n\n"
+        f"⚠️ <b>Удалить категорию?</b>\n\n<b>{html_escape(category.name or '')}</b>\n\n"
         "Категория будет безвозвратно удалениа!\n\n"
         "<i>Вы уверены?</i>",
         reply_markup=markup,
@@ -834,7 +890,7 @@ async def admin_delete_category(cb: CallbackQuery, state: FSMContext):
             # Если есть подкатегории — выводим ошибку и НЕ удаляем!
             await admin_send_success(
                 cb,
-                f"❗️Нельзя удалить <b>{cat_name}</b> — сначала удалите все подкатегории!",
+                f"❗️Нельзя удалить <b>{html_escape(cat_name or '')}</b> — сначала удалите все подкатегории!",
                 parent_id
             )
             print(
@@ -844,11 +900,56 @@ async def admin_delete_category(cb: CallbackQuery, state: FSMContext):
             )
             return
 
-        # --- Если подкатегорий нет — удаляем как обычно ---
+        # Категория участвует не только как основная, но и как дополнительная.
+        # Удалять её при любых ссылках нельзя: иначе админка оставит сиротские id,
+        # а бот с PRAGMA foreign_keys=ON получит IntegrityError.
+        listings_count = (await session.execute(
+            select(func.count(Listing.id)).where(
+                or_(
+                    Listing.category_id == cat_id,
+                    Listing.extra_category_id1 == cat_id,
+                    Listing.extra_category_id2 == cat_id,
+                )
+            )
+        )).scalar_one()
+        if listings_count:
+            await admin_send_success(
+                cb,
+                f"❗️Нельзя удалить <b>{html_escape(cat_name or '')}</b> — категория используется "
+                f"в {listings_count} объявлениях (включая архивные).",
+                parent_id,
+            )
+            return
+
+        items_count = (await session.execute(
+            select(func.count(Item.id)).where(Item.category_id == cat_id)
+        )).scalar_one()
+        profiles_count = (await session.execute(
+            select(func.count(Profile.id)).where(Profile.category_id == cat_id)
+        )).scalar_one()
+        if items_count or profiles_count:
+            refs = []
+            if items_count:
+                refs.append(f"анкеты: {items_count}")
+            if profiles_count:
+                refs.append(f"профили: {profiles_count}")
+            await admin_send_success(
+                cb,
+                f"❗️Нельзя удалить <b>{html_escape(cat_name or '')}</b> — категория используется "
+                + ", ".join(refs) + ".",
+                parent_id,
+            )
+            return
+
+        # --- Если подкатегорий и ссылок нет — удаляем ---
         await session.delete(cat)
         await session.commit()
 
-    await admin_send_success(cb, f"🗑️ Категория <b>{cat_name}</b> удалена.", parent_id)
+    await admin_send_success(
+        cb,
+        f"🗑️ Категория <b>{html_escape(cat_name or '')}</b> удалена.",
+        parent_id,
+    )
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"cb.data: {cb.data} | chat_id: {cb.message.chat.id} | "

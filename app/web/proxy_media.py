@@ -1,31 +1,94 @@
 # app/web/proxy_media.py
 from fastapi import APIRouter, HTTPException, Request
-from starlette.responses import StreamingResponse
-from aiogram import Bot
+from starlette.responses import Response, StreamingResponse
 from sqlalchemy import select
 import aiohttp
+import os
 import re
 import json
+from pathlib import Path
 
 from app.database import SessionLocal
-from app.models import Listing
+from app.db_path import dotenv_value
+from app.models import Listing, ReleaseMeta
 from app.web.security import verify_token  # проверка подписи токена t
 import asyncio
 import mimetypes
 
 router = APIRouter(prefix="/rus_mus_srb_bot/media")
 
+_PRIVATE_MEDIA_HEADERS = {
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
 # HTML5 <video> требует поддержку Range, иначе перемотка/превью глючат
-_RANGE_RE = re.compile(r"bytes=(\d+)-(\d+)?")
+_RANGE_RE = re.compile(r"bytes=([0-9]*)-([0-9]*)", re.IGNORECASE)
 
-def get_bot() -> Bot:
-    """Возвращает ваш единый экземпляр бота."""
-    from app.main import bot
-    return bot
 
-async def tg_file_url(bot: Bot, file_id: str) -> str:
-    f = await bot.get_file(file_id)
-    return f"https://api.telegram.org/file/bot{bot.token}/{f.file_path}"
+def _validated_range_header(raw: str) -> str:
+    """Validate one RFC 7233 byte range before forwarding it upstream."""
+    value = raw.strip()
+    match = _RANGE_RE.fullmatch(value)
+    if not match:
+        raise HTTPException(
+            status_code=416,
+            detail="Bad Range",
+            headers=_PRIVATE_MEDIA_HEADERS,
+        )
+    start, end = match.groups()
+    if not start and not end:
+        raise HTTPException(
+            status_code=416,
+            detail="Bad Range",
+            headers=_PRIVATE_MEDIA_HEADERS,
+        )
+    if len(start) > 20 or len(end) > 20:
+        raise HTTPException(
+            status_code=416,
+            detail="Bad Range",
+            headers=_PRIVATE_MEDIA_HEADERS,
+        )
+    if start and end and int(end) < int(start):
+        raise HTTPException(
+            status_code=416,
+            detail="Bad Range",
+            headers=_PRIVATE_MEDIA_HEADERS,
+        )
+    return f"bytes={start}-{end}"
+
+def _get_bot_token() -> str:
+    root = Path(__file__).resolve().parents[2]
+    token = os.getenv("BOT_TOKEN") or dotenv_value(root / ".env", "BOT_TOKEN")
+    if not token:
+        raise HTTPException(status_code=503, detail="Bot token is not configured")
+    return token.strip()
+
+
+async def tg_file_url(file_id: str) -> str:
+    token = _get_bot_token()
+    timeout = aiohttp.ClientTimeout(total=30)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                f"https://api.telegram.org/bot{token}/getFile",
+                params={"file_id": file_id},
+            ) as response:
+                payload = await response.json(content_type=None)
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="Telegram getFile failed") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Invalid Telegram getFile response")
+    result = payload.get("result")
+    if (
+        not payload.get("ok")
+        or not isinstance(result, dict)
+        or not isinstance(result.get("file_path"), str)
+        or not result["file_path"]
+    ):
+        raise HTTPException(status_code=404, detail="Telegram file not found")
+    return f"https://api.telegram.org/file/bot{token}/{result['file_path']}"
 
 def _split_ids(raw: str | None) -> list[str]:
     """Парсим строку с file_id: допускаем запятые, пробелы, переносы."""
@@ -41,7 +104,10 @@ def _split_ids(raw: str | None) -> list[str]:
         parts = [p for p in parts[0].split(" ") if p.strip()]
     return parts
 
-def _collect_allowed_file_ids(listing: Listing) -> set[str]:
+def _collect_allowed_file_ids(
+    listing: Listing,
+    release_video_file_id: str | None = None,
+) -> set[str]:
     """Собираем все допустимые file_id из объявления (без миграций БД)."""
     allowed: set[str] = set()
 
@@ -51,6 +117,8 @@ def _collect_allowed_file_ids(listing: Listing) -> set[str]:
 
     # 2) Доп. медиа в flex (JSON-текст) — опционально
     flex_raw = getattr(listing, "flex", None)
+    if release_video_file_id:
+        allowed.add(release_video_file_id.strip())
     if not flex_raw:
         return allowed
 
@@ -58,11 +126,18 @@ def _collect_allowed_file_ids(listing: Listing) -> set[str]:
         data = json.loads(flex_raw)
     except Exception:
         return allowed
+    if not isinstance(data, dict):
+        return allowed
 
     # Вариант A: одиночное поле video_file_id (на будущее)
     vfid = data.get("video_file_id")
     if isinstance(vfid, str) and vfid.strip():
         allowed.add(vfid.strip())
+
+    # Фактическое поле, которое используют старые мастера объявлений.
+    legacy_video = data.get("video")
+    if isinstance(legacy_video, str) and legacy_video.strip() and not legacy_video.startswith(("http://", "https://")):
+        allowed.add(legacy_video.strip())
 
     # Вариант B: список строк videos
     videos = data.get("videos")
@@ -121,97 +196,100 @@ async def proxy_telegram_media(kind: str, file_id: str, request: Request, t: str
         if getattr(listing, "owner_id", None) != auth.owner_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
-        allowed = _collect_allowed_file_ids(listing)
+        release_video_file_id = None
+        if listing.type == "release":
+            release_video_file_id = (await s.execute(
+                select(ReleaseMeta.video_file_id).where(
+                    ReleaseMeta.listing_id == listing.id
+                )
+            )).scalar_one_or_none()
+        allowed = _collect_allowed_file_ids(listing, release_video_file_id)
         if file_id not in allowed:
             raise HTTPException(status_code=404, detail="Unknown media for this listing")
 
     headers = {}
     client_range = request.headers.get("Range")
     if client_range:
-        m = _RANGE_RE.match(client_range.strip())
-        if not m:
-            raise HTTPException(status_code=416, detail="Bad Range")
-        headers["Range"] = client_range
+        headers["Range"] = _validated_range_header(client_range)
 
-    bot = get_bot()
-    url = await tg_file_url(bot, file_id)
+    url = await tg_file_url(file_id)
 
-    async with aiohttp.ClientSession() as c:
-        async with c.get(url, headers=headers) as r:
-            if r.status not in (200, 206):
-                raise HTTPException(status_code=502, detail=f"Telegram responded {r.status}")
+    # Для StreamingResponse объекты session/response обязаны жить до конца
+    # передачи тела. Поэтому не выходим из async with до возврата response.
+    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
+    try:
+        upstream = await session.get(url, headers=headers)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        await session.close()
+        raise HTTPException(status_code=502, detail="Telegram media request failed") from exc
 
-        # --- определить корректный Content-Type ---
-        ct = r.headers.get("Content-Type")
-        if not ct or ct.startswith("application/octet-stream"):
-            if kind == "photo":
-                ct = "image/jpeg"
-            elif kind == "video":
-                ct = "video/mp4"
-            else:
-                guess, _ = mimetypes.guess_type(str(url))
-                ct = guess or "application/octet-stream"
-
-        # === НАДЁЖНЫЙ ПУТЬ ДЛЯ ФОТО: докачиваем по Range и собираем байты ===
-        if kind == "photo":
-            data = bytearray()
-            CHUNK = 256 * 1024  # 256KB
-            MAX_TRIES = 3
-
-            # закрываем текущий r (он нам больше не нужен), будем сами бить на куски
-            await r.release()
-
-            start = 0
-            while True:
-                rng = {"Range": f"bytes={start}-{start+CHUNK-1}"}
-                tries = 0
-                while True:
-                    try:
-                        async with c.get(url, headers=rng) as part:
-                            if part.status not in (200, 206):
-                                raise HTTPException(status_code=502, detail=f"Telegram responded {part.status}")
-                            chunk = await part.read()
-                            data.extend(chunk)
-                            # если сервер вернул меньше чем запросили — это последний кусок
-                            if len(chunk) < CHUNK:
-                                break
-                            start += len(chunk)
-                            break
-                    except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError):
-                        tries += 1
-                        if tries >= MAX_TRIES:
-                            raise HTTPException(status_code=502, detail="Upstream closed during photo download")
-                        await asyncio.sleep(0.2 * tries)  # маленький бэкофф и повтор
-
-                # выходим из внешнего цикла, если это был последний кусок
-                if len(data) < start + CHUNK:
-                    break
-
-            from fastapi import Response
-            return Response(
-                content=bytes(data),
-                media_type=ct,
-                headers={"Content-Disposition": "inline"},
-            )
-
-        # === ДЛЯ ВИДЕО ОСТАВЛЯЕМ СТРИМ (Range) ===
-        resp_headers = {
-            "Content-Type": ct,
+    if upstream.status == 416:
+        response_headers = {
+            **_PRIVATE_MEDIA_HEADERS,
             "Accept-Ranges": "bytes",
-            "Content-Disposition": "inline",
         }
-        if "Content-Range" in r.headers:
-            resp_headers["Content-Range"] = r.headers["Content-Range"]
+        if "Content-Range" in upstream.headers:
+            response_headers["Content-Range"] = upstream.headers["Content-Range"]
+        upstream.release()
+        await session.close()
+        raise HTTPException(
+            status_code=416,
+            detail="Range not satisfiable",
+            headers=response_headers,
+        )
+    if upstream.status not in (200, 206):
+        status = upstream.status
+        upstream.release()
+        await session.close()
+        raise HTTPException(status_code=502, detail=f"Telegram responded {status}")
 
-        status = 206 if ("Content-Range" in r.headers or client_range) else 200
+    ct = upstream.headers.get("Content-Type")
+    if not ct or ct.startswith("application/octet-stream"):
+        if kind == "photo":
+            ct = "image/jpeg"
+        elif kind == "video":
+            ct = "video/mp4"
+        else:
+            guess, _ = mimetypes.guess_type(str(url))
+            ct = guess or "application/octet-stream"
 
-        async def body():
-            try:
-                async for chunk in r.content.iter_chunked(64 * 1024):
-                    yield chunk
-            except (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError):
-                return
-            except asyncio.CancelledError:
-                return
+    response_headers = {
+        **_PRIVATE_MEDIA_HEADERS,
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": "inline",
+    }
+    for name in ("Content-Range", "Content-Length", "ETag", "Last-Modified"):
+        if name in upstream.headers:
+            response_headers[name] = upstream.headers[name]
 
-        return StreamingResponse(body(), status_code=status, headers=resp_headers)
+    if kind == "photo":
+        try:
+            data = await upstream.read()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            raise HTTPException(status_code=502, detail="Telegram photo download failed") from exc
+        finally:
+            upstream.release()
+            await session.close()
+        return Response(
+            content=data,
+            status_code=upstream.status,
+            media_type=ct,
+            headers=response_headers,
+        )
+
+    async def body():
+        try:
+            async for chunk in upstream.content.iter_chunked(64 * 1024):
+                yield chunk
+        except (aiohttp.ClientError, asyncio.TimeoutError, asyncio.CancelledError):
+            return
+        finally:
+            upstream.release()
+            await session.close()
+
+    return StreamingResponse(
+        body(),
+        status_code=upstream.status,
+        media_type=ct,
+        headers=response_headers,
+    )

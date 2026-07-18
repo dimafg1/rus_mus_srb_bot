@@ -1,3 +1,5 @@
+import html
+
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -21,8 +23,13 @@ router = Router()
 
 # -------------------------- ВНУТРЕННИЕ УТИЛИТЫ --------------------------
 
-async def _get_listing(s, listing_id: int) -> Listing:
-    return (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+async def _get_listing(s, listing_id: int, owner_id: int) -> Listing | None:
+    """Return only an owned market listing; callback/FSM ids are untrusted."""
+    return (await s.execute(select(Listing).where(
+        Listing.id == listing_id,
+        Listing.owner_id == owner_id,
+        Listing.type == "market",
+    ))).scalar_one_or_none()
 
 async def _slugs_for_listing(s, listing: Listing):
     city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one()
@@ -53,7 +60,7 @@ async def _ask_title(ev, state: FSMContext, listing: Listing, city_slug: str, ca
 
     kb = _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
-        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{listing.title or '—'}</code>\n\n"
+        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{html.escape(str(listing.title or '—'))}</code>\n\n"
         "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
         reply_markup=kb, parse_mode="HTML"
     )
@@ -69,7 +76,7 @@ async def _ask_price(ev, state: FSMContext, listing: Listing, city_slug: str, ca
 
     kb = _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
-        f"💰 <b>Цена</b>\n\nТекущее значение:\n<code>{listing.price or '—'}</code>\n\n"
+        f"💰 <b>Цена</b>\n\nТекущее значение:\n<code>{html.escape(str(listing.price or '—'))}</code>\n\n"
         "Отправьте новую цену (или скопируйте текущую ↑ и отредактируйте):",
         reply_markup=kb, parse_mode="HTML"
     )
@@ -86,7 +93,7 @@ async def _ask_descr(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     kb = _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
         "📝 <b>Описание</b>\n\nТекущее значение:\n"
-        f"<code>{(listing.descr or '—')}</code>\n\n"
+        f"<code>{html.escape(str(listing.descr or '—'))}</code>\n\n"
         "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
         reply_markup=kb, parse_mode="HTML"
     )
@@ -111,13 +118,17 @@ async def _go_flex_wizard(ev, state: FSMContext, listing: Listing, city_slug: st
 @router.callback_query(F.data.startswith("edit_listing:"))
 async def edit_listing_menu(cb: CallbackQuery, state: FSMContext):
     try:
-        await m.delete()  # RU: удаляем ввод пользователя, чтобы не висел справа
+        await cb.message.delete()
     except Exception:
         pass
-    listing_id = int(cb.data.split(":")[1])
+    try:
+        listing_id = int(cb.data.split(":")[1])
+    except (IndexError, TypeError, ValueError):
+        await cb.answer("Некорректные данные.", show_alert=True)
+        return
     async with SessionLocal() as s:
-        listing = await _get_listing(s, listing_id)
-        if listing.owner_id != cb.from_user.id:
+        listing = await _get_listing(s, listing_id, cb.from_user.id)
+        if listing is None:
             await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
             return
         city_slug, cat_slug = await _slugs_for_listing(s, listing)
@@ -139,18 +150,21 @@ async def edit_skip(cb: CallbackQuery, state: FSMContext):
         print(f"[edit.skip] lost session chat={cb.message.chat.id}")
         return
 
-    # Если сейчас идёт мастер доп-полей — делегируем туда
+    async with SessionLocal() as s:
+        listing = await _get_listing(s, int(listing_id), cb.from_user.id)
+        if listing is None:
+            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await state.clear()
+            return
+        city_slug, cat_slug = await _slugs_for_listing(s, listing)
+
+    # Если сейчас идёт мастер доп-полей — делегируем туда только после проверки владельца.
     cur_state = await state.get_state()
     if _is_extra_mode(data) and cur_state not in (EditListing.waiting_title, EditListing.waiting_price, EditListing.waiting_descr):
         print(f"[edit.skip->extra_next] chat={cb.message.chat.id} user={cb.from_user.id}")
         await extra_next(cb, state)
         await cb.answer()
         return
-
-    # Иначе двигаемся по основным шагам
-    async with SessionLocal() as s:
-        listing = await _get_listing(s, int(listing_id))
-        city_slug, cat_slug = await _slugs_for_listing(s, listing)
 
     print(f"[edit.skip.core] chat={cb.message.chat.id} state={cur_state}")
     if cur_state == EditListing.waiting_title:
@@ -165,15 +179,6 @@ async def edit_skip(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("edit:finish"))
 async def edit_finish(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-
-    # Если мы в доп-мастере — завершаем его (он сам покажет «Назад к объявлению»)
-    cur_state = await state.get_state()
-    if _is_extra_mode(data) and cur_state not in (EditListing.waiting_title, EditListing.waiting_price, EditListing.waiting_descr):
-        print(f"[edit.finish->extra_finish] chat={cb.message.chat.id} user={cb.from_user.id}")
-        await extra_finish(cb, state)
-        await cb.answer()
-        return
-
     listing_id = data.get("edit_listing_id")
     if not listing_id:
         await cb.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.", show_alert=True)
@@ -182,8 +187,20 @@ async def edit_finish(cb: CallbackQuery, state: FSMContext):
         return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, int(listing_id))
+        listing = await _get_listing(s, int(listing_id), cb.from_user.id)
+        if listing is None:
+            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await state.clear()
+            return
         city_slug, cat_slug = await _slugs_for_listing(s, listing)
+
+    # Делегируем в доп-мастер только после проверки владельца и типа.
+    cur_state = await state.get_state()
+    if _is_extra_mode(data) and cur_state not in (EditListing.waiting_title, EditListing.waiting_price, EditListing.waiting_descr):
+        print(f"[edit.finish->extra_finish] chat={cb.message.chat.id} user={cb.from_user.id}")
+        await extra_finish(cb, state)
+        await cb.answer()
+        return
 
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.bot)
@@ -210,7 +227,11 @@ async def edit_back(cb: CallbackQuery, state: FSMContext):
         return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, int(listing_id))
+        listing = await _get_listing(s, int(listing_id), cb.from_user.id)
+        if listing is None:
+            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await state.clear()
+            return
         city_slug, cat_slug = await _slugs_for_listing(s, listing)
 
     cur_state = await state.get_state()
@@ -256,6 +277,9 @@ async def edit_title_apply(m: Message, state: FSMContext):
     except Exception:
         pass
     new_title = (m.text or "").strip()
+    if not new_title:
+        await m.answer("Заголовок не может быть пустым.")
+        return
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     if not listing_id:
@@ -265,8 +289,8 @@ async def edit_title_apply(m: Message, state: FSMContext):
         return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, int(listing_id))
-        if listing.owner_id != m.from_user.id:
+        listing = await _get_listing(s, int(listing_id), m.from_user.id)
+        if listing is None:
             await m.answer("Можно редактировать только свои объявления.")
             await state.clear()
             print(f"[edit.title.apply] forbidden user={m.from_user.id} listing={listing_id}")
@@ -294,8 +318,8 @@ async def edit_price_apply(m: Message, state: FSMContext):
         return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, int(listing_id))
-        if listing.owner_id != m.from_user.id:
+        listing = await _get_listing(s, int(listing_id), m.from_user.id)
+        if listing is None:
             await m.answer("Можно редактировать только свои объявления.")
             await state.clear()
             print(f"[edit.price.apply] forbidden user={m.from_user.id} listing={listing_id}")
@@ -323,8 +347,8 @@ async def edit_descr_apply(m: Message, state: FSMContext):
         return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, int(listing_id))
-        if listing.owner_id != m.from_user.id:
+        listing = await _get_listing(s, int(listing_id), m.from_user.id)
+        if listing is None:
             await m.answer("Можно редактировать только свои объявления.")
             await state.clear()
             print(f"[edit.descr.apply] forbidden user={m.from_user.id} listing={listing_id}")

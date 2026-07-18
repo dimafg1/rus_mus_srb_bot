@@ -20,8 +20,12 @@ dependencies = [
     "httpx (>=0.27,<1.0)"
 ]
 
+[tool.poetry]
+# Репозиторий разворачивается как приложение (python -m app.main), а не как
+# публикуемый пакет с именем rus-mus-srb-bot.
+package-mode = false
+
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
-

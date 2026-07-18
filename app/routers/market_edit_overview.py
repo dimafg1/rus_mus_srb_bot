@@ -7,6 +7,9 @@ from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
 import json
 import inspect
+import math
+from html import escape as html_escape
+from urllib.parse import urlsplit
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
@@ -101,7 +104,28 @@ class ExtraVideoStates(StatesGroup):
 # Внутренние утилиты
 # ─────────────────────────────────────────────────────────
 async def _get_listing(s, listing_id: int) -> Listing:
-    return (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+    return (await s.execute(select(Listing).where(
+        Listing.id == listing_id,
+        Listing.type == "market",
+    ))).scalar_one()
+
+
+async def _owned_market_in_session(s, listing_id: int, user_id: int) -> Listing | None:
+    """Callback and FSM ids are untrusted; every edit must pass this query."""
+    return (await s.execute(select(Listing).where(
+        Listing.id == listing_id,
+        Listing.owner_id == user_id,
+        Listing.type == "market",
+    ))).scalar_one_or_none()
+
+
+async def _authorize_market_callback(cb: CallbackQuery, listing_id: int) -> bool:
+    async with SessionLocal() as s:
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
+    if listing is None:
+        await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+        return False
+    return True
 
 async def _get_city_cat(s, listing: Listing):
     city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one()
@@ -117,13 +141,56 @@ async def _load_category_fields(s, cat_id: int) -> list[dict]:
     except Exception:
         return []
 
+
+async def _extra_field_def(s, listing: Listing, key: str) -> dict | None:
+    defs = await _load_category_fields(s, listing.category_id)
+    return next((
+        field for field in defs
+        if (str(field.get("key", "")).strip().lower() or "field") == key
+    ), None)
+
+
+async def _owned_market_extra_field(
+    s,
+    listing_id: int,
+    user_id: int,
+    key: str,
+    expected_type: str,
+) -> Listing | None:
+    listing = await _owned_market_in_session(s, listing_id, user_id)
+    if listing is None:
+        return None
+    fdef = await _extra_field_def(s, listing, key)
+    if str((fdef or {}).get("type", "")).strip().lower() != expected_type:
+        return None
+    return listing
+
+
+def _is_youtube_url(value: str) -> bool:
+    raw = value.strip()
+    if not raw or any(ord(ch) < 33 for ch in raw) or any(ch in raw for ch in {'"', "'", "<", ">", "\\"}):
+        return False
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return False
+    host = parsed.hostname.lower().rstrip(".")
+    return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
 def _fmt(val):
     if val is None:
         return "—"
     if isinstance(val, bool):
         return "Да" if val else "Нет"
     if isinstance(val, list):
-        return ", ".join(map(str, val))
+        return html_escape(", ".join(map(str, val)))
     # строки для видео: если это file_id, скрываем идентификатор; если ссылка — обозначаем
     if isinstance(val, str):
         sval = val.strip()
@@ -134,9 +201,9 @@ def _fmt(val):
         if len(sval) > 20 and " " not in sval:
             # file_id: тоже «—», реальное превью отправим отдельно
             return "—"
-        return sval
+        return html_escape(sval)
 
-    return str(val)
+    return html_escape(str(val))
 
 def _controls_cancel(listing_id: int):
     # Только «Отменить» (возврат к списку полей)
@@ -187,8 +254,8 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
     # единый ровный список — БЕЗ заголовков «Основные/Дополнительные»
     lines = [
         "🛠 <b>Редактирование объявления</b>",
-        f"Город: <b>{city.name}</b>",
-        f"Категория: <b>{cat.name}</b>",
+        f"Город: <b>{html_escape(city.name or '')}</b>",
+        f"Категория: <b>{html_escape(cat.name or '')}</b>",
         "",
         f"<b>Заголовок:</b> <i>{_fmt(listing.title)}</i>",
         "",
@@ -220,14 +287,14 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
             if isinstance(val, str) and val.strip():
                 sval = val.strip()
                 low = sval.lower()
-                if sval.startswith("http") and ("youtube.com" in low or "youtu.be" in low):
-                    lines.append(f"<b>{label}:</b> {sval}")
+                if _is_youtube_url(sval):
+                    lines.append(f"<b>{html_escape(str(label))}:</b> {html_escape(sval)}")
                 else:
-                    lines.append(f"<b>{label}:</b> <i>добавлено</i>")
+                    lines.append(f"<b>{html_escape(str(label))}:</b> <i>добавлено</i>")
             else:
-                lines.append(f"<b>{label}:</b> <i>—</i>")
+                lines.append(f"<b>{html_escape(str(label))}:</b> <i>—</i>")
         else:
-            lines.append(f"<b>{label}:</b> <i>{_fmt(val)}</i>")
+            lines.append(f"<b>{html_escape(str(label))}:</b> <i>{_fmt(val)}</i>")
 
         rows.append([
             InlineKeyboardButton(
@@ -291,7 +358,7 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int):
     if video_value:
         sval = video_value
         low  = sval.lower()
-        is_youtube_url = sval.startswith("http") and ("youtube.com" in low or "youtu.be" in low)
+        is_youtube_url = _is_youtube_url(sval)
         if not is_youtube_url:
             try:
                 vmsg = await bot.send_video(chat_id, sval)
@@ -324,11 +391,15 @@ async def edit_listing_overview(cb: CallbackQuery, state: FSMContext):
     #   edit_listing_overview:<id>:<city_slug>:<cat_slug>:my
     #   edit_listing_overview:<id>:search
     parts = (cb.data or "").split(":")
-    listing_id = int(parts[1])
+    try:
+        listing_id = int(parts[1])
+    except (IndexError, TypeError, ValueError):
+        await cb.answer("Некорректные данные.", show_alert=True)
+        return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, listing_id)
-        if listing.owner_id != cb.from_user.id:
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
+        if listing is None:
             await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
             return
         city, cat = await _get_city_cat(s, listing)
@@ -373,9 +444,11 @@ async def ef_edit_main(cb: CallbackQuery, state: FSMContext):
 
     _, _, field, listing_id_str = cb.data.split(":")
     listing_id = int(listing_id_str)
+    if not await _authorize_market_callback(cb, listing_id):
+        return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, listing_id)
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         city, cat = await _get_city_cat(s, listing)
 
     if field == "title":
@@ -416,13 +489,27 @@ async def ef_apply_main_or_extra_textnum(m: Message, state: FSMContext):
     data = await state.get_data()
     mode   = data.get("ef_mode")          # "main" или "extra"
     field  = data.get("ef_field")         # 'title'/'price'/'descr' ИЛИ extra-key
-    l_id   = int(data.get("ef_listing_id"))
+    try:
+        l_id = int(data.get("ef_listing_id"))
+    except (TypeError, ValueError):
+        await state.clear()
+        await m.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.")
+        return
     e_type = data.get("ef_type", "text")  # только для extra (text/number)
 
     new_text = (m.text or "").strip()
+    if mode == "main" and field == "title" and not new_text:
+        msg = await m.answer("Заголовок не может быть пустым.", reply_markup=_controls_cancel(l_id))
+        last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
+        return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, l_id)
+        listing = await _owned_market_in_session(s, l_id, m.from_user.id)
+        if listing is None:
+            await state.clear()
+            await m.answer("Можно редактировать только свои объявления.")
+            return
 
         if mode == "main":
             if field == "title":
@@ -431,8 +518,14 @@ async def ef_apply_main_or_extra_textnum(m: Message, state: FSMContext):
                 listing.price = new_text
             else:
                 listing.descr = new_text
-        else:
+        elif mode == "extra" and field:
             # extra text/number
+            fdef = await _extra_field_def(s, listing, field)
+            actual_type = str((fdef or {}).get("type", "")).strip().lower()
+            if actual_type not in {"text", "number"} or actual_type != e_type:
+                await state.clear()
+                await m.answer("Поле больше недоступно для редактирования.")
+                return
             try:
                 flex = json.loads(listing.flex) if listing.flex else {}
                 if not isinstance(flex, dict):
@@ -444,6 +537,8 @@ async def ef_apply_main_or_extra_textnum(m: Message, state: FSMContext):
                 raw = new_text.replace(",", ".")
                 try:
                     num = float(raw)
+                    if not math.isfinite(num):
+                        raise ValueError("non-finite number")
                     if num.is_integer():
                         num = int(num)
                     flex[field] = num
@@ -457,6 +552,10 @@ async def ef_apply_main_or_extra_textnum(m: Message, state: FSMContext):
                 flex[field] = new_text
 
             listing.flex = json.dumps(flex, ensure_ascii=False) if flex else None
+        else:
+            await state.clear()
+            await m.answer("Сеанс редактирования повреждён. Откройте карточку ещё раз.")
+            return
 
         await s.commit()
 
@@ -477,9 +576,11 @@ async def ef_edit_extra(cb: CallbackQuery, state: FSMContext):
 
     _, _, key, listing_id_str = cb.data.split(":")
     listing_id = int(listing_id_str)
+    if not await _authorize_market_callback(cb, listing_id):
+        return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, listing_id)
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         defs = await _load_category_fields(s, listing.category_id)
 
     # найдём определение поля
@@ -501,7 +602,7 @@ async def ef_edit_extra(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    title = f"<b>{label}</b>"
+    title = f"<b>{html_escape(str(label))}</b>"
     cur_line = f"Текущее значение:\n<code>{_fmt(cur_val)}</code>"
 
     # интерфейсы по типам
@@ -586,9 +687,18 @@ async def efx_checkbox(cb: CallbackQuery, state: FSMContext):
     _, _, bit, key, l_id = cb.data.split(":")
     l_id = int(l_id)
     val = bit == "1"
+    if not await _authorize_market_callback(cb, l_id):
+        return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, l_id)
+        listing = await _owned_market_in_session(s, l_id, cb.from_user.id)
+        if listing is None:
+            await cb.answer("Объявление больше недоступно.", show_alert=True)
+            return
+        fdef = await _extra_field_def(s, listing, key)
+        if str((fdef or {}).get("type", "")).strip().lower() != "checkbox":
+            await cb.answer("Поле не найдено.", show_alert=True)
+            return
         try:
             flex = json.loads(listing.flex) if listing.flex else {}
             if not isinstance(flex, dict):
@@ -612,13 +722,23 @@ async def efx_select(cb: CallbackQuery, state: FSMContext):
     _, _, idx_str, key, l_id = cb.data.split(":")
     l_id = int(l_id)
     opt_idx = int(idx_str)
+    if not await _authorize_market_callback(cb, l_id):
+        return
 
     async with SessionLocal() as s:
-        listing = await _get_listing(s, l_id)
-        defs = await _load_category_fields(s, listing.category_id)
-        fdef = next((f for f in defs if (str(f.get("key","")).strip().lower() or "field") == key), None)
+        listing = await _owned_market_in_session(s, l_id, cb.from_user.id)
+        if listing is None:
+            await cb.answer("Объявление больше недоступно.", show_alert=True)
+            return
+        fdef = await _extra_field_def(s, listing, key)
+        if str((fdef or {}).get("type", "")).strip().lower() != "select":
+            await cb.answer("Поле не найдено.", show_alert=True)
+            return
         options = (fdef.get("options") if fdef else []) or []
-        value = options[opt_idx] if 0 <= opt_idx < len(options) else None
+        if not 0 <= opt_idx < len(options):
+            await cb.answer("Вариант больше недоступен.", show_alert=True)
+            return
+        value = options[opt_idx]
 
         try:
             flex = json.loads(listing.flex) if listing.flex else {}
@@ -643,6 +763,9 @@ async def efx_select(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.regexp(r"^ef:cancel:(\d+)$"))
 async def ef_cancel(cb: CallbackQuery, state: FSMContext):
     l_id = int(cb.data.split(":")[2])
+    if not await _authorize_market_callback(cb, l_id):
+        await state.clear()
+        return
     await _render_overview(cb.message.chat.id, cb.message.bot, cb.message.answer, l_id)
     await state.clear()
     await cb.answer()
@@ -671,7 +794,13 @@ async def efx_video_by_video(message: Message, state: FSMContext):
         return
     file_id = message.video.file_id
     async with SessionLocal() as s:
-        listing = await _get_listing(s, int(l_id))
+        listing = await _owned_market_extra_field(
+            s, int(l_id), message.from_user.id, key, "video"
+        )
+        if listing is None:
+            await state.clear()
+            await message.answer("Можно редактировать только свои объявления.")
+            return
         # загрузить текущее flex
         try:
             flex = json.loads(listing.flex) if listing.flex else {}
@@ -702,11 +831,25 @@ async def efx_video_by_document(message: Message, state: FSMContext):
     if not key or not l_id:
         await state.clear()
         return
+    async with SessionLocal() as s:
+        listing = await _owned_market_extra_field(
+            s, int(l_id), message.from_user.id, key, "video"
+        )
+        if listing is None:
+            await state.clear()
+            await message.answer("Можно редактировать только свои объявления.")
+            return
     doc = message.document
     if doc and doc.mime_type and doc.mime_type.startswith("video/"):
         file_id = doc.file_id
         async with SessionLocal() as s:
-            listing = await _get_listing(s, int(l_id))
+            listing = await _owned_market_extra_field(
+                s, int(l_id), message.from_user.id, key, "video"
+            )
+            if listing is None:
+                await state.clear()
+                await message.answer("Объявление больше недоступно.")
+                return
             try:
                 flex = json.loads(listing.flex) if listing.flex else {}
                 if not isinstance(flex, dict):
@@ -741,12 +884,25 @@ async def efx_video_by_text(message: Message, state: FSMContext):
     if not key or not l_id:
         await state.clear()
         return
+    async with SessionLocal() as s:
+        listing = await _owned_market_extra_field(
+            s, int(l_id), message.from_user.id, key, "video"
+        )
+    if listing is None:
+        await state.clear()
+        await message.answer("Можно редактировать только свои объявления.")
+        return
     txt = (message.text or "").strip()
-    low = txt.lower()
-    if ("youtube.com" in low or "youtu.be" in low) and txt.startswith("http"):
+    if _is_youtube_url(txt):
         # сохраняем ссылку
         async with SessionLocal() as s:
-            listing = await _get_listing(s, int(l_id))
+            listing = await _owned_market_extra_field(
+                s, int(l_id), message.from_user.id, key, "video"
+            )
+            if listing is None:
+                await state.clear()
+                await message.answer("Можно редактировать только свои объявления.")
+                return
             try:
                 flex = json.loads(listing.flex) if listing.flex else {}
                 if not isinstance(flex, dict):
@@ -779,6 +935,16 @@ async def efx_video_wrong_content(message: Message, state: FSMContext):
 
     data = await state.get_data()
     l_id = data.get("ef_listing_id")
+    key = data.get("ef_field")
+    if l_id and key:
+        async with SessionLocal() as s:
+            listing = await _owned_market_extra_field(
+                s, int(l_id), message.from_user.id, key, "video"
+            )
+        if listing is None:
+            await state.clear()
+            await message.answer("Можно редактировать только свои объявления.")
+            return
     # покажем стандартную клавиатуру «Отменить»
     kb = _controls_cancel(int(l_id)) if l_id else None
     msg = await message.answer("Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
@@ -802,7 +968,7 @@ async def extra_open_market(cb: CallbackQuery, state: FSMContext):
         return
     async with SessionLocal() as _s:
         _lst = (await _s.execute(select(Listing).where(Listing.id == _lid))).scalar_one_or_none()
-        if not _lst:
+        if not _lst or _lst.type != "market":
             return
         _cat = (await _s.execute(select(Category).where(Category.id == _lst.category_id))).scalar_one_or_none()
         if not _cat:
@@ -830,10 +996,12 @@ async def extra_open_market(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=extra_open_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
+    if not await _authorize_market_callback(cb, listing_id):
+        return
 
     # 3) Загрузить объявление и категорию, проверить разрешение
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         if not listing:
             await cb.answer("Объявление не найдено.", show_alert=True)
             print(f"[market_edit_overview.py] handler=extra_open_market ERROR no_listing listing_id={listing_id} chat_id={chat_id}")
@@ -860,7 +1028,7 @@ async def extra_open_market(cb: CallbackQuery, state: FSMContext):
 
 
     msg = await cb.message.answer(
-        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -890,6 +1058,8 @@ async def mextra_back_market(cb: CallbackQuery, state: FSMContext):
     # парсим id объявления
     m = re.match(r"^mextra:back:(\d+)$", cb.data or "")
     listing_id = int(m.group(1)) if m else 0
+    if not listing_id or not await _authorize_market_callback(cb, listing_id):
+        return
 
     # возврат в обзор редактирования
     await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
@@ -926,10 +1096,12 @@ async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
         return
     listing_id = int(m.group(1))
     slot       = int(m.group(2))
+    if not await _authorize_market_callback(cb, listing_id):
+        return
 
     # Сброс выбранного слота и перерисовка мини-меню
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         if not listing:
             await cb.answer("Объявление не найдено.", show_alert=True)
             print(f"[market_edit_overview.py] handler=mextra_del_market ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
@@ -966,7 +1138,7 @@ async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
 
     # Показ обновлённого мини-меню (остаёмся на месте)
     msg = await cb.message.answer(
-        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
         parse_mode="HTML",
     )
@@ -975,80 +1147,6 @@ async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
     await cb.answer("Доп. категория удалена")
     print(f"[market_edit_overview.py] handler=mextra_del_market OK chat_id={chat_id} listing_id={listing_id} slot={slot} msg_id={msg.message_id}")
 
-
-# ─────────────────────────────────────────────────────────
-# RU: Удалить доп. категорию (слот 1 или 2) в Услугах.
-#     После удаления остаёмся в мини-меню «Доп. категории».
-# ─────────────────────────────────────────────────────────
-@router.callback_query(F.data.regexp(r"^sextra:del:(\d+):(1|2)$"))
-async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-    # Зачистка текущего сообщения и истории бота/пользователя
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
-    try:
-        await clear_bot_messages(chat_id, cb.message.bot)
-    except Exception:
-        pass
-    try:
-        await _clear_user_inputs(chat_id, cb.message.bot)
-    except Exception:
-        pass
-
-    # Разбор параметров из callback_data
-    m = re.match(r"^sextra:del:(\d+):(1|2)$", cb.data or "")
-    if not m:
-        await cb.answer("Некорректные данные.", show_alert=True)
-        print(f"[services_edit_overview.py] handler=sextra_del_services ERROR parse chat_id={chat_id} data={cb.data!r}")
-        return
-    listing_id = int(m.group(1))
-    slot       = int(m.group(2))
-
-    # Сброс выбранного слота и перерисовка мини-меню
-    async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
-        if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
-            print(f"[services_edit_overview.py] handler=sextra_del_services ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
-            return
-
-        if slot == 1:
-            listing.extra_category_id1 = None
-        else:
-            listing.extra_category_id2 = None
-        await s.commit()
-
-        category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
-
-        cat1 = None
-        if listing.extra_category_id1:
-            cat1 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id1))).scalar_one_or_none()
-        cat2 = None
-        if listing.extra_category_id2:
-            cat2 = (await s.execute(select(Category).where(Category.id == listing.extra_category_id2))).scalar_one_or_none()
-
-        used = int(bool(listing.extra_category_id1)) + int(bool(listing.extra_category_id2))
-
-        kb_rows: list[list[InlineKeyboardButton]] = []
-        if used < 2 and _allow_extra_for_category(category):
-            kb_rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data=f"sextra:add:{listing_id}")])
-        if cat1:
-            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"sextra:del:{listing_id}:1")])
-        if cat2:
-            kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"sextra:del:{listing_id}:2")])
-        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
-
-    msg = await cb.message.answer(
-        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
-        parse_mode="HTML",
-    )
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-    await cb.answer("Доп. категория удалена")
-    print(f"[services_edit_overview.py] handler=sextra_del_services OK chat_id={chat_id} listing_id={listing_id} slot={slot} msg_id={msg.message_id}")
 
 # ─────────────────────────────────────────────────────────
 # RU: Вспомогательная функция: проверить ветку Барахолки (корень id=30).
@@ -1094,8 +1192,20 @@ async def mextra_add_market(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=mextra_add_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
+    if not await _authorize_market_callback(cb, listing_id):
+        return
 
     async with SessionLocal() as s:
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
+        category = (await s.execute(
+            select(Category).where(Category.id == listing.category_id)
+        )).scalar_one_or_none()
+        if category is None or not _allow_extra_for_category(category):
+            await cb.answer("Для этой категории доп. категории выключены.", show_alert=True)
+            return
+        if _extra_used(listing) >= 2:
+            await cb.answer("Все два слота уже заняты.", show_alert=True)
+            return
         cats = (await s.execute(select(Category).where(Category.parent_id == 30))).scalars().all()
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in cats]
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
@@ -1141,6 +1251,8 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=mextra_pick_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
+    if not await _authorize_market_callback(cb, listing_id):
+        return
 
     async with SessionLocal() as s:
         cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one_or_none()
@@ -1158,7 +1270,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
                 rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")])
 
             msg = await cb.message.answer(
-                f"Категория: <b>{cat.name}</b>\nВыберите подкатегорию:",
+                f"Категория: <b>{html_escape(cat.name or '')}</b>\nВыберите подкатегорию:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
                 parse_mode="HTML",
             )
@@ -1168,10 +1280,17 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
             print(f"[market_edit_overview.py] handler=mextra_pick_market NAV chat_id={chat_id} listing_id={listing_id} cat_id={cat_id} msg_id={msg.message_id}")
             return
 
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         if not listing:
             await cb.answer("Объявление не найдено.", show_alert=True)
             print(f"[market_edit_overview.py] handler=mextra_pick_market ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
+            return
+
+        category = (await s.execute(
+            select(Category).where(Category.id == listing.category_id)
+        )).scalar_one_or_none()
+        if category is None or not _allow_extra_for_category(category):
+            await cb.answer("Для этой категории доп. категории выключены.", show_alert=True)
             return
 
         if not await _is_market_branch(s, cat_id):
@@ -1224,7 +1343,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
                 kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
             kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
             msg = await cb.message.answer(
-                f"Доп. категории для «{listing.title}»\nЗанято слотов: 2/2",
+                f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: 2/2",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
                 parse_mode="HTML",
             )
@@ -1256,7 +1375,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
         kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
 
     msg = await cb.message.answer(
-        f"Доп. категории для «{listing.title}»\nЗанято слотов: {used}/2",
+        f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
         parse_mode="HTML",
     )
@@ -1294,6 +1413,8 @@ async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=mextra_up_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
+    if not await _authorize_market_callback(cb, listing_id):
+        return
 
     async with SessionLocal() as s:
         parent = (await s.execute(select(Category).where(Category.id == parent_id))).scalar_one_or_none()
@@ -1320,7 +1441,7 @@ async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
             rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")])
 
     msg = await cb.message.answer(
-        f"Категория: <b>{parent.name}</b>\nВыберите подкатегорию:",
+        f"Категория: <b>{html_escape(parent.name or '')}</b>\nВыберите подкатегорию:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML",
     )

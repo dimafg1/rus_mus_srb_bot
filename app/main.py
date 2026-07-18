@@ -1,26 +1,10 @@
-# --- simple env loader (.env.ai) ---
-import os
 from pathlib import Path
-def _load_env_ai():
-    env_path = Path(__file__).resolve().parent.parent / ".env.ai"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip())
-_load_env_ai()
-# --- end env loader ---
-
 
 import asyncio
-from collections import defaultdict
 from typing import List, Dict, Optional, Any, Callable, Awaitable
-from datetime import datetime
 from app.models import utcnow_naive
 import logging
+from app.db_path import config_value
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -28,40 +12,20 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    InputMediaPhoto,
-    KeyboardButton,
     Update,
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 
 from pydantic_settings import BaseSettings
 from sqlalchemy import select
-from sqlalchemy.exc import NoResultFound
 
 # --- Приложение/Бот ---
-from app.database import init_db, SessionLocal
+from app.database import init_db, SessionLocal, engine
+from app.events_meta import ensure_events_meta
 from app.models import City, Category, Item, Listing, BotUser
-from app.keyboards import (
-    # main_inline_menu,
-    market_inline,
-    photo_keyboard,
-    confirm_keyboard,
-    sold_keyboard,
-    delete_keyboard,
-    cities_inline,
-    equip_inline,
-    catalog_inline_initial,
-    catalog_city_inline,
-    catalog_application_category_inline,
-    vacancy_main_inline_view,
-    vacancy_category_inline,
-    musicians_sub_inline,
-    events_main_inline,
-)
+from app.keyboards import events_main_inline
 from app.routers.market_add import router as market_add_router
 from app.routers.market_edit import router as market_edit_router   # 🔹 добавили
 from app.routers.market_edit_photos import router as market_edit_photos_router
@@ -81,16 +45,12 @@ from app.routers.utils import (
     clear_bot_messages,
     register_bot_messages,
     last_bot_messages,
-    sent_photo_messages,
-    my_listing_messages,
     last_search_query_message,
     last_search_menu_message,
-    last_reply_menu_messages,
     get_text,  # aiosqlite-версия с поддержкой default (не app.texts)
 )
 from app.keyboards import get_common_menu_button
 from app.routers.market_view import router as market_view_router
-from app.states import MarketSearch
 import inspect
 from app.routers import feedback
 from app.routers.admin_panel import is_admin
@@ -109,19 +69,6 @@ from app.routers.vacancy_add import router as vacancy_add_router
 from app.routers.vacancy_view import router as vacancy_view_router
 from app.routers.vacancy_utils import vacancy_main_menu
 from app.routers.vacancy_edit import router as vacancy_edit_router
-# from app.routers.vacancy_edit_overview import router as vacancy_edit_overview_router
-
-
-from app.routers.utils import log
-
-
-
-
-
-# last_search_query_message: Dict[int, int] = {}     # Сообщение "Введите запрос..."
-# last_search_menu_message: Dict[int, int] = {}      # Меню с результатами
-# last_reply_menu_messages: Dict[int, list] = defaultdict(list)   # ID reply-меню по чатам
-# my_listing_messages: Dict[int, list] = defaultdict(list)
 
 
 
@@ -150,9 +97,9 @@ expanded_listing_by_chat: Dict[int, int] = {}
 # Новый словарь для хранения id сообщений с фото
 
 # Set up logging to see debug output.
-# logging.basicConfig(level=logging.DEBUG)
 # ───────── logging (quiet by default) ─────────
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+_ROOT = Path(__file__).resolve().parents[1]
+LOG_LEVEL = (config_value(_ROOT, "LOG_LEVEL", "INFO") or "INFO").upper()
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -161,8 +108,11 @@ logging.basicConfig(
 
 # Дублируем логи в файл с ротацией: logs/bot.log, 5 МБ x 5 файлов
 from logging.handlers import RotatingFileHandler
-_log_dir = Path(__file__).resolve().parent.parent / "logs"
-_log_dir.mkdir(exist_ok=True)
+_log_dir = Path(config_value(_ROOT, "LOG_DIR", "logs") or "logs").expanduser()
+if not _log_dir.is_absolute():
+    _log_dir = (_ROOT / _log_dir).resolve()
+_log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+_log_dir.chmod(0o700)
 _file_handler = RotatingFileHandler(
     _log_dir / "bot.log", maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
 )
@@ -276,7 +226,10 @@ async def get_last_update_id(bot: Bot) -> int:
 # ───────────────────────── Settings ────────────────────────── #
 class Settings(BaseSettings):
     bot_token: str
-    model_config = {"env_file": ".env"}
+    model_config = {
+        "env_file": Path(__file__).resolve().parent.parent / ".env",
+        "extra": "ignore",
+    }
 
 settings = Settings()
 bot = Bot(
@@ -306,7 +259,6 @@ async def on_error(event, **kwargs):
     return True  # ошибка обработана, aiogram не роняет polling
 
 
-print("=== rus_mus_srb_bot started (DEV) ===")
 
 # ── CLEANUP ROUTER: удаляет любые лишние сообщения в ЛС ─────────────────────
 from aiogram import Router
@@ -364,49 +316,42 @@ dp.include_router(events_view_router)
 dp.include_router(events_add_router)
 dp.include_router(events_admin_router)
 
-# dp.include_router(vacancy_edit_overview_router)
-
-# # ───────── FSM for forms ─────────
-# class CatalogForm(VacancyForm):
-#     category_choice: State = State()
-#     name: State = State()
-#     address: State = State()
-#     photo: State = State()
-#     description: State = State()
-#     repo: State = State()
-
-# class ExtendedVacancyForm(VacancyForm):
-#     text: State = State()
-
-# class EventForm(VacancyForm):
-#     date: State = State()
-#     details: State = State()
-
-
-
 dp.include_router(market_add_router)
 dp.include_router(market_edit_router)
-# dp.include_router(vacancy_router)
 dp.include_router(feedback.router)
 dp.include_router(user_extra_fields_router)
-
-
-# from app.routers.catalog_view import router as catalog_view_router
-# from app.routers.catalog_add import router as catalog_add_router
-# dp.include_router(catalog_view_router)
-# dp.include_router(catalog_add_router)
 
 dp.include_router(services_add_router)
 dp.include_router(services_view_router)
 dp.include_router(services_edit_overview_router)
 dp.include_router(services_edit_photos_router)
-print("[routers] services_edit_overview_router included")
+
+
+async def _clear_pending_album_tasks(chat_id: int, bot: Bot) -> None:
+    """Отменить отложенную сборку фотоальбомов при выходе из мастера."""
+    try:
+        from app.routers.services_add import _clear_album_cache
+
+        await _clear_album_cache(chat_id, bot)
+    except Exception as exc:
+        logging.getLogger("app.main").warning(
+            "Could not clear service album cache for chat %s: %s", chat_id, exc
+        )
+    try:
+        from app.routers.market_add import _clear_market_album_cache
+
+        await _clear_market_album_cache(chat_id, bot)
+    except Exception as exc:
+        logging.getLogger("app.main").warning(
+            "Could not clear market album cache for chat %s: %s", chat_id, exc
+        )
 
 
 
 @dp.callback_query(F.data == "go_isk")
 async def go_isk(cb: CallbackQuery, state: FSMContext):
     await cb.answer()                 # 1) сразу закрываем "часики" Telegram
+    await _clear_pending_album_tasks(cb.message.chat.id, cb.bot)
     await state.clear()               # 2) дальше уже любая логика
     kb = await vacancy_main_menu()
     await cb.message.edit_text(
@@ -421,6 +366,8 @@ async def go_isk(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "go_events")
 async def go_events(cb: CallbackQuery, state: FSMContext):
+    await _clear_pending_album_tasks(cb.message.chat.id, cb.bot)
+    await state.clear()
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     markup = await events_main_inline()
     await safe_edit_or_send(cb, await get_text("events_choose_city", "ru"), markup)
@@ -565,6 +512,10 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
+    # Отложенная финализация Telegram-альбома иначе может после state.clear()
+    # снова открыть экран уже покинутого мастера.
+    await _clear_pending_album_tasks(chat_id, cb.bot)
+
     # 5) Сброс состояния
     try:
         await state.clear()
@@ -583,8 +534,6 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
 
     # 6.1) Добавим «Админ-панель», если нужно
     try:
-        from aiogram.types import InlineKeyboardButton
-        from app.routers.admin_panel import is_admin
         if not getattr(menu_markup, "inline_keyboard", None):
             menu_markup.inline_keyboard = []
         if is_admin(cb.from_user.id):
@@ -669,31 +618,9 @@ async def fetch_listings(city_id: int, cat_id: int, offset: int = 0) -> List[Lis
 
 @dp.message(lambda m: m.text and m.text.lower() in ["отмена", "cancel"])
 async def cancel_handler(m: Message, state: FSMContext):
+    await _clear_pending_album_tasks(m.chat.id, m.bot)
     await state.clear()
     await m.answer("Действие отменено.")
-
-
-# ───────────── MARKET (Барахолка) Handlers ───────────── #
-
-import asyncio
-import re
-from aiogram.types import Message
-
-async def delete_user_command_with_delay(message: Message, delay: float = 2.0):
-    if not message.text:
-        return
-
-    text = message.text.strip()
-    if not text.startswith("/"):
-        return
-
-    try:
-        # для /start — задержка, для остальных можно тоже оставить ту же
-        await asyncio.sleep(delay)
-        await message.delete()
-    except Exception as e:
-        print(f"[delete_user_command_with_delay] can't delete user cmd: {e}")
-
 
 
 @dp.message(CommandStart())
@@ -707,14 +634,8 @@ async def cmd_start(message: Message, state: FSMContext):
         start_source = message.text.split(maxsplit=1)[1].strip()[:64] or None
     await log_event("user_started", user_id=message.from_user.id, source=start_source)
 
-    # # 0) Сначала пытаемся удалить исходное сообщение пользователя (/start)
-    # try:
-    #     await message.bot.delete_message(chat_id=chat_id, message_id=message.message_id)
-    # except Exception as e:
-    #     # не критично (например, нет прав в группе или сообщение слишком старое)
-    #     print(f"[cmd_start] can't delete /start: {e}")
-
-    # 1) чистим предыдущие сообщения бота (как и было)
+    # 1) отменяем незавершённые альбомы и чистим предыдущие сообщения бота
+    await _clear_pending_album_tasks(chat_id, message.bot)
     await clear_bot_messages(chat_id, message.bot)
 
     # 2) сбрасываем состояние (как и было)
@@ -743,8 +664,6 @@ async def cmd_start(message: Message, state: FSMContext):
     last_bot_messages[chat_id].append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
 
-    # await delete_user_command_with_delay(message, delay=2.0)
-
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
         f"chat_id: {getattr(message.chat, 'id', None)} | "
@@ -763,6 +682,9 @@ async def get_my_id(message: Message):
 # ───────────────── Entrypoint ───────────────────────────── #
 async def main():
     await init_db()
+    # Афиша хранится в отдельной legacy-таблице, не описанной SQLModel.
+    # Создаём/мигрируем её до первого пользовательского запроса.
+    await ensure_events_meta()
 
     # Получаем порог СТАРЫХ обновлений до регистрации роутеров и старта polling
     last_update_id = await get_last_update_id(bot)
@@ -788,14 +710,20 @@ async def main():
         pass
     finally:
         lifecycle_task.cancel()
+        try:
+            await lifecycle_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logging.getLogger("app.main").exception(
+                "Lifecycle worker stopped with an error", exc_info=exc
+            )
         # Закрываем HTTP-сессию бота и прочие ресурсы
         try:
             await bot.session.close()
         except Exception:
             pass
-        # Если у вас есть пулы/коннекты к БД/кэшу — закрывайте их здесь.
-        # Например:
-        # await engine.dispose()
+        await engine.dispose()
         print("Bot stopped gracefully.")
 
 if __name__ == "__main__":
@@ -804,4 +732,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # Гасим traceback на Windows при Ctrl+C
         print("Interrupted by user.")
-

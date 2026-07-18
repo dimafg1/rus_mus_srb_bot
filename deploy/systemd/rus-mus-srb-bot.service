@@ -1,0 +1,25 @@
+[Unit]
+Description=Rus Mus Srb Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rusmus
+Group=rusmus
+WorkingDirectory=/opt/rus_mus_srb_bot
+EnvironmentFile=/etc/rus-mus-srb-bot/bot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rus_mus_srb_bot/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rus-mus-srb-bot /var/log/rus-mus-srb-bot
+
+[Install]
+WantedBy=multi-user.target

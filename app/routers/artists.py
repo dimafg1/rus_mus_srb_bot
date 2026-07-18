@@ -19,21 +19,30 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlmodel import select
 
 from app.database import SessionLocal
-from app.models import Artist, BotUser, Listing, ReleaseMeta
+from app.models import Artist, BotUser, Listing, ReleaseMeta, ReleaseTrack
 from app.analytics import log_event
 from app.features import is_enabled
 from app.routers.releases import (
     ARTIST_TYPES,
+    MAX_LINKS,
     RELEASE_TYPES,
+    _MusicEnabledMiddleware,
     _ask_artname,
-    _link_label,
+    _clean_release_source,
+    _e,
+    _fit_html_lines,
+    _has_release_media,
+    _load_links,
     _menu_btn,
+    _parse_link_text,
     _replace_prompt,
     _send_screen,
 )
 from app.routers.utils import clear_bot_messages
 
 router = Router(name="artists")
+router.callback_query.middleware(_MusicEnabledMiddleware())
+router.message.middleware(_MusicEnabledMiddleware())
 
 PAGE = 8
 
@@ -124,7 +133,11 @@ async def artist_add(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("art:view:"))
 async def artist_view(cb: CallbackQuery):
     parts = cb.data.split(":")
-    artist_id = int(parts[2])
+    try:
+        artist_id = int(parts[2])
+    except (IndexError, ValueError):
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
     src = parts[3] if len(parts) > 3 else "list"
     await _show_artist_card(cb, artist_id, src)
     try:
@@ -152,8 +165,10 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
         # админ и владелец карточки видят и скрытые релизы (с пометкой) —
         # иначе скрытое из бота не найти и не вернуть
         can_see_hidden = is_admin(cb.from_user.id) or artist.owner_user_id == cb.from_user.id
-        q = select(ReleaseMeta).where(ReleaseMeta.artist_id == artist_id,
-                                      ReleaseMeta.status != "deleted")
+        q = select(ReleaseMeta).where(
+            ReleaseMeta.artist_id == artist_id,
+            ReleaseMeta.status != "deleted",
+        )
         if not can_see_hidden:
             q = q.where(ReleaseMeta.status == "published")
         metas = (await s.execute(
@@ -162,42 +177,53 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
         releases = []
         for m in metas:
             listing = (await s.execute(
-                select(Listing).where(Listing.id == m.listing_id)
+                select(Listing).where(
+                    Listing.id == m.listing_id,
+                    Listing.type == "release",
+                    Listing.status == "active",
+                )
             )).scalar_one_or_none()
-            if listing:
+            tracks = (await s.execute(
+                select(ReleaseTrack).where(ReleaseTrack.listing_id == m.listing_id)
+            )).scalars().all()
+            if (
+                listing
+                and listing.owner_id == artist.owner_user_id
+                and (can_see_hidden or _has_release_media(m, tracks))
+            ):
                 releases.append((listing, m))
 
-    sub = [artist.artist_type]
+    sub = [_e(artist.artist_type)]
     if artist.genres:
-        sub.append(artist.genres)
+        sub.append(_e(artist.genres))
     if artist.city_text:
-        sub.append(artist.city_text)
-    lines = [f"🎤 <b>{artist.name}</b>", " · ".join(sub)]
+        sub.append(_e(artist.city_text))
+    lines = [f"🎤 <b>{_e(artist.name)}</b>", " · ".join(sub)]
     if artist.status != "active":
         lines.insert(0, "🚫 <i>Карточка скрыта</i>")
     if artist.descr:
         lines.append("")
-        lines.append(artist.descr)
+        lines.append(_e(artist.descr))
     if artist.contact:
         lines.append("")
-        lines.append(f"✍️ Связаться: {artist.contact}")
+        lines.append(f"✍️ Связаться: {_e(artist.contact)}")
     if releases:
         lines.append("")
         lines.append(f"Релизов: {len(releases)}")
     else:
         lines.append("")
         lines.append("Релизов пока нет.")
-    caption = "\n".join(lines)
-    caption = caption[:1020] + "…" if len(caption) > 1024 else caption
+    caption = _fit_html_lines(lines)
 
+    artist_source = "s" if src == "search" else "l"
     rows = [[InlineKeyboardButton(
         text=("🔴 " if m.status != "published" else "")
              + f"🎵 {l.title} ({RELEASE_TYPES.get(m.release_type, '')})",
-        callback_data=f"rel:view:{l.id}:a{artist.id}")] for l, m in releases]
+        callback_data=f"rel:view:{l.id}:a{artist.id}.{artist_source}")] for l, m in releases]
     # ссылки соцсетей/площадок — кнопками парами
     link_row: list[InlineKeyboardButton] = []
     try:
-        for l in (json.loads(artist.links) if artist.links else []):
+        for l in _load_links(artist.links):
             link_row.append(InlineKeyboardButton(text=f"🔗 {l['label']}", url=l["url"]))
             if len(link_row) == 2:
                 rows.append(link_row)
@@ -219,8 +245,14 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
         back_cb = "go_artists"
     elif src == "search":
         back_cb = "art:sback"
+    elif src.startswith("rel"):
+        rel_ref = src[3:]
+        listing_ref, _, rel_source = rel_ref.partition(".")
+        rel_source = _clean_release_source(rel_source)
+        back_cb = (f"rel:view:{listing_ref}:{rel_source}"
+                   if listing_ref.isdigit() else "go_artists")
     else:
-        back_cb = f"rel:view:{src[3:]}"
+        back_cb = "go_artists"
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb), _menu_btn()])
 
     await _send_screen(cb.bot, cb.message.chat.id, caption,
@@ -232,9 +264,9 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
 
 # ─────────────────────── редактирование карточки ───────────────────────
 
-async def _can_edit(user_id: int, artist: Artist) -> bool:
+async def _can_edit(user_id: int, artist: Artist | None) -> bool:
     from app.routers.admin_panel import is_admin
-    return artist.owner_user_id == user_id or is_admin(user_id)
+    return bool(artist and (artist.owner_user_id == user_id or is_admin(user_id)))
 
 
 def _fmt(v, limit=40):
@@ -253,7 +285,7 @@ async def _render_edit_overview(bot, chat_id: int, user_id: int, artist_id: int)
     if not artist or not await _can_edit(user_id, artist):
         return
     try:
-        n_links = len(json.loads(artist.links)) if artist.links else 0
+        n_links = len(_load_links(artist.links))
     except Exception:
         n_links = 0
     values = {
@@ -264,9 +296,9 @@ async def _render_edit_overview(bot, chat_id: int, user_id: int, artist_id: int)
         "links": f"{n_links} шт." if n_links else "—",
         "contact": _fmt(artist.contact),
     }
-    lines = [f"✏️ <b>Карточка: {artist.name}</b>", ""]
+    lines = [f"✏️ <b>Карточка: {_e(artist.name)}</b>", ""]
     for code, (label, _) in EDIT_FIELDS.items():
-        lines.append(f"{label}: {values[code]}")
+        lines.append(f"{label}: {_e(values[code])}")
     rows = [[InlineKeyboardButton(text=f"✏️ Править: {label}",
                                   callback_data=f"art:ef:{code}:{artist_id}")]
             for code, (label, _) in EDIT_FIELDS.items()]
@@ -287,11 +319,19 @@ async def artist_edit(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("art:ef:"))
 async def artist_edit_field(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
     _, _, field, aid = cb.data.split(":")
     artist_id = int(aid)
     if field not in EDIT_FIELDS:
+        await cb.answer()
         return
+    async with SessionLocal() as s:
+        artist = (await s.execute(
+            select(Artist).where(Artist.id == artist_id)
+        )).scalar_one_or_none()
+    if not await _can_edit(cb.from_user.id, artist):
+        await cb.answer("Нет прав или карточка недоступна.", show_alert=True)
+        return
+    await cb.answer()
     if field == "type":  # тип — кнопками
         rows = [[InlineKeyboardButton(text=t, callback_data=f"art:etype:{artist_id}:{i}")]
                 for i, t in enumerate(ARTIST_TYPES)]
@@ -334,7 +374,13 @@ async def _save_artist_field(user_id: int, artist_id: int, field: str, value):
         )).scalar_one_or_none()
         if not artist or not await _can_edit(user_id, artist):
             return False
-        setattr(artist, {"type": "artist_type"}.get(field, field), value)
+        target = {"type": "artist_type"}.get(field, field)
+        if target not in {
+            "name", "artist_type", "photo_file_id", "descr", "genres",
+            "city_text", "links", "contact",
+        }:
+            return False
+        setattr(artist, target, value)
         s.add(artist)
         await s.commit()
     return True
@@ -342,23 +388,34 @@ async def _save_artist_field(user_id: int, artist_id: int, field: str, value):
 
 @router.callback_query(F.data.startswith("art:etype:"))
 async def artist_edit_type(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
     _, _, aid, idx = cb.data.split(":")
-    t = ARTIST_TYPES[int(idx)] if 0 <= int(idx) < len(ARTIST_TYPES) else "Другое"
-    await _save_artist_field(cb.from_user.id, int(aid), "type", t)
+    try:
+        idx_int = int(idx)
+    except ValueError:
+        await cb.answer("Некорректная ссылка.", show_alert=True)
+        return
+    t = ARTIST_TYPES[idx_int] if 0 <= idx_int < len(ARTIST_TYPES) else "Другое"
+    if not await _save_artist_field(cb.from_user.id, int(aid), "type", t):
+        await cb.answer("Нет прав или карточка недоступна.", show_alert=True)
+        return
+    await cb.answer()
     await _render_edit_overview(cb.bot, cb.message.chat.id, cb.from_user.id, int(aid))
 
 
 @router.callback_query(F.data.startswith("art:eclr:"))
 async def artist_edit_clear(cb: CallbackQuery, state: FSMContext):
-    await cb.answer("Очищено.")
     _, _, aid, field = cb.data.split(":")
+    saved = False
     if field == "contact":
         # контакты не обнуляются в пустоту — остаётся базовый (@создатель)
-        await _save_artist_field(cb.from_user.id, int(aid), "contact",
-                                 await _base_contact(int(aid)))
+        saved = await _save_artist_field(cb.from_user.id, int(aid), "contact",
+                                         await _base_contact(int(aid)))
     elif field in CLEARABLE:
-        await _save_artist_field(cb.from_user.id, int(aid), field, None)
+        saved = await _save_artist_field(cb.from_user.id, int(aid), field, None)
+    if not saved:
+        await cb.answer("Нет прав или поле нельзя очистить.", show_alert=True)
+        return
+    await cb.answer("Очищено.")
     await state.clear()
     await _render_edit_overview(cb.bot, cb.message.chat.id, cb.from_user.id, int(aid))
 
@@ -377,9 +434,11 @@ async def artist_edit_text(message: Message, state: FSMContext):
     if field == "photo":
         return  # для фото ждём картинку, не текст
     if field == "links":
-        raw = text_val.replace(",", " ").split()
-        links = [{"label": _link_label(u), "url": u} for u in raw if u.startswith("http")]
-        value = json.dumps(links, ensure_ascii=False) if links else None
+        links = _parse_link_text(text_val, limit=MAX_LINKS)
+        if not links:
+            await message.answer("Нужна полноценная ссылка с http:// или https://.")
+            return
+        value = json.dumps(links, ensure_ascii=False)
     elif field == "contact":
         # база (@создатель) всегда впереди, ввод только ДОБАВЛЯЕТ контакты
         base = await _base_contact(artist_id)
@@ -392,7 +451,9 @@ async def artist_edit_text(message: Message, state: FSMContext):
     else:
         limits = {"descr": 600, "genres": 128, "city_text": 64, "contact": 128}
         value = text_val[:limits.get(field, 255)] or None
-    await _save_artist_field(message.from_user.id, artist_id, field, value)
+    if not await _save_artist_field(message.from_user.id, artist_id, field, value):
+        await message.answer("Не удалось сохранить: нет прав или карточка недоступна.")
+        return
     await state.clear()
     await _render_edit_overview(message.bot, message.chat.id, message.from_user.id, artist_id)
 
@@ -407,8 +468,10 @@ async def artist_edit_photo(message: Message, state: FSMContext):
         pass
     if field != "photo" or not artist_id:
         return
-    await _save_artist_field(message.from_user.id, artist_id, "photo_file_id",
-                             message.photo[-1].file_id)
+    if not await _save_artist_field(message.from_user.id, artist_id, "photo_file_id",
+                                    message.photo[-1].file_id):
+        await message.answer("Не удалось сохранить: нет прав или карточка недоступна.")
+        return
     await state.clear()
     await _render_edit_overview(message.bot, message.chat.id, message.from_user.id, artist_id)
 
@@ -502,13 +565,13 @@ async def _render_art_search(bot, chat_id: int, state: FSMContext, offset: int =
     rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="art:search")])
     rows.append(_nav_row("go_artists"))
     await _send_screen(bot, chat_id,
-                       f"{note}Результаты по запросу: <b>{q}</b>\nНайдено: {total}",
+                       f"{note}Результаты по запросу: <b>{_e(q)}</b>\nНайдено: {total}",
                        InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.message(ArtSearch.waiting_query, F.text)
 async def art_search_do(message: Message, state: FSMContext):
-    q = (message.text or "").strip()
+    q = (message.text or "").strip()[:128]
     try:
         await message.delete()
     except Exception:
@@ -537,7 +600,7 @@ async def art_search_do(message: Message, state: FSMContext):
                      results_count=len(outcome.results))
     note = ""
     if outcome.match_mode == "corrected" and outcome.query_effective != outcome.query_normalized:
-        note = (f"🧠 Показаны результаты по запросу: <b>{outcome.query_effective}</b> "
+        note = (f"🧠 Показаны результаты по запросу: <b>{_e(outcome.query_effective)}</b> "
                 f"(учтена возможная опечатка).\n\n")
     await state.update_data(
         art_s_results=[(it[0], it[1]) for it in outcome.results],

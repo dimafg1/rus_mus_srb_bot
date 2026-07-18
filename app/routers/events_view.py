@@ -1,9 +1,18 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.fsm.context import FSMContext
-from app.routers.utils import clear_bot_messages, last_bot_messages, get_text, log
+from app.routers.utils import (
+    build_contact_url,
+    clear_bot_messages,
+    escape_html,
+    get_text,
+    last_bot_messages,
+    log,
+)
 from app.database import SessionLocal
 from sqlalchemy import text as sql
+from app.models import Listing
+from app.lifecycle import archive_as_user_deleted
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from app.keyboards import get_common_menu_button
@@ -24,6 +33,11 @@ AFISHA_PAGE_SIZE = 10
 AFISHA_MY_PAGE_SIZE = 10
 AFISHA_SEARCH_PAGE_SIZE = 10
 _TZ = ZoneInfo("Europe/Belgrade")
+
+
+def _first_photo_id(raw: str | None) -> str | None:
+    """Афиша поддерживает одну обложку, даже если старая запись содержит CSV."""
+    return next((part.strip() for part in (raw or "").split(",") if part.strip()), None)
 
 # ─────────────────────────────────────────────────────────
 # ПОИСК по Афише (FSM + кэши сообщений/контекста)
@@ -47,7 +61,7 @@ def _fmt_dt(utc_ts: int) -> tuple[str, str]:
     Форматирование даты события для отображения в карточке.
     """
 
-    dt = datetime.fromtimestamp(utc_ts)
+    dt = datetime.fromtimestamp(utc_ts, tz=timezone.utc).astimezone(_TZ)
 
     months = [
         "января", "февраля", "марта", "апреля",
@@ -97,6 +111,7 @@ async def _fetch_month_marks_all(year: int, month: int) -> set[int]:
         JOIN events_meta em ON em.listing_id = l.id
         WHERE
             l.type = 'events'
+            AND l.status = 'active'
             AND l.is_sold = 0
             AND em.status = 'published'
             AND em.start_at_utc >= :start_utc
@@ -232,6 +247,7 @@ async def _fetch_events(offset: int, limit: int, city_id: int | None = None):
         LEFT JOIN city c ON c.id = l.city_id
         WHERE
             l.type = 'events'
+            AND l.status = 'active'
             AND l.is_sold = 0
             AND em.status = 'published'
             AND em.start_at_utc >= :now_utc
@@ -260,6 +276,7 @@ async def _count_events(city_id: int | None = None) -> int:
         JOIN events_meta em ON em.listing_id = l.id
         WHERE
             l.type = 'events'
+            AND l.status = 'active'
             AND l.is_sold = 0
             AND em.status = 'published'
             AND em.start_at_utc >= :now_utc
@@ -293,6 +310,7 @@ async def _fetch_my_events(owner_id: int, offset: int, limit: int):
         WHERE
             l.type = 'events'
             AND l.owner_id = :owner_id
+            AND l.status = 'active'
             AND l.is_sold = 0
             AND em.start_at_utc >= :now_utc
         ORDER BY em.start_at_utc ASC
@@ -304,34 +322,12 @@ async def _fetch_my_events(owner_id: int, offset: int, limit: int):
         print(f"[events_view.py][_fetch_my_events][done] owner_id={owner_id} offset={offset} limit={limit} now_utc={now_utc} count={len(out)}")
         return out
 
-def _contact_url(contact: str) -> str | None:
-    c = (contact or "").strip()
-    if not c:
-        return None
-
-    # если это tg://... или уже ссылка — оставляем как есть
-    if c.startswith("tg://"):
-        return c
-    if c.startswith("https://") or c.startswith("http://"):
-        return c
-
-    # чистим возможный префикс @
-    if c.startswith("@"):
-        c = c[1:].strip()
-
-    if not c:
-        return None
-
-    # если это чисто число — трактуем как user_id
-    if c.isdigit():
-        return f"tg://user?id={c}"
-
-    # username (без пробелов/слешей) — пробуем открыть чат через tg://resolve
-    # это в части клиентов открывает сразу диалог, а не инфо
-    if " " not in c and "/" not in c:
-        return f"tg://resolve?domain={c}"
-
-    return None
+def _moderation_label(status: str | None) -> str:
+    return {
+        "pending": "на модерации",
+        "published": "опубликовано",
+        "rejected": "отклонено",
+    }.get((status or "").strip(), "неизвестно")
 
 
 @router.callback_query(F.data == "af:my")
@@ -451,7 +447,7 @@ async def af_my_open(cb: CallbackQuery):
         pass
     await clear_bot_messages(chat_id, cb.bot)
 
-    it = await _fetch_event_by_id(listing_id)
+    it = await _fetch_event_by_id(listing_id, public_only=False)
     if not it:
         kb = _kb_back_and_main("af:my")
         msg = await cb.message.answer("Событие не найдено.", reply_markup=kb)
@@ -461,17 +457,11 @@ async def af_my_open(cb: CallbackQuery):
         print(f"[events_view.py][af_my_open][done] chat_id={chat_id} listing_id={listing_id} found=0 msg_id={msg.message_id}")
         return
 
-    # защита: открывать “мои” можно только свои
-    try:
-        async with SessionLocal() as s:
-            chk = await s.execute(sql("SELECT owner_id FROM listing WHERE id=:id LIMIT 1"), {"id": listing_id})
-            row = chk.first()
-            if not row or int(row[0]) != int(owner_id):
-                await cb.answer("Это не ваше объявление.")
-                print(f"[events_view.py][af_my_open][deny] chat_id={chat_id} listing_id={listing_id} owner_id={owner_id}")
-                return
-    except Exception as e:
-        print(f"[events_view.py][af_my_open][owner_check_error] {e}")
+    # Защита: маршрут «Мои» не должен доверять одному лишь callback suffix.
+    if int(it.get("owner_id") or 0) != int(owner_id):
+        await cb.answer("Это не ваше объявление.", show_alert=True)
+        print(f"[events_view.py][af_my_open][deny] chat_id={chat_id} listing_id={listing_id} owner_id={owner_id}")
+        return
 
     # ЛОГ ОТКРЫТИЯ СВОЕЙ КАРТОЧКИ
     await log_listing_view(
@@ -496,25 +486,28 @@ async def af_my_open(cb: CallbackQuery):
     descr = (it.get("descr") or "").strip()
     venue = (it.get("venue_text") or "").strip()
     contact = (it.get("contact") or "").strip()
-    contact_url = _contact_url(contact) if contact else None
+    if it.get("listing_status") != "active" or bool(it.get("is_sold")):
+        contact = ""
+    contact_url = build_contact_url(listing_id, contact, cb.from_user.id, "my") if contact else ""
 
     lines = [
         f"Дата:   {d}",
         f"Время:  {t}",
+        f"Статус: {_moderation_label(it.get('meta_status'))}",
     ]
     if city:
-        lines.append(f"Город:  {city}")
+        lines.append(f"Город:  {escape_html(city)}")
     if venue:
-        lines.append(f"Место:  {venue}")
+        lines.append(f"Место:  {escape_html(venue)}")
     if price:
-        lines.append(f"Цена:   {price}")
+        lines.append(f"Цена:   {escape_html(price)}")
     if contact:
-        lines.append(f"Контакт: {contact}")
+        lines.append(f"Контакт: {escape_html(contact)}")
     if descr:
         lines.append("")
-        lines.append(descr)
+        lines.append(escape_html(descr))
 
-    caption = f"<b>{it['title']}</b>\n\n" + "\n".join(lines)
+    caption = f"<b>{escape_html(it['title'])}</b>\n\n" + "\n".join(lines)
 
     back_cb = "af:my" if offset == "0" else f"af:my:more:{offset}"
     kb = _kb_my_card(listing_id=listing_id, back_cb=back_cb)
@@ -526,7 +519,7 @@ async def af_my_open(cb: CallbackQuery):
         except Exception:
             pass
 
-    photo = it.get("photo_file_id")
+    photo = _first_photo_id(it.get("photo_file_id"))
     if photo:
         msg = await cb.message.answer_photo(photo=photo, caption=caption, parse_mode="HTML", reply_markup=kb)
     else:
@@ -539,11 +532,53 @@ async def af_my_open(cb: CallbackQuery):
     print(f"[events_view.py][af_my_open][done] chat_id={chat_id} listing_id={listing_id} back_cb={back_cb} msg_id={msg.message_id}")
 
 
+@router.callback_query(F.data.startswith("af:my:del:"))
+async def af_my_delete(cb: CallbackQuery):
+    """Мягко удалить своё событие, чтобы оно исчезло из всех публичных выдач."""
+    try:
+        listing_id = int(cb.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await cb.answer("Не удалось определить событие.", show_alert=True)
+        return
 
-async def _fetch_event_by_id(listing_id: int):
-    q = sql("""
+    async with SessionLocal() as s:
+        listing = await s.get(Listing, listing_id)
+        if not listing or listing.type != "events" or listing.owner_id != cb.from_user.id:
+            await cb.answer("Удалить можно только своё событие.", show_alert=True)
+            return
+        if listing.status != "archived":
+            archive_as_user_deleted(listing, user_id=cb.from_user.id)
+            await s.commit()
+
+    chat_id = cb.message.chat.id
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+    msg = await cb.message.answer(
+        "Событие удалено.",
+        reply_markup=_kb_back_and_main("af:my"),
+    )
+    last_bot_messages[chat_id] = [msg.message_id]
+    await register_bot_messages(chat_id, [msg.message_id])
+    await cb.answer()
+
+
+
+async def _fetch_event_by_id(listing_id: int, *, public_only: bool = True):
+    public_where = """
+        AND l.status = 'active'
+        AND l.is_sold = 0
+        AND em.status = 'published'
+        AND em.start_at_utc >= :now_utc
+    """ if public_only else ""
+    q = sql(f"""
         SELECT
             l.id AS listing_id,
+            l.owner_id,
+            l.status AS listing_status,
+            l.is_sold,
             l.title,
             l.photo_file_id,
             l.descr,
@@ -552,15 +587,20 @@ async def _fetch_event_by_id(listing_id: int):
             em.city_text AS city_text,
             em.venue_text,
             em.price_text,
-            em.start_at_utc
+            em.start_at_utc,
+            em.status AS meta_status
         FROM listing l
         JOIN events_meta em ON em.listing_id = l.id
         LEFT JOIN city c ON c.id = l.city_id
         WHERE l.id = :lid AND l.type = 'events'
+        {public_where}
         LIMIT 1
     """)
     async with SessionLocal() as s:
-        res = await s.execute(q, {"lid": int(listing_id)})
+        res = await s.execute(q, {
+            "lid": int(listing_id),
+            "now_utc": int(datetime.now(timezone.utc).timestamp()),
+        })
         row = res.first()
         out = dict(row._mapping) if row else None
         print(f"[events_view.py][_fetch_event_by_id][done] listing_id={listing_id} found={bool(out)}")
@@ -600,23 +640,28 @@ async def show_event_card(message: Message, listing_id: int) -> bool:
     descr = (it.get("descr") or "").strip()
     venue = (it.get("venue_text") or "").strip()
     contact = (it.get("contact") or "").strip()
-    contact_url = _contact_url(contact) if contact else None
+    contact_url = build_contact_url(
+        listing_id,
+        contact,
+        getattr(message.from_user, "id", 0),
+        "direct",
+    ) if contact else ""
 
     lines = [f"🗓 {d} • {t}"]
     if city:
-        lines.append(f"📍 {city}")
+        lines.append(f"📍 {escape_html(city)}")
     if venue:
-        lines.append(f"🏠 {venue}")
+        lines.append(f"🏠 {escape_html(venue)}")
     if price:
-        lines.append(f"💲 {price}")
+        lines.append(f"💲 {escape_html(price)}")
     if descr:
         lines.append("")
-        lines.append(descr)
+        lines.append(escape_html(descr))
     if contact:
         lines.append("")
-        lines.append(f"📞 Контакт: {contact}")
+        lines.append(f"📞 Контакт: {escape_html(contact)}")
 
-    caption = f" <b>{it['title']}</b>\n\n" + "\n".join(lines)
+    caption = f" <b>{escape_html(it['title'])}</b>\n\n" + "\n".join(lines)
 
     kb = _kb_back_and_main("go_events")
 
@@ -626,7 +671,7 @@ async def show_event_card(message: Message, listing_id: int) -> bool:
         except Exception:
             pass
 
-    photo = it.get("photo_file_id")
+    photo = _first_photo_id(it.get("photo_file_id"))
     if photo:
         msg = await message.answer_photo(photo=photo, caption=caption, parse_mode="HTML", reply_markup=kb)
     else:
@@ -792,6 +837,7 @@ async def _fetch_search_event_candidates() -> list[dict]:
         LEFT JOIN city c ON c.id = l.city_id
         WHERE
             l.type = 'events'
+            AND l.status = 'active'
             AND l.is_sold = 0
             AND em.status = 'published'
             AND em.start_at_utc >= :now_utc
@@ -1089,25 +1135,25 @@ async def af_open_event(cb: CallbackQuery):
     descr = (it.get("descr") or "").strip()
     venue = (it.get("venue_text") or "").strip()
     contact = (it.get("contact") or "").strip()
-    contact_url = _contact_url(contact) if contact else None
+    contact_url = build_contact_url(listing_id, contact, cb.from_user.id, source) if contact else ""
 
     lines = [
         f"Дата:   {d}",
         f"Время:  {t}",
     ]
     if city:
-        lines.append(f"Город:  {city}")
+        lines.append(f"Город:  {escape_html(city)}")
     if venue:
-        lines.append(f"Место:  {venue}")
+        lines.append(f"Место:  {escape_html(venue)}")
     if price:
-        lines.append(f"Цена:   {price}")
+        lines.append(f"Цена:   {escape_html(price)}")
     if contact:
-        lines.append(f"Контакт: {contact}")
+        lines.append(f"Контакт: {escape_html(contact)}")
     if descr:
         lines.append("")
-        lines.append(descr)
+        lines.append(escape_html(descr))
 
-    caption = f"<b>{it['title']}</b>\n\n" + "\n".join(lines)
+    caption = f"<b>{escape_html(it['title'])}</b>\n\n" + "\n".join(lines)
 
     # ---- BACK LOGIC ----
     if context == "near":
@@ -1151,7 +1197,7 @@ async def af_open_event(cb: CallbackQuery):
         except Exception:
             pass
 
-    photo = it.get("photo_file_id")
+    photo = _first_photo_id(it.get("photo_file_id"))
     if photo:
         msg = await cb.message.answer_photo(photo=photo, caption=caption, parse_mode="HTML", reply_markup=kb)
     else:
@@ -1486,7 +1532,7 @@ async def af_search_query(m: Message, state: FSMContext):
 
         msg = await m.bot.send_message(
             chat_id,
-            f"Ничего не найдено по запросу: <b>{q}</b>",
+            f"Ничего не найдено по запросу: <b>{escape_html(q)}</b>",
             parse_mode="HTML",
             reply_markup=kb
         )
@@ -1530,7 +1576,7 @@ async def af_search_query(m: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await m.bot.send_message(
         chat_id,
-        f"🔎 Результаты поиска: <b>{q}</b>",
+        f"🔎 Результаты поиска: <b>{escape_html(q)}</b>",
         parse_mode="HTML",
         reply_markup=kb
     )
@@ -1603,7 +1649,7 @@ async def af_search_results_first(cb: CallbackQuery, state: FSMContext):
 
     if not items:
         msg = await cb.message.answer(
-            f"Ничего не найдено по запросу: <b>{payload['query_raw']}</b>",
+            f"Ничего не найдено по запросу: <b>{escape_html(payload['query_raw'])}</b>",
             parse_mode="HTML",
             reply_markup=_kb_back_and_main("af:search")
         )
@@ -1626,7 +1672,7 @@ async def af_search_results_first(cb: CallbackQuery, state: FSMContext):
     if payload["match_mode"] == "corrected" and payload["query_effective"] != payload["query_normalized"]:
         correction_note = (
             f"🧠 Показаны результаты по запросу: "
-            f"<b>{payload['query_effective']}</b> "
+            f"<b>{escape_html(payload['query_effective'])}</b> "
             f"(учтена возможная опечатка).\n\n"
         )
 
@@ -1641,7 +1687,7 @@ async def af_search_results_first(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.message.answer(
-        f"{correction_note}🔎 Результаты поиска: <b>{payload['query_raw']}</b>",
+        f"{correction_note}🔎 Результаты поиска: <b>{escape_html(payload['query_raw'])}</b>",
         parse_mode="HTML",
         reply_markup=kb
     )
@@ -1737,7 +1783,7 @@ async def af_search_more(cb: CallbackQuery, state: FSMContext):
     if payload["match_mode"] == "corrected" and payload["query_effective"] != payload["query_normalized"]:
         correction_note = (
             f"🧠 Показаны результаты по запросу: "
-            f"<b>{payload['query_effective']}</b> "
+            f"<b>{escape_html(payload['query_effective'])}</b> "
             f"(учтена возможная опечатка).\n\n"
         )
 
@@ -1757,7 +1803,7 @@ async def af_search_more(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.message.answer(
-        f"{correction_note}🔎 Результаты поиска: <b>{payload['query_raw']}</b>",
+        f"{correction_note}🔎 Результаты поиска: <b>{escape_html(payload['query_raw'])}</b>",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1819,22 +1865,26 @@ async def af_search_open(cb: CallbackQuery, state: FSMContext):
     price = it.get("price_text") or ""
     descr = it.get("descr") or ""
     venue = it.get("venue_text") or ""
+    contact = (it.get("contact") or "").strip()
+    contact_url = build_contact_url(listing_id, contact, cb.from_user.id, "search") if contact else ""
 
     lines = [
         f"Дата:   {d}",
         f"Время:  {t}",
     ]
     if city:
-        lines.append(f"Город:  {city}")
+        lines.append(f"Город:  {escape_html(city)}")
     if venue:
-        lines.append(f"Место:  {venue}")
+        lines.append(f"Место:  {escape_html(venue)}")
     if price:
-        lines.append(f"Цена:   {price}")
+        lines.append(f"Цена:   {escape_html(price)}")
+    if contact:
+        lines.append(f"Контакт: {escape_html(contact)}")
     if descr:
         lines.append("")
-        lines.append(descr)
+        lines.append(escape_html(descr))
 
-    caption = f"<b>{it['title']}</b>\n\n" + "\n".join(lines)
+    caption = f"<b>{escape_html(it['title'])}</b>\n\n" + "\n".join(lines)
 
     back_cb = f"af:search:more:{offset}"
 
@@ -1842,8 +1892,12 @@ async def af_search_open(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="◀️ Назад к результатам", callback_data=back_cb)],
         [InlineKeyboardButton(text="≡ Главное меню", callback_data="main_menu")],
     ])
+    if contact_url:
+        kb.inline_keyboard.insert(0, [
+            InlineKeyboardButton(text="📞 Связаться с контактом", url=contact_url)
+        ])
 
-    photo = it.get("photo_file_id")
+    photo = _first_photo_id(it.get("photo_file_id"))
     if photo:
         msg = await cb.message.answer_photo(photo=photo, caption=caption, parse_mode="HTML", reply_markup=kb)
     else:
@@ -1915,6 +1969,7 @@ async def af_cal_day_all(cb: CallbackQuery):
     start_local, end_local = _day_bounds_local(year, month, day)
     start_utc = int(start_local.astimezone(timezone.utc).timestamp())
     end_utc = int(end_local.astimezone(timezone.utc).timestamp())
+    start_utc = max(start_utc, int(datetime.now(timezone.utc).timestamp()))
 
     q = sql("""
         SELECT
@@ -1925,6 +1980,7 @@ async def af_cal_day_all(cb: CallbackQuery):
         JOIN events_meta em ON em.listing_id = l.id
         WHERE
             l.type='events'
+            AND l.status='active'
             AND l.is_sold=0
             AND em.status='published'
             AND em.start_at_utc >= :start_utc
@@ -2044,6 +2100,7 @@ async def af_cal_day_city(cb: CallbackQuery):
     start_local, end_local = _day_bounds_local(year, month, day)
     start_utc = int(start_local.astimezone(timezone.utc).timestamp())
     end_utc = int(end_local.astimezone(timezone.utc).timestamp())
+    start_utc = max(start_utc, int(datetime.now(timezone.utc).timestamp()))
 
     q = sql("""
         SELECT
@@ -2054,6 +2111,7 @@ async def af_cal_day_city(cb: CallbackQuery):
         JOIN events_meta em ON em.listing_id = l.id
         WHERE
             l.type='events'
+            AND l.status='active'
             AND l.is_sold=0
             AND em.status='published'
             AND l.city_id = :city_id
@@ -2140,6 +2198,7 @@ async def _fetch_month_marks_city(slug: str, year: int, month: int) -> set[int]:
         JOIN events_meta em ON em.listing_id = l.id
         WHERE
             l.type='events'
+            AND l.status='active'
             AND l.is_sold=0
             AND em.status='published'
             AND l.city_id = :city_id

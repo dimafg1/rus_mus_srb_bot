@@ -59,17 +59,22 @@ class MarketPhotoEditStates(StatesGroup):
 # -------------------------------------------------------
 # Внутренние утилиты
 # -------------------------------------------------------
-async def _get_listing(listing_id: int) -> Listing | None:
+async def _get_listing(listing_id: int, owner_id: int | None = None) -> Listing | None:
     async with SessionLocal() as s:
-        return (
-            await s.execute(select(Listing).where(Listing.id == listing_id))
-        ).scalar_one_or_none()
+        conditions = [Listing.id == listing_id, Listing.type == "market"]
+        if owner_id is not None:
+            conditions.append(Listing.owner_id == owner_id)
+        return (await s.execute(select(Listing).where(*conditions))).scalar_one_or_none()
 
 
-async def _save_listing_photos(listing_id: int, photo_ids: list[str]) -> bool:
+async def _save_listing_photos(listing_id: int, owner_id: int, photo_ids: list[str]) -> bool:
     async with SessionLocal() as s:
         listing = (
-            await s.execute(select(Listing).where(Listing.id == listing_id))
+            await s.execute(select(Listing).where(
+                Listing.id == listing_id,
+                Listing.owner_id == owner_id,
+                Listing.type == "market",
+            ))
         ).scalar_one_or_none()
         if not listing:
             return False
@@ -77,6 +82,30 @@ async def _save_listing_photos(listing_id: int, photo_ids: list[str]) -> bool:
         listing.photo_file_id = ",".join(photo_ids) if photo_ids else None
         await s.commit()
         return True
+
+
+async def _authorize_photo_edit(cb: CallbackQuery, listing_id: int) -> Listing | None:
+    listing = await _get_listing(listing_id, cb.from_user.id)
+    if listing is None:
+        await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+    return listing
+
+
+async def _authorize_photo_message(message: Message, state: FSMContext, listing_id: int) -> bool:
+    if await _get_listing(listing_id, message.from_user.id):
+        return True
+    await state.clear()
+    await message.answer("Можно редактировать только свои объявления.")
+    return False
+
+
+async def _require_current_photo_session(cb: CallbackQuery, state: FSMContext, listing_id: int) -> dict | None:
+    """Не смешивать callback старой карточки с черновиком другого объявления."""
+    data = await state.get_data()
+    if data.get("mphoto_listing_id") != listing_id:
+        await cb.answer("Сеанс редактирования устарел. Откройте фото ещё раз.", show_alert=True)
+        return None
+    return data
 
 
 def _draft_from_listing(listing: Listing) -> list[str]:
@@ -258,13 +287,9 @@ async def mphoto_open(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Некорректные данные.", show_alert=True)
         return
 
-    listing = await _get_listing(listing_id)
+    listing = await _get_listing(listing_id, cb.from_user.id)
     if not listing:
         await cb.answer("Объявление не найдено.", show_alert=True)
-        return
-
-    if listing.owner_id != cb.from_user.id:
-        await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
         return
 
     await state.update_data(
@@ -300,6 +325,8 @@ async def mphoto_back(cb: CallbackQuery, state: FSMContext):
     except Exception:
         await cb.answer("Некорректные данные.", show_alert=True)
         return
+    if not await _authorize_photo_edit(cb, listing_id):
+        return
 
     await _clear_pending_action(state)
     await state.update_data(
@@ -329,6 +356,10 @@ async def mphoto_cancel(cb: CallbackQuery, state: FSMContext):
     except Exception:
         await cb.answer("Некорректные данные.", show_alert=True)
         return
+    if not await _authorize_photo_edit(cb, listing_id):
+        return
+    if await _require_current_photo_session(cb, state, listing_id) is None:
+        return
 
     await _clear_pending_action(state)
     await state.set_state(None)
@@ -351,8 +382,12 @@ async def mphoto_delete_request(cb: CallbackQuery, state: FSMContext):
     parts = (cb.data or "").split(":")
     listing_id = int(parts[2])
     idx_1based = int(parts[3])
+    if not await _authorize_photo_edit(cb, listing_id):
+        return
 
-    data = await state.get_data()
+    data = await _require_current_photo_session(cb, state, listing_id)
+    if data is None:
+        return
     draft = list(data.get("mphoto_draft_ids") or [])
 
     idx = idx_1based - 1
@@ -395,8 +430,12 @@ async def mphoto_add(cb: CallbackQuery, state: FSMContext):
     except Exception:
         await cb.answer("Некорректные данные.", show_alert=True)
         return
+    if not await _authorize_photo_edit(cb, listing_id):
+        return
 
-    data = await state.get_data()
+    data = await _require_current_photo_session(cb, state, listing_id)
+    if data is None:
+        return
     draft = list(data.get("mphoto_draft_ids") or [])
 
     if len(draft) >= 3:
@@ -430,7 +469,14 @@ async def mphoto_add_receive(message: Message, state: FSMContext):
     await _remember_and_delete_user_media(message)
 
     data = await state.get_data()
-    listing_id = int(data.get("mphoto_listing_id"))
+    try:
+        listing_id = int(data.get("mphoto_listing_id"))
+    except (TypeError, ValueError):
+        await state.clear()
+        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        return
+    if not await _authorize_photo_message(message, state, listing_id):
+        return
 
     await state.update_data(
         mphoto_pending_action="add",
@@ -460,7 +506,14 @@ async def mphoto_add_not_photo(message: Message, state: FSMContext):
     await _remember_and_delete_user_media(message)
 
     data = await state.get_data()
-    listing_id = int(data.get("mphoto_listing_id"))
+    try:
+        listing_id = int(data.get("mphoto_listing_id"))
+    except (TypeError, ValueError):
+        await state.clear()
+        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        return
+    if not await _authorize_photo_message(message, state, listing_id):
+        return
 
     msg = await message.answer(
         "Пожалуйста, отправьте именно одно фото.",
@@ -486,8 +539,12 @@ async def mphoto_swap(cb: CallbackQuery, state: FSMContext):
     parts = (cb.data or "").split(":")
     listing_id = int(parts[2])
     idx = int(parts[3]) - 1
+    if not await _authorize_photo_edit(cb, listing_id):
+        return
 
-    data = await state.get_data()
+    data = await _require_current_photo_session(cb, state, listing_id)
+    if data is None:
+        return
     draft = list(data.get("mphoto_draft_ids") or [])
 
     if idx < 0 or idx >= len(draft):
@@ -523,8 +580,15 @@ async def mphoto_receive_replace_one(message: Message, state: FSMContext):
     await _remember_and_delete_user_media(message)
 
     data = await state.get_data()
-    listing_id = int(data.get("mphoto_listing_id"))
-    idx = int(data.get("mphoto_pending_index"))
+    try:
+        listing_id = int(data.get("mphoto_listing_id"))
+        idx = int(data.get("mphoto_pending_index"))
+    except (TypeError, ValueError):
+        await state.clear()
+        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        return
+    if not await _authorize_photo_message(message, state, listing_id):
+        return
 
     await state.update_data(
         mphoto_pending_action="replace_one",
@@ -554,7 +618,14 @@ async def mphoto_replace_one_not_photo(message: Message, state: FSMContext):
     await _remember_and_delete_user_media(message)
 
     data = await state.get_data()
-    listing_id = int(data.get("mphoto_listing_id"))
+    try:
+        listing_id = int(data.get("mphoto_listing_id"))
+    except (TypeError, ValueError):
+        await state.clear()
+        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        return
+    if not await _authorize_photo_message(message, state, listing_id):
+        return
 
     msg = await message.answer(
         "Пожалуйста, отправьте именно фото.",
@@ -582,12 +653,14 @@ async def mphoto_apply(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Некорректные данные.", show_alert=True)
         return
 
-    data = await state.get_data()
+    data = await _require_current_photo_session(cb, state, listing_id)
+    if data is None:
+        return
     action = data.get("mphoto_pending_action")
     idx = data.get("mphoto_pending_index")
     pending_photo_ids = list(data.get("mphoto_pending_photo_ids") or [])
 
-    listing = await _get_listing(listing_id)
+    listing = await _get_listing(listing_id, cb.from_user.id)
     if not listing:
         await cb.answer("Объявление не найдено.", show_alert=True)
         return
@@ -624,7 +697,7 @@ async def mphoto_apply(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Нет действия для подтверждения.", show_alert=True)
         return
 
-    ok = await _save_listing_photos(listing_id, new_photos)
+    ok = await _save_listing_photos(listing_id, cb.from_user.id, new_photos)
     if not ok:
         await cb.answer("Не удалось сохранить фото.", show_alert=True)
         return

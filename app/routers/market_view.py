@@ -39,6 +39,7 @@ from app.routers.utils import (
     render_flex_compact,
     render_category_path,
     build_contact_url,
+    escape_html,
 )
 
 from app.search.fuzzy import search_items
@@ -52,8 +53,10 @@ from app.lifecycle import (
     extend_listing,
 )
 
-import os, urllib.parse
+import urllib.parse
+from pathlib import Path
 from aiogram.types import WebAppInfo
+from app.db_path import config_value
 
 from app.routers.utils_category_title import format_category_title
 
@@ -64,8 +67,19 @@ from aiogram.filters import StateFilter
 
 router = Router()
 
-WEBAPP_BASE = os.getenv("WEBAPP_BASE", "https://unixound.com/rus_mus_srb_bot").rstrip("/")
-USE_CONTACT_REDIRECT = os.getenv("USE_CONTACT_REDIRECT", "1").strip().lower() in {"1", "true", "yes", "on"}
+_ROOT = Path(__file__).resolve().parents[2]
+WEBAPP_BASE = (
+    config_value(
+        _ROOT,
+        "WEBAPP_BASE",
+        "https://unixound.com/rus_mus_srb_bot",
+        env_files=(".env.web", ".env"),
+    )
+    or ""
+).rstrip("/")
+USE_CONTACT_REDIRECT = (
+    config_value(_ROOT, "USE_CONTACT_REDIRECT", "1") or ""
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # ─────────────────────────────────────────────────────────
 # ФЛАГ «пришли из поиска» по чатам (для корректного «Назад»)
@@ -79,6 +93,40 @@ last_search_ctx_by_chat: dict[int, dict] = {}
 
 
 MARKET_SEARCH_PAGE_SIZE = 10
+
+
+def _market_public_predicates():
+    """Единые условия публичной выдачи Барахолки."""
+    return (
+        Listing.type == "market",
+        Listing.status == "active",
+        Listing.is_sold.is_(False),
+    )
+
+
+async def _load_public_market_ids(ids: list[int]) -> tuple[list[int], list[Listing]]:
+    """Перепроверить сохранённые search ids и сохранить исходный порядок."""
+    clean_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in ids or []:
+        try:
+            listing_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if listing_id not in seen:
+            seen.add(listing_id)
+            clean_ids.append(listing_id)
+
+    if not clean_ids:
+        return [], []
+
+    async with SessionLocal() as s:
+        db_rows = (await s.execute(
+            select(Listing).where(Listing.id.in_(clean_ids), *_market_public_predicates())
+        )).scalars().all()
+    by_id = {row.id: row for row in db_rows}
+    valid_ids = [listing_id for listing_id in clean_ids if listing_id in by_id]
+    return valid_ids, [by_id[listing_id] for listing_id in valid_ids]
 
 
 
@@ -142,7 +190,7 @@ async def market_city(cb: CallbackQuery):
 
     msg = await cb.bot.send_message(
         chat_id,
-        f"<b>Барахолка → {city.name}</b>",
+        f"<b>Барахолка → {escape_html(city.name)}</b>",
         reply_markup=markup,
         parse_mode="HTML"
     )
@@ -199,6 +247,7 @@ async def market_list(cb: CallbackQuery):
                 select(Listing)
                 .where(
                     Listing.city_id == city.id,
+                    Listing.type == "market",
                     (Listing.category_id == cat.id) |
                     (Listing.extra_category_id1 == cat.id) |
                     (Listing.extra_category_id2 == cat.id),
@@ -216,6 +265,7 @@ async def market_list(cb: CallbackQuery):
                 select(Listing)
                 .where(
                     Listing.city_id == city.id,
+                    Listing.type == "market",
                     (Listing.category_id == cat.id) |
                     (Listing.extra_category_id1 == cat.id) |
                     (Listing.extra_category_id2 == cat.id),
@@ -269,7 +319,7 @@ async def market_list(cb: CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     msg = await cb.bot.send_message(
         chat_id,
-        f"<b>Барахолка → {city.name} → {cat.name}</b>\n\n" +
+        f"<b>Барахолка → {escape_html(city.name)} → {escape_html(cat.name)}</b>\n\n" +
         ("Выберите подкатегорию или объявление:" if children and listings else
          "Выберите подкатегорию:" if children else "Выберите объявление:"),
         reply_markup=markup,
@@ -371,8 +421,7 @@ async def market_search_back(cb: CallbackQuery, state: FSMContext):
         await state.clear()
         return
 
-    async with SessionLocal() as s:
-        results = (await s.execute(select(Listing).where(Listing.id.in_(last_result_ids)))).scalars().all()
+    _, results = await _load_public_market_ids(last_result_ids)
 
     await show_market_search_results(cb.message, state, results)
     await cb.answer()
@@ -420,7 +469,9 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     ids = data.get("search_results", [])
     query = data.get("search_query", "")
-    # Синхронизируем кэш (вдруг он пуст)
+    ids, valid_results = await _load_public_market_ids(ids)
+    await state.update_data(search_results=ids)
+    # Синхронизируем кэш только с всё ещё публичными объявлениями.
     last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
 
     if not ids:
@@ -439,16 +490,7 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
         await state.clear()
         return
 
-    page_ids = ids[:MARKET_SEARCH_PAGE_SIZE]
-
-    async with SessionLocal() as s:
-        db_results = (await s.execute(
-            select(Listing).where(Listing.id.in_(page_ids))
-        )).scalars().all()
-
-    # сохраняем порядок как в ids
-    by_id = {l.id: l for l in db_results}
-    results = [by_id[i] for i in page_ids if i in by_id]
+    results = valid_results[:MARKET_SEARCH_PAGE_SIZE]
 
     total_count = len(ids)
     page = 1
@@ -484,7 +526,8 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     msg = await cb.message.answer(
-        f"🔎 {found_count}: <b>{total_count}</b> {found_query}: <b>{query}</b>\n\n{found_select}:",
+        f"🔎 {escape_html(found_count)}: <b>{total_count}</b> {escape_html(found_query)}: "
+        f"<b>{escape_html(query)}</b>\n\n{escape_html(found_select)}:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -534,6 +577,9 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
             ids = ctx.get("ids", []) or []
             query = ctx.get("query", "") or ""
 
+    ids, valid_results = await _load_public_market_ids(ids)
+    await state.update_data(search_results=ids)
+
     # Если контекст утерян — понятный fallback
     if not ids:
         new_search_btn = await get_common_menu_button('market_new_search', lang='ru')
@@ -562,15 +608,7 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
         )
         return
 
-    page_ids = ids[:MARKET_SEARCH_PAGE_SIZE]
-
-    async with SessionLocal() as s:
-        db_results = (await s.execute(
-            select(Listing).where(Listing.id.in_(page_ids))
-        )).scalars().all()
-
-    by_id = {l.id: l for l in db_results}
-    results = [by_id[i] for i in page_ids if i in by_id]
+    results = valid_results[:MARKET_SEARCH_PAGE_SIZE]
 
     # синхронизируем кэш
     last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
@@ -631,7 +669,8 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     msg = await cb.message.answer(
-        f"🔎 {found_count}: <b>{total_count}</b> {found_query}: <b>{query}</b>\n\n{found_select}:",
+        f"🔎 {escape_html(found_count)}: <b>{total_count}</b> {escape_html(found_query)}: "
+        f"<b>{escape_html(query)}</b>\n\n{escape_html(found_select)}:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -882,9 +921,20 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
     cat_slug = parts[3]
     from_my = len(parts) > 4 and parts[4] == "my"
 
-    # Достаём объявление
+    # Из каталога карточка открывается только для публичного market-объявления.
+    # Архивную карточку из «Моих» может открыть исключительно её владелец.
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        stmt = select(Listing).where(
+            Listing.id == listing_id,
+            Listing.type == "market",
+        )
+        if not from_my:
+            stmt = stmt.where(Listing.status == "active", Listing.is_sold.is_(False))
+        listing = (await s.execute(stmt)).scalar_one_or_none()
+
+    if not listing or (from_my and listing.owner_id != user_id):
+        await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+        return
 
     # Определяем категорию, из которой открыта карточка, для заголовка.
     current_category_id = listing.category_id
@@ -971,10 +1021,10 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
     # Формирование caption
     caption_parts = []
 
-    title_line = f"<b>{listing.title}</b>"
-    descr_line = (listing.descr or "").strip()
+    title_line = f"<b>{escape_html(listing.title)}</b>"
+    descr_line = escape_html((listing.descr or "").strip())
     price_label = (await get_text('listing_price', 'ru')) or "Price"
-    price_line = f"{price_label}: {listing.price}" if listing.price else ""
+    price_line = f"{escape_html(price_label)}: {escape_html(listing.price)}" if listing.price else ""
 
     block_lines = [title_line, category_line]
     if descr_line:
@@ -991,7 +1041,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         caption_parts.append(flex_block)
 
     if video_url:
-        caption_parts.append(f"Видео: {video_url}")
+        caption_parts.append(f"Видео: {escape_html(video_url)}")
 
     # Контакты
     contact_block = await render_contact(listing, lang="ru")
@@ -1239,7 +1289,9 @@ async def market_extend_listing(cb: CallbackQuery):
         return
 
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, Listing.type == "market")
+        )).scalar_one_or_none()
         if not listing:
             await cb.answer("Объявление не найдено.", show_alert=True)
             return
@@ -1337,18 +1389,25 @@ async def show_listing_photo(cb: CallbackQuery):
     chat_id = cb.message.chat.id
 
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, *_market_public_predicates())
+        )).scalar_one_or_none()
+
+    if not listing:
+        await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+        return
 
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
     price_label = (await get_text('listing_price', 'ru')) or "Price"
     contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
-    caption = f"<b>{listing.title}</b>\n"
+    caption = f"<b>{escape_html(listing.title)}</b>\n"
     if listing.price:
-        caption += f"{price_label}: {listing.price}\n"
+        caption += f"{escape_html(price_label)}: {escape_html(listing.price)}\n"
     if listing.descr:
-        caption += f"{listing.descr}\n"
-    caption += f"{contact_label}: {listing.contact}"
+        caption += f"{escape_html(listing.descr)}\n"
+    if listing.contact:
+        caption += f"{escape_html(contact_label)}: {escape_html(listing.contact)}"
 
     sent_ids = []
 
@@ -1401,11 +1460,13 @@ async def toggle_listing(cb: CallbackQuery):
         if msg_id:
             async with SessionLocal() as s:
                 try:
-                    listing = (await s.execute(select(Listing).where(Listing.id == current_expanded))).scalar_one()
+                    listing = (await s.execute(
+                        select(Listing).where(Listing.id == current_expanded, *_market_public_predicates())
+                    )).scalar_one()
                 except NoResultFound:
                     listing = None
             if listing:
-                header = f"• <b>{listing.title}</b>"
+                header = f"• <b>{escape_html(listing.title)}</b>"
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(
                         text=f"{listing.title} — Развернуть",
@@ -1426,7 +1487,9 @@ async def toggle_listing(cb: CallbackQuery):
 
     async with SessionLocal() as s:
         try:
-            listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+            listing = (await s.execute(
+                select(Listing).where(Listing.id == listing_id, *_market_public_predicates())
+            )).scalar_one()
         except NoResultFound:
             await cb.bot.edit_message_text(
                 "Объявление не найдено или было удалено.",
@@ -1437,7 +1500,7 @@ async def toggle_listing(cb: CallbackQuery):
             return
 
     if expanded_listing_by_chat.get(chat_id) == listing_id:
-        header = f"• <b>{listing.title}</b>"
+        header = f"• <b>{escape_html(listing.title)}</b>"
         button_text = f"{listing.title} — Развернуть"
         new_reply = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=button_text, callback_data=f"toggle:{city_slug}:{cat_slug}:{listing.id}")
@@ -1453,9 +1516,9 @@ async def toggle_listing(cb: CallbackQuery):
         no_descr = (await get_text('listing_no_descr', 'ru')) or "No description"
 
         details = (
-            f"\n    {price_label}: {listing.price}"
-            f"\n    {listing.descr or no_descr}"
-            f"\n    {contact_label}: {listing.contact}"
+            f"\n    {escape_html(price_label)}: {escape_html(listing.price)}"
+            f"\n    {escape_html(listing.descr or no_descr)}"
+            f"\n    {escape_html(contact_label)}: {escape_html(listing.contact)}"
         )
         # Доп. сведения – компактно
         async with SessionLocal() as s:
@@ -1463,7 +1526,7 @@ async def toggle_listing(cb: CallbackQuery):
         if flex_compact:
             details += "\n" + flex_compact
 
-        full_text = f"• <b>{listing.title}</b>{details}"
+        full_text = f"• <b>{escape_html(listing.title)}</b>{details}"
         button_text = f"{listing.title} — Свернуть"
         new_reply = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=button_text, callback_data=f"toggle:{city_slug}:{cat_slug}:{listing.id}")
@@ -1489,17 +1552,19 @@ async def item_detail_handler(cb: CallbackQuery):
     item_id = int(cb.data.split(":", 1)[1])
     async with SessionLocal() as s:
         try:
-            listing = (await s.execute(select(Listing).where(Listing.id == item_id))).scalar_one()
+            listing = (await s.execute(
+                select(Listing).where(Listing.id == item_id, *_market_public_predicates())
+            )).scalar_one()
         except NoResultFound:
             await cb.message.answer("Объявление не найдено или было удалено.")
             await cb.answer()
             return
 
     text = (
-        f"<b>{listing.title}</b>"
-        f"{(' — ' + listing.price) if listing.price else ''}\n"
-        f"{listing.descr or 'Нет описания'}\n"
-        f"<code>{listing.contact}</code>"
+        f"<b>{escape_html(listing.title)}</b>"
+        f"{(' — ' + escape_html(listing.price)) if listing.price else ''}\n"
+        f"{escape_html(listing.descr or 'Нет описания')}\n"
+        f"<code>{escape_html(listing.contact)}</code>"
     )
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
@@ -1565,7 +1630,7 @@ async def handle_market_search(m: Message, state: FSMContext):
     async with SessionLocal() as s:
         rows = (await s.execute(
             select(Listing)
-            .where(Listing.is_sold.is_(False), Listing.status == "active")
+            .where(*_market_public_predicates())
             .order_by(Listing.created_at.desc())
         )).scalars().all()
 
@@ -1620,7 +1685,7 @@ async def handle_market_search(m: Message, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
         msg = await m.answer(
-            f"😕 Ничего не найдено по запросу: <b>{query}</b>.\n\n"
+            f"😕 Ничего не найдено по запросу: <b>{escape_html(query)}</b>.\n\n"
             "Попробуйте другой поисковый запрос или вернитесь в меню поиска.",
             reply_markup=kb,
             parse_mode="HTML"
@@ -1687,14 +1752,15 @@ async def handle_market_search(m: Message, state: FSMContext):
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
         correction_note = (
             f"🧠 Показаны результаты по запросу: "
-            f"<b>{search_query_effective}</b> "
+            f"<b>{escape_html(search_query_effective)}</b> "
             f"(учтена возможная опечатка).\n\n"
         )
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     msg = await m.answer(
-        f"{correction_note}🔎 {found_count}: <b>{total_count}</b> {found_query}: <b>{query}</b>\n\n{found_select}:",
+        f"{correction_note}🔎 {escape_html(found_count)}: <b>{total_count}</b> "
+        f"{escape_html(found_query)}: <b>{escape_html(query)}</b>\n\n{escape_html(found_select)}:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1740,6 +1806,10 @@ async def market_search_page(cb: CallbackQuery, state: FSMContext):
         ids = ctx.get("ids") or []
         query = ctx.get("query") or ""
 
+    ids, valid_results = await _load_public_market_ids(ids)
+    await state.update_data(search_results=ids)
+    last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
+
     if not ids:
         msg = await cb.message.answer("Результаты поиска потеряны. Начните новый поиск.")
         last_search_menu_message[chat_id] = msg.message_id
@@ -1747,15 +1817,7 @@ async def market_search_page(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    page_ids = ids[offset:offset + MARKET_SEARCH_PAGE_SIZE]
-
-    async with SessionLocal() as s:
-        db_results = (await s.execute(
-            select(Listing).where(Listing.id.in_(page_ids))
-        )).scalars().all()
-
-    by_id = {l.id: l for l in db_results}
-    results = [by_id[i] for i in page_ids if i in by_id]
+    results = valid_results[offset:offset + MARKET_SEARCH_PAGE_SIZE]
 
     total_count = len(ids)
     page = (offset // MARKET_SEARCH_PAGE_SIZE) + 1
@@ -1804,7 +1866,8 @@ async def market_search_page(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     msg = await cb.message.answer(
-        f"🔎 {found_count}: <b>{total_count}</b> {found_query}: <b>{query}</b>\n\n{found_select}:",
+        f"🔎 {escape_html(found_count)}: <b>{total_count}</b> {escape_html(found_query)}: "
+        f"<b>{escape_html(query)}</b>\n\n{escape_html(found_select)}:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1836,23 +1899,29 @@ async def show_search_listing(cb: CallbackQuery):
 
     listing_id = int(cb.data.split(":", 1)[1])
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, *_market_public_predicates())
+        )).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+            return
         category_path = await render_category_path(s, listing.category_id, root_id=30)
 
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
 
     price_label = (await get_text('listing_price', 'ru')) or "Price"
     contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
-    caption = f"<b>{listing.title}</b>"
+    caption = f"<b>{escape_html(listing.title)}</b>"
     if category_path:
         caption += f"\n\nКатегория: <b>Барахолка → {category_path}</b>"
     else:
         caption += "\n\nКатегория: <b>Барахолка</b>"
     if listing.descr:
-        caption += f"\n\n{listing.descr}"
+        caption += f"\n\n{escape_html(listing.descr)}"
     if listing.price:
-        caption += f"\n\n{price_label}: {listing.price}"
-    caption += f"\n\n{contact_label}: {listing.contact}"
+        caption += f"\n\n{escape_html(price_label)}: {escape_html(listing.price)}"
+    if listing.contact:
+        caption += f"\n\n{escape_html(contact_label)}: {escape_html(listing.contact)}"
 
 
     async with SessionLocal() as s:
@@ -1940,7 +2009,12 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
         return
 
     async with SessionLocal() as s:
-        listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one()
+        listing = (await s.execute(
+            select(Listing).where(Listing.id == listing_id, *_market_public_predicates())
+        )).scalar_one_or_none()
+        if not listing:
+            await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+            return
         city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one()
         cat = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
         city_slug = city.slug
@@ -1959,16 +2033,17 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
     price_label = (await get_text('listing_price', 'ru')) or "Price"
     contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
 
-    caption = f"<b>{listing.title}</b>"
+    caption = f"<b>{escape_html(listing.title)}</b>"
     if category_path:
         caption += f"\n\nКатегория: <b>Барахолка → {category_path}</b>"
     else:
         caption += "\n\nКатегория: <b>Барахолка</b>"
     if listing.descr:
-        caption += f"\n\n{listing.descr}"
+        caption += f"\n\n{escape_html(listing.descr)}"
     if listing.price:
-        caption += f"\n\n{price_label}: {listing.price}"
-    caption += f"\n\n{contact_label}: {listing.contact}"
+        caption += f"\n\n{escape_html(price_label)}: {escape_html(listing.price)}"
+    if listing.contact:
+        caption += f"\n\n{escape_html(contact_label)}: {escape_html(listing.contact)}"
 
     async with SessionLocal() as s:
         flex_block = await render_flex_block(s, listing, lang="ru")
@@ -1996,12 +2071,11 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
         buttons.append([del_btn])
 
     elif listing.contact and listing.contact.startswith("@"):
-        username = listing.contact.lstrip("@").strip()
         contact_btn = await get_common_menu_button('btn_contact_seller', lang='ru')
 
         contact_btn = InlineKeyboardButton(
             text=contact_btn.text if contact_btn else "💬 Contact seller",
-            url=f"https://t.me/{username}",
+            url=build_contact_url(listing.id, listing.contact, cb.from_user.id, "search"),
         )
         buttons.append([contact_btn])
 
@@ -2076,5 +2150,3 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
         f"done | listing_id={listing.id} | chat_id={chat_id} | user_id={user_id} | "
         f"sent_ids={sent_ids}"
     )
-
-

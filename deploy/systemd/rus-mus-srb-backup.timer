@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Rus Mus Srb database backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+Unit=rus-mus-srb-backup.service
+
+[Install]
+WantedBy=timers.target

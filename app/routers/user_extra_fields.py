@@ -8,6 +8,7 @@ from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
 import json
 import inspect
+from html import escape as html_escape
 
 from app.database import SessionLocal
 from app.models import Category, Listing
@@ -27,6 +28,7 @@ router = Router()
 class UserExtraFieldStates(StatesGroup):
     waiting_value = State()
     waiting_video = State()
+    waiting_choice = State()
 
 
 # ====== Ключи для хранения в FSM (важно: VAL_KEY импортируется в market_add.py) ======
@@ -35,6 +37,8 @@ IDX_KEY    = "extra_idx"         # текущий индекс (0..n-1)
 VAL_KEY    = "extra_values"      # dict key->value — ответы пользователя
 RESUME_KEY = "extra_resume"      # callback_data, куда вернуться по завершении
 LISTING_ID_KEY = "listing_id"    # listing_id, чтобы подтягивать/сохранять значения
+OWNER_ID_KEY = "extra_owner_id"
+LISTING_TYPE_KEY = "extra_listing_type"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ВНУТРЕННИЕ УТИЛИТЫ
@@ -49,7 +53,9 @@ def _ctx(ev):
 
 async def _load_category_fields(session, cat_id: int) -> list[dict]:
     """Читаем JSON-массив дефиниций доп. полей из Category.fields."""
-    cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+    cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one_or_none()
+    if cat is None:
+        return []
     try:
         raw = (cat.fields or "").strip()
         data = json.loads(raw) if raw else []
@@ -67,7 +73,7 @@ def _fmt_value_for_display(val):
     if isinstance(val, bool):
         return "Да" if val else "Нет"
     if isinstance(val, list):
-        return ", ".join(map(str, val))
+        return html_escape(", ".join(map(str, val)))
     # Видео (file_id/ссылка) не «озвучиваем» — плеер покажем отдельно
     if isinstance(val, str):
         sval = val.strip()
@@ -76,19 +82,33 @@ def _fmt_value_for_display(val):
             return "—"
         if len(sval) > 20 and " " not in sval:
             return "—"
-        return sval
-    return str(val)
+        return html_escape(sval)
+    return html_escape(str(val))
+
+
+def _flex_dict(raw) -> dict:
+    try:
+        value = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 async def _current_value_from_listing(state: FSMContext, key: str):
     """Достаём исходное значение поля из listing.flex (если есть listing_id в стейте)."""
     data = await state.get_data()
     listing_id = data.get(LISTING_ID_KEY)
-    if not listing_id:
+    owner_id = data.get(OWNER_ID_KEY)
+    listing_type = data.get(LISTING_TYPE_KEY)
+    if not listing_id or owner_id is None or listing_type not in ("market", "service"):
         return None
     try:
         async with SessionLocal() as s:
-            l = await _get_listing(s, int(listing_id))
+            l = (await s.execute(select(Listing).where(
+                Listing.id == int(listing_id),
+                Listing.owner_id == owner_id,
+                Listing.type == listing_type,
+            ))).scalar_one_or_none()
             if not l or not l.flex:
                 return None
             flex = json.loads(l.flex)
@@ -119,11 +139,34 @@ async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, re
     chat_id, bot, send = _ctx(ev)
     await clear_bot_messages(chat_id, bot)
 
+    state_data = await state.get_data()
+    listing_id = state_data.get(LISTING_ID_KEY)
+    existing_values: dict = {}
+    listing_type: str | None = None
+    owner_id = getattr(getattr(ev, "from_user", None), "id", None)
+
     async with SessionLocal() as s:
+        if listing_id:
+            listing = (await s.execute(select(Listing).where(
+                Listing.id == int(listing_id),
+                Listing.owner_id == owner_id,
+                Listing.type.in_(("market", "service")),
+            ))).scalar_one_or_none()
+            if listing is None:
+                await state.clear()
+                msg = await send("Можно редактировать только своё объявление.")
+                last_bot_messages[chat_id] = [msg.message_id]
+                await register_bot_messages(chat_id, [msg.message_id])
+                return
+            existing_values = _flex_dict(listing.flex)
+            listing_type = listing.type
+            # Категория из callback_data не является доверенным источником.
+            cat_id = listing.category_id
         defs = await _load_category_fields(s, cat_id)
 
     # Если полей нет — просто вернёмся к объявлению
     if not defs:
+        await state.clear()
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад к объявлению", callback_data=resume_data or "noop")]
         ])
@@ -137,8 +180,10 @@ async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, re
     await state.update_data({
         DEF_KEY: defs,
         IDX_KEY: 0,
-        VAL_KEY: {},
-        RESUME_KEY: resume_data
+        VAL_KEY: existing_values,
+        RESUME_KEY: resume_data,
+        OWNER_ID_KEY: owner_id,
+        LISTING_TYPE_KEY: listing_type,
         # LISTING_ID_KEY — должен быть записан извне (market_edit) заранее
     })
     print(f"[user_extra_fields] start chat={chat_id}, fields={len(defs)}, resume={resume_data}")
@@ -162,19 +207,36 @@ async def _ask_current_field(ev, state: FSMContext):
     if not defs or idx >= len(defs):
         vals = data.get(VAL_KEY, {}) or {}
         listing_id = data.get(LISTING_ID_KEY)
+        owner_id = data.get(OWNER_ID_KEY)
+        listing_type = data.get(LISTING_TYPE_KEY)
 
         # сохраняем в Listing.flex
         if listing_id:
             try:
                 json_str = json.dumps(vals, ensure_ascii=False) if vals else None
                 async with SessionLocal() as s:
-                    l = await _get_listing(s, int(listing_id))
+                    l = (await s.execute(select(Listing).where(
+                        Listing.id == int(listing_id),
+                        Listing.owner_id == owner_id,
+                        Listing.type == listing_type,
+                        Listing.type.in_(("market", "service")),
+                    ))).scalar_one_or_none()
                     if l:
                         l.flex = json_str
                         await s.commit()
                         print(f"[user_extra_fields] saved flex for listing_id={listing_id}: {json_str}")
+                    else:
+                        await state.clear()
+                        msg = await send("Сеанс редактирования устарел. Откройте объявление ещё раз.")
+                        last_bot_messages[chat_id] = [msg.message_id]
+                        await register_bot_messages(chat_id, [msg.message_id])
+                        return
             except Exception as e:
                 print(f"[user_extra_fields] ERROR saving flex listing_id={listing_id}: {e}")
+                msg = await send("Не удалось сохранить дополнительные поля. Попробуйте ещё раз.")
+                last_bot_messages[chat_id] = [msg.message_id]
+                await register_bot_messages(chat_id, [msg.message_id])
+                return
 
         # итоговый экран
         lines = ["<b>Дополнительные поля сохранены.</b>"]
@@ -182,7 +244,7 @@ async def _ask_current_field(ev, state: FSMContext):
             key   = (str(f.get("key","")).strip().lower() or "field")
             label = f.get("label") or f.get("name") or key
             val   = vals.get(key, None)
-            lines.append(f"<b>{label}:</b> {_fmt_value_for_display(val)}")
+            lines.append(f"<b>{html_escape(str(label))}:</b> {_fmt_value_for_display(val)}")
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад к объявлению", callback_data=resume or "noop")]
@@ -190,6 +252,7 @@ async def _ask_current_field(ev, state: FSMContext):
         msg = await send("\n\n".join(lines), reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
+        await state.clear()
         print(f"[user_extra_fields] finish chat={chat_id}, msgs={[msg.message_id]}")
         return
 
@@ -202,7 +265,7 @@ async def _ask_current_field(ev, state: FSMContext):
     options  = f.get("options") if isinstance(f.get("options"), list) else []
 
     # Заголовок без индикаторов (1/3) — по вашему требованию
-    title = f"<b>{label}</b>" + (" *" if required else "")
+    title = f"<b>{html_escape(str(label))}</b>" + (" *" if required else "")
 
     # Текущее значение — вытянем из listing.flex (если есть)
     cur_val = await _current_value_from_listing(state, key)
@@ -234,6 +297,7 @@ async def _ask_current_field(ev, state: FSMContext):
         msg = await send(f"{title}\n\n{cur_line}\n\nВыберите вариант:", reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
+        await state.set_state(UserExtraFieldStates.waiting_choice)
         print(f"[user_extra_fields] ask checkbox chat={chat_id}, idx={idx}, key={key}")
         return
 
@@ -247,6 +311,7 @@ async def _ask_current_field(ev, state: FSMContext):
         msg = await send(f"{title}\n\n{cur_line}\n\nВыберите один из вариантов:", reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
+        await state.set_state(UserExtraFieldStates.waiting_choice)
         print(f"[user_extra_fields] ask select chat={chat_id}, idx={idx}, key={key}, options={len(options)}")
         return
     
@@ -446,13 +511,13 @@ async def user_extra_video_wrong_content(message: Message, state: FSMContext):
 
 
 
-@router.callback_query(F.data.regexp(r"^extra:checkbox:(0|1)$"))
+@router.callback_query(UserExtraFieldStates.waiting_choice, F.data.regexp(r"^extra:checkbox:(0|1)$"))
 async def user_extra_checkbox(cb: CallbackQuery, state: FSMContext):
     val = cb.data.endswith(":1")
     print(f"[user_extra_fields] checkbox chat={cb.message.chat.id}, val={val}")
     await _advance_with_value(cb, state, val)
 
-@router.callback_query(F.data.regexp(r"^extra:select:(\d+)$"))
+@router.callback_query(UserExtraFieldStates.waiting_choice, F.data.regexp(r"^extra:select:(\d+)$"))
 async def user_extra_select(cb: CallbackQuery, state: FSMContext):
     try:
         opt_idx = int(cb.data.split(":")[-1])

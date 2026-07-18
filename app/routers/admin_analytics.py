@@ -846,14 +846,17 @@ async def admin_analytics_cities(cb: CallbackQuery) -> None:
         rows = (await s.execute(sql("""
             SELECT c.id, c.name,
                    COUNT(DISTINCT l.id) AS total,
-                   COUNT(DISTINCT CASE WHEN COALESCE(l.is_sold,0)=0 THEN l.id END) AS active,
+                   COUNT(DISTINCT CASE
+                       WHEN l.status='active' AND COALESCE(l.is_sold,0)=0 THEN l.id
+                   END) AS active,
                    SUM(CASE WHEN lv.action='open' THEN 1 ELSE 0 END) AS views,
                    COUNT(DISTINCT CASE WHEN lv.action='open' THEN lv.user_id END) AS viewers,
                    SUM(CASE WHEN lv.action='contact' THEN 1 ELSE 0 END) AS contacts,
-                   SUM(CASE WHEN l.type='market' THEN 1 ELSE 0 END) AS market,
-                   SUM(CASE WHEN l.type='service' THEN 1 ELSE 0 END) AS service,
-                   SUM(CASE WHEN l.type='vacancy' THEN 1 ELSE 0 END) AS vacancy,
-                   SUM(CASE WHEN l.type='events' THEN 1 ELSE 0 END) AS events
+                   COUNT(DISTINCT CASE WHEN l.type='market' THEN l.id END) AS market,
+                   COUNT(DISTINCT CASE WHEN l.type='service' THEN l.id END) AS service,
+                   COUNT(DISTINCT CASE WHEN l.type='vacancy' THEN l.id END) AS vacancy,
+                   COUNT(DISTINCT CASE WHEN l.type='events' THEN l.id END) AS events,
+                   COUNT(DISTINCT CASE WHEN l.type='release' THEN l.id END) AS release
             FROM city c
             LEFT JOIN listing l ON l.city_id=c.id
             LEFT JOIN listing_views lv ON lv.listing_id=l.id
@@ -901,8 +904,12 @@ async def _fetch_owners_summary(offset: int, limit: int):
             l.owner_id AS owner_id,
             GROUP_CONCAT(DISTINCT l.contact) AS contacts_raw,
             COUNT(DISTINCT l.id) AS listings_count,
-            SUM(CASE WHEN COALESCE(l.is_sold, 0) = 0 THEN 1 ELSE 0 END) AS active_listings,
-            SUM(CASE WHEN COALESCE(l.is_sold, 0) = 1 THEN 1 ELSE 0 END) AS sold_listings,
+            COUNT(DISTINCT CASE
+                WHEN l.status='active' AND COALESCE(l.is_sold, 0)=0 THEN l.id
+            END) AS active_listings,
+            COUNT(DISTINCT CASE
+                WHEN l.status!='active' OR COALESCE(l.is_sold, 0)=1 THEN l.id
+            END) AS sold_listings,
             COUNT(lv.id) AS opens,
             COUNT(DISTINCT lv.user_id) AS unique_viewers,
             SUM(CASE WHEN lv.source = 'search' THEN 1 ELSE 0 END) AS search_opens,
@@ -994,8 +1001,12 @@ async def admin_analytics_owner_detail(cb: CallbackQuery) -> None:
             l.owner_id AS owner_id,
             GROUP_CONCAT(DISTINCT l.contact) AS contacts_raw,
             COUNT(DISTINCT l.id) AS listings_count,
-            SUM(CASE WHEN COALESCE(l.is_sold, 0) = 0 THEN 1 ELSE 0 END) AS active_listings,
-            SUM(CASE WHEN COALESCE(l.is_sold, 0) = 1 THEN 1 ELSE 0 END) AS sold_listings,
+            COUNT(DISTINCT CASE
+                WHEN l.status='active' AND COALESCE(l.is_sold, 0)=0 THEN l.id
+            END) AS active_listings,
+            COUNT(DISTINCT CASE
+                WHEN l.status!='active' OR COALESCE(l.is_sold, 0)=1 THEN l.id
+            END) AS sold_listings,
             COUNT(lv.id) AS opens,
             COUNT(DISTINCT lv.user_id) AS unique_viewers,
             SUM(CASE WHEN lv.source = 'search' THEN 1 ELSE 0 END) AS search_opens,

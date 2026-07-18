@@ -5,12 +5,6 @@ from sqlalchemy import (
     String, Text, DateTime, Boolean, Integer, Float, Column, ForeignKey
 )
 
-# --- Events ---
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql import func
-from datetime import date, datetime
-
-
 def utcnow_naive() -> datetime:
     """Naive UTC now — замена deprecated datetime.utcnow() с идентичным поведением.
     Naive-формат сохраняем сознательно: сравнения дат в БД и lifecycle.py
@@ -317,8 +311,14 @@ class ReleaseMeta(SQLModel, table=True):
     __tablename__ = "release_meta"
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    listing_id: int = Field(sa_column=Column(Integer, unique=True, index=True, nullable=False))
-    artist_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    listing_id: int = Field(sa_column=Column(
+        Integer, ForeignKey("listing.id", ondelete="CASCADE"),
+        unique=True, index=True, nullable=False,
+    ))
+    artist_id: int = Field(sa_column=Column(
+        Integer, ForeignKey("artist.id", ondelete="RESTRICT"),
+        index=True, nullable=False,
+    ))
     # single | ep | album | clip | live
     release_type: str = Field(sa_column=Column(String(16), nullable=False))
     release_date: Optional[str] = Field(default=None, sa_column=Column(String(32)))
@@ -344,7 +344,10 @@ class ReleaseTrack(SQLModel, table=True):
     __tablename__ = "release_track"
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    listing_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    listing_id: int = Field(sa_column=Column(
+        Integer, ForeignKey("listing.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    ))
     position: int = Field(sa_column=Column(Integer, nullable=False))
     title: Optional[str] = Field(default=None, sa_column=Column(String(255)))
     file_id: str = Field(sa_column=Column(Text, nullable=False))
@@ -448,4 +451,3 @@ class Profile(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utcnow_naive, sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(default_factory=utcnow_naive, sa_column=Column(DateTime(timezone=True), nullable=False))
-

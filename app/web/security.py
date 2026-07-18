@@ -6,6 +6,9 @@ import hashlib
 import os
 import time
 import secrets
+from pathlib import Path
+
+from app.db_path import dotenv_value
 
 VERSION = "v1"
 ENV_KEY = "RUS_MUS_SRB_BOT_SIGNING_KEY"
@@ -31,7 +34,12 @@ class ContactClickContext:
 
 
 def _get_secret() -> bytes:
-    key = os.environ.get(ENV_KEY)
+    root = Path(__file__).resolve().parents[2]
+    key = (
+        os.environ.get(ENV_KEY)
+        or dotenv_value(root / ".env.web", ENV_KEY)
+        or dotenv_value(root / ".env", ENV_KEY)
+    )
     if not key:
         raise RuntimeError(
             f"Signing key is missing. Set env {ENV_KEY} "
