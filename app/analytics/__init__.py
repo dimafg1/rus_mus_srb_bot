@@ -9,6 +9,7 @@
     user_started      — вход /start; source = deep-link параметр (None = органика)
     listing_created   — публикация объявления; section + entity_id
     listing_extended  — продление объявления; section + entity_id
+    listing_closed    — владелец закрыл объявление (архив, reason=closed); section + entity_id
     partner_shown     — показ партнёрской кампании (появится на шаге «кампании»)
     partner_opened    — открытие/клик кампании (появится на шаге «кампании»)
     artist_opened     — открытие карточки исполнителя (source: list / rel<id>)
@@ -36,6 +37,7 @@ KNOWN_EVENTS = {
     "user_started",
     "listing_created",
     "listing_extended",
+    "listing_closed",
     "partner_shown",
     "partner_opened",
     "artist_opened",

@@ -1136,29 +1136,42 @@ async def _ask_artphoto(bot, chat_id: int, state: FSMContext):
                           ]))
 
 
+_artist_create_locks: dict[int, asyncio.Lock] = {}
+
+
 async def _create_artist_and_continue(event, state: FSMContext):
     """Создаёт исполнителя в БД СРАЗУ (не при публикации релиза!) — чтобы
-    он не терялся при сбое мастера и был виден в списке при новом заходе."""
-    data = await state.get_data()
-    na = data.get("new_artist") or {}
-    if not na.get("name"):
-        return
-    # Контакт создателя — базовый, проставляется сразу и не удаляется:
-    # у карточки всегда должен быть рабочий контакт для связи
-    base_contact = (f"@{event.from_user.username}"
-                    if event.from_user and event.from_user.username else None)
-    async with SessionLocal() as s:
-        artist = Artist(
-            name=na["name"], artist_type=na.get("type", "Другое"),
-            photo_file_id=na.get("photo"),
-            owner_user_id=(event.from_user.id if event.from_user else 0),
-            contact=base_contact,
-        )
-        s.add(artist)
-        await s.commit()
-        await s.refresh(artist)
-    await state.update_data(artist_id=artist.id, created_artist_id=artist.id,
-                            no_username_hint=(base_contact is None))
+    он не терялся при сбое мастера и был виден в списке при новом заходе.
+
+    Замок + повторная проверка created_artist_id: двойное нажатие
+    «Пропустить» или повторное фото не создают второго исполнителя."""
+    uid = event.from_user.id if event.from_user else 0
+    lock = _artist_create_locks.setdefault(uid, asyncio.Lock())
+    async with lock:
+        data = await state.get_data()
+        if data.get("created_artist_id"):
+            # исполнитель уже создан параллельным нажатием — просто продолжаем
+            await _ask_rel_type(event, state)
+            return
+        na = data.get("new_artist") or {}
+        if not na.get("name"):
+            return
+        # Контакт создателя — базовый, проставляется сразу и не удаляется:
+        # у карточки всегда должен быть рабочий контакт для связи
+        base_contact = (f"@{event.from_user.username}"
+                        if event.from_user and event.from_user.username else None)
+        async with SessionLocal() as s:
+            artist = Artist(
+                name=na["name"], artist_type=na.get("type", "Другое"),
+                photo_file_id=na.get("photo"),
+                owner_user_id=uid,
+                contact=base_contact,
+            )
+            s.add(artist)
+            await s.commit()
+            await s.refresh(artist)
+        await state.update_data(artist_id=artist.id, created_artist_id=artist.id,
+                                no_username_hint=(base_contact is None))
     if (await state.get_data()).get("artist_flow") == "standalone":
         await _finish_standalone_artist(event, state, artist.id)
         return
