@@ -698,10 +698,14 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
                 tmpl = await get_text('sell_ask_descr', 'ru')
             except Exception:
                 tmpl = None
-            tmpl = tmpl or "Краткое описание (или «-» чтобы пропустить):"
+            tmpl = tmpl or "Краткое описание (или нажмите «Пропустить»):"
 
+            kb_skip = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Пропустить", callback_data="vac_descr_skip")]
+            ])
             prompt = await cb.message.answer(
                 f"<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n\n{tmpl}",
+                reply_markup=kb_skip,
                 parse_mode="HTML",
             )
             await state.update_data(prompt_id=prompt.message_id)
@@ -820,10 +824,13 @@ async def vacancy_input_title(m: Message, state: FSMContext):
         tmpl = await get_text('sell_ask_descr', 'ru')
     except Exception:
         tmpl = None
-    tmpl = tmpl or "Краткое описание (или «-» чтобы пропустить):"
+    tmpl = tmpl or "Краткое описание (или нажмите «Пропустить»):"
     helper = f"<b>Вы уже ввели</b>\n• Заголовок: <i>{_esc(title) or '—'}</i>"
 
-    prompt_msg = await m.answer(f"{helper}\n\n{tmpl}", parse_mode="HTML")
+    kb_skip = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить", callback_data="vac_descr_skip")]
+    ])
+    prompt_msg = await m.answer(f"{helper}\n\n{tmpl}", reply_markup=kb_skip, parse_mode="HTML")
     await state.update_data(prompt_id=prompt_msg.message_id)
 
     print(f"[vacancy_add.py] handler=vacancy_input_title chat_id={chat_id} title_len={len(title)} nav_new={data.get('nav_msg_id')} prompt_new={prompt_msg.message_id}")
@@ -911,6 +918,63 @@ async def vacancy_input_descr(m: Message, state: FSMContext):
         f"[vacancy_add.py] handler=vacancy_input_descr chat_id={chat_id} "
         f"descr_len={len(descr)} nav_new={nav_msg.message_id} prompt_new={prompt_msg.message_id}"
     )
+
+# RU: Кнопка «Пропустить» на шаге описания — то же, что ввод «-»: без описания к цене.
+@router.callback_query(VacForm.descr, F.data == "vac_descr_skip")
+async def vacancy_descr_skip(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    # удалить прошлые «Возврат» и подсказку
+    data = await state.get_data()
+    for key in ("nav_msg_id", "prompt_id"):
+        mid = data.get(key)
+        if mid:
+            try:
+                await cb.bot.delete_message(chat_id, mid)
+            except Exception:
+                pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    await state.update_data(descr=None)
+    await state.set_state(VacForm.price)
+
+    # «Возврат» + подсказка цены — как в vacancy_input_descr
+    buttons: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_add_back:descr")]
+    ]
+    main_btn = await get_common_menu_button('main_menu', 'ru')
+    if main_btn:
+        buttons.append([main_btn])
+    nav_msg = await cb.message.answer("◀️ Возврат", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
+    await state.update_data(nav_msg_id=nav_msg.message_id)
+
+    try:
+        tmpl = await get_text('vac_ask_price', 'ru')
+    except Exception:
+        tmpl = None
+    tmpl = tmpl or "Укажите стоимость оплаты или нажмите на нужную кнопку:"
+
+    st = await state.get_data()
+    title = _esc(st.get("title") or "—")
+    helper = (
+        f"<b>Вы уже ввели</b>\n"
+        f"• Заголовок: <i>{title}</i>\n"
+        f"• Описание: <i>—</i>"
+    )
+    kb_quick = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Бесплатно", callback_data="vac_price_choice:free"),
+                InlineKeyboardButton(text="По договоренности", callback_data="vac_price_choice:deal"),
+            ]
+        ]
+    )
+    prompt_msg = await cb.message.answer(f"{helper}\n\n{tmpl}", reply_markup=kb_quick, parse_mode="HTML")
+    await state.update_data(prompt_id=prompt_msg.message_id)
+
+    await cb.answer("Пропущено")
+    print(f"[vacancy_add.py] handler=vacancy_descr_skip chat_id={chat_id} user_id={cb.from_user.id}")
+
 
 # RU: Публикация → быстрый выбор цены кнопками «Бесплатно / По договоренности».
 #     Удаляем текущую клавиатуру и «Возврат», записываем цену и запускаем тот же
@@ -1070,9 +1134,13 @@ async def vac_back_to_descr(cb: CallbackQuery, state: FSMContext):
         tmpl = await get_text('sell_ask_descr', 'ru')
     except Exception:
         tmpl = None
-    tmpl = tmpl or "Краткое описание (или «-» чтобы пропустить):"
+    tmpl = tmpl or "Краткое описание (или нажмите «Пропустить»):"
+    kb_skip = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить", callback_data="vac_descr_skip")]
+    ])
     prompt = await cb.message.answer(
         f"<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n\n{tmpl}",
+        reply_markup=kb_skip,
         parse_mode="HTML",
     )
     await state.update_data(prompt_id=prompt.message_id)
