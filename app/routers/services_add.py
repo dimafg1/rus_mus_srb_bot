@@ -328,22 +328,11 @@ async def service_title_set(m: Message, state: FSMContext):
     await state.update_data(title=title)
     await state.set_state(ServiceForm.descr)
 
-    # Плашка «Назад / Главное меню»
-    back_btn = await get_common_menu_button("back", "ru")
-    if back_btn:
-        back_btn.callback_data = "go_services"   # если у вас другой callback — подставьте его
-    main_btn = await get_common_menu_button("main_menu", "ru")
-    nav_buttons = [b for b in (back_btn, main_btn) if b]
-    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
-    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
-    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
-
-    # Сообщение шага
-    text_msg = await m.answer(f"Заголовок — <b>{escape(title)}</b>\n\nОпишите услугу:", parse_mode="HTML")
-
-    # ✅ Запоминаем оба сообщения, чтобы потом удалить
-    last_bot_messages[chat_id] = [nav_msg.message_id, text_msg.message_id]
-    await register_bot_messages(chat_id, [nav_msg.message_id, text_msg.message_id])
+    # Плашка «Назад / Главное меню»: общая, с services:back — «Назад» возвращает
+    # на шаг заголовка, а не в меню с брошенным активным FSM.
+    await _send_with_services_nav(
+        m, f"Заголовок — <b>{escape(title)}</b>\n\nОпишите услугу:", parse_mode="HTML"
+    )
 
     print(f"[services_add.py] service_title_set ✓ | chat_id={chat_id} user_id={m.from_user.id} title={title!r}")
 
@@ -366,33 +355,15 @@ async def service_descr_set(m: Message, state: FSMContext):
     title = (data.get("title") or "").strip()
     descr = (data.get("descr") or "").strip()
 
-    # Плашка «Назад / Главное меню»
-    back_btn = await get_common_menu_button("back", "ru")
-    if back_btn:
-        back_btn.callback_data = "go_services"   # при необходимости замените
-    main_btn = await get_common_menu_button("main_menu", "ru")
-    nav_buttons = [b for b in (back_btn, main_btn) if b]
-    nav_markup = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
-    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
-    nav_msg = await m.answer(nav_text, reply_markup=nav_markup)
-
-    # Клавиатура цены (кнопка «Договорная»)
-    price_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Договорная", callback_data="services:price:deal")]
-    ])
-
-    # Сообщение шага
+    # Плашка «Назад / Главное меню»: общая, с services:back — «Назад» возвращает
+    # на шаг описания, а не в меню с брошенным активным FSM.
     price_text = (
         f"Заголовок — <b>{escape(title)}</b>\n\n"
         f"{escape(descr)}\n\n"
         "Введите стоимость (прейскурант) услуг\n"
         "или нажмите «Договорная»."
     )
-    text_msg = await m.answer(price_text, parse_mode="HTML", reply_markup=price_kb)
-
-    # ✅ Запоминаем оба сообщения
-    last_bot_messages[chat_id] = [nav_msg.message_id, text_msg.message_id]
-    await register_bot_messages(chat_id, [nav_msg.message_id, text_msg.message_id])
+    await _send_with_services_nav(m, price_text, parse_mode="HTML", reply_markup=_deal_price_kb())
 
     print(f"[services_add.py] service_descr_set ✓ | chat_id={chat_id} user_id={m.from_user.id} title={title!r} descr_len={len(descr)}")
 

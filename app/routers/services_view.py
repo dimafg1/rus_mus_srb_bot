@@ -818,6 +818,12 @@ async def service_extend_listing(cb: CallbackQuery):
         callback_data=f"service_edit_overview:{listing.id}"
     )])
 
+    if is_active(listing):
+        buttons.append([InlineKeyboardButton(
+            text="📦 Закрыть (в архив)",
+            callback_data=f"service_close:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
+        )])
+
     del_btn = await get_common_menu_button("btn_delete_service", "ru")
     buttons.append([InlineKeyboardButton(
         text=(del_btn.text if del_btn else "❌ Удалить объявление"),

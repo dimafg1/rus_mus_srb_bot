@@ -898,14 +898,15 @@ async def flex_text_number_input(m: Message, state: FSMContext):
 async def preview_and_confirm(m: Message, state: FSMContext):
     data = await state.get_data()
     photos = data.get("photos", [])
-    # Заголовок шапки раздела (город → категория) оставляем
-    header = f"<b>{data['city_name']} → {data['cat_name']}</b>\n"
+    # Заголовок шапки раздела (город → категория) оставляем.
+    # Пользовательский ввод экранируем: «Mackie <3» не должен ломать HTML.
+    header = f"<b>{_esc(data['city_name'])} → {_esc(data['cat_name'])}</b>\n"
 
     # Порядок: Название → Описание → Цена
-    title_line = f"{data['title']}".strip()
-    descr_line = (data.get('descr') or "").strip()
+    title_line = _esc(f"{data['title']}".strip())
+    descr_line = _esc((data.get('descr') or "").strip())
     price_label = (await get_text('listing_price', 'ru')) or "Price"
-    price_line = f"{price_label}: {data.get('price', '')}".strip()
+    price_line = _esc(f"{price_label}: {data.get('price', '')}".strip())
 
     parts = [title_line]
     if descr_line:
@@ -929,10 +930,10 @@ async def preview_and_confirm(m: Message, state: FSMContext):
                 v = flex_values[key]
                 if ftype == "checkbox":
                     v = "Да" if bool(v) else "Нет"
-                lines.append(f"{label}: {v}")
+                lines.append(_esc(f"{label}: {v}"))
             else:
                 if required:
-                    lines.append(f"{label}: —")
+                    lines.append(_esc(f"{label}: —"))
         if lines:
             header += "\n\n" + "\n".join(lines)
 
@@ -1252,12 +1253,15 @@ async def sell_back_handler(cb: CallbackQuery, state: FSMContext):
         await _render_price_step(cb.message, state)
 
     elif cur_state == Sell.confirm.state:
+        # назад из предпросмотра: показываем реальное число уже загруженных фото
         await state.set_state(Sell.photo)
-        await send_photo_prompt(cb.message, 0, state)
+        _photos = (await state.get_data()).get("photos", []) or []
+        await send_photo_prompt(cb.message, len(_photos), state)
 
     elif cur_state == Sell.flex.state:
         await state.set_state(Sell.photo)
-        await send_photo_prompt(cb.message, 0, state)
+        _photos = (await state.get_data()).get("photos", []) or []
+        await send_photo_prompt(cb.message, len(_photos), state)
 
     else:
         await state.set_state(Sell.city)

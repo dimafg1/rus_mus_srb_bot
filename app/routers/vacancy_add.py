@@ -862,9 +862,9 @@ async def vacancy_input_descr(m: Message, state: FSMContext):
         pass
     await clear_bot_messages(chat_id, m.bot)
 
-    # 3) сохранить описание и перейти к цене
+    # 3) сохранить описание и перейти к цене («-» — пропуск, как обещает подсказка)
     descr = (m.text or "").strip()
-    await state.update_data(descr=descr)
+    await state.update_data(descr=None if descr == "-" else descr)
     await state.set_state(VacForm.price)
 
     # 4) новое «Возврат»

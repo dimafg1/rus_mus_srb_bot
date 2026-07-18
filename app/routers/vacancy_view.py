@@ -526,6 +526,11 @@ async def vac_extend_listing(cb: CallbackQuery):
 
     buttons: List[List[InlineKeyboardButton]] = []
     buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
+    if is_active(listing):
+        buttons.append([InlineKeyboardButton(
+            text="📦 Закрыть (в архив)",
+            callback_data=f"vac_close:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
+        )])
     buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
 
     if should_show_extend_button(listing):
@@ -602,11 +607,28 @@ async def vac_close_listing(cb: CallbackQuery):
     except Exception as e:
         print(f"[vacancy_view.py] vac_close analytics error listing_id={listing.id}: {e}")
 
-    text = (
-        "Контакты/Управление:\n"
-        "🔴 Вакансия закрыта и скрыта из каталога.\n"
-        "Вернуть её можно кнопкой ниже — текст сохранён."
-    )
+    # Сохраняем текст карточки на экране (как делает продление): убираем только
+    # старый блок управления и добавляем строки о закрытии. Иначе после
+    # «вернуть» карточка восстановилась бы пустой.
+    base_text = cb.message.html_text or cb.message.text or ""
+    cleaned_lines = []
+    for line in base_text.splitlines():
+        stripped = line.strip()
+        if stripped == "Контакты/Управление:":
+            continue
+        if stripped.startswith("⏳ До архивации:"):
+            continue
+        cleaned_lines.append(line)
+    while cleaned_lines and not cleaned_lines[-1].strip():
+        cleaned_lines.pop()
+
+    cleaned_lines.extend([
+        "",
+        "Контакты/Управление:",
+        "🔴 Вакансия закрыта и скрыта из каталога.",
+        "Вернуть её можно кнопкой ниже — текст сохранён.",
+    ])
+    text = "\n".join(cleaned_lines)
 
     buttons: List[List[InlineKeyboardButton]] = []
     buttons.append([InlineKeyboardButton(
