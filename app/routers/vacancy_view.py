@@ -407,7 +407,10 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
         else:
             owner_source = "catalog"
 
-        buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
+        buttons.append([InlineKeyboardButton(
+            text="✏️ Редактировать все поля",
+            callback_data=f"vacancy_edit_overview:{listing.id}:{owner_source}:{city_slug or '-'}:{cat_id or 0}"
+        )])
         if is_active(listing):
             buttons.append([InlineKeyboardButton(
                 text="📦 Закрыть (в архив)",
@@ -530,7 +533,10 @@ async def vac_extend_listing(cb: CallbackQuery):
         cleaned.extend(["", "Контакты/Управление:", left_line])
 
     buttons: List[List[InlineKeyboardButton]] = []
-    buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
+    buttons.append([InlineKeyboardButton(
+        text="✏️ Редактировать все поля",
+        callback_data=f"vacancy_edit_overview:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
+    )])
     if is_active(listing):
         buttons.append([InlineKeyboardButton(
             text="📦 Закрыть (в архив)",
@@ -640,7 +646,10 @@ async def vac_close_listing(cb: CallbackQuery):
         text="↩️ Вернуть в каталог (на 30 дней)",
         callback_data=f"vac_extend:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
     )])
-    buttons.append([InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"vacancy_edit_overview:{listing.id}")])
+    buttons.append([InlineKeyboardButton(
+        text="✏️ Редактировать все поля",
+        callback_data=f"vacancy_edit_overview:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
+    )])
     buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
 
     if source == "search":

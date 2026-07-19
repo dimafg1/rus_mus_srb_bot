@@ -475,17 +475,21 @@ class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_vacancy_entry_checks_owner_and_type_before_render(self):
         callback = fake_callback("edit_vacancy_overview:10")
+        state = FakeState()
         with (
             patch.object(vacancy_edit, "clear_bot_messages", AsyncMock()),
             patch.object(vacancy_edit, "_authorize_vacancy_callback", AsyncMock(return_value=False)),
             patch.object(vacancy_edit, "_render_overview", AsyncMock()) as render,
         ):
-            await vacancy_edit.vacancy_edit_overview_entry(callback)
+            await vacancy_edit.vacancy_edit_overview_entry(callback, state)
 
         render.assert_not_awaited()
 
     async def test_vacancy_fsm_save_rejects_owned_non_vacancy_listing(self):
-        state = FakeState({"vef_listing_id": 10})
+        state = FakeState(
+            {"vef_listing_id": 10, "vac_search_query": "гитарист"},
+            current_state="_MainState:waiting_title",
+        )
         message = SimpleNamespace(
             chat=SimpleNamespace(id=1001),
             bot=SimpleNamespace(),
@@ -503,7 +507,11 @@ class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
         ):
             await vacancy_edit_overview.vef_main_title_save(message, state)
 
-        self.assertTrue(state.cleared)
+        # Активный шаг снят, но данные (контекст поиска) не стёрты:
+        # это контракт «отмены» редактирования вакансии.
+        self.assertIsNone(state.current_state)
+        self.assertFalse(state.cleared)
+        self.assertEqual(state.values.get("vac_search_query"), "гитарист")
         render.assert_not_awaited()
         self.assertIn("Недостаточно прав", message.answer.await_args.args[0])
 

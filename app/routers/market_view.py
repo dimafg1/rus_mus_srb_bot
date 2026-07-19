@@ -474,8 +474,10 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     query = data.get("search_query", "")
     ids, valid_results = await _load_public_market_ids(ids)
     await state.update_data(search_results=ids)
-    # Синхронизируем кэш только с всё ещё публичными объявлениями.
-    last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
+    # Синхронизируем кэш только с всё ещё публичными объявлениями;
+    # offset и прочий контекст поиска не затираем.
+    prev_ctx = last_search_ctx_by_chat.get(chat_id) or {}
+    last_search_ctx_by_chat[chat_id] = {**prev_ctx, "ids": ids, "query": query}
 
     if not ids:
         # Например, закрыли/удалили единственный результат поиска.
@@ -503,11 +505,15 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    results = valid_results[:MARKET_SEARCH_PAGE_SIZE]
-
+    # Возвращаемся на ту же страницу, с которой открывали карточку;
+    # после ревалидации offset мог выехать за край — прижимаем.
     total_count = len(ids)
-    page = 1
     pages = max(1, (total_count + MARKET_SEARCH_PAGE_SIZE - 1) // MARKET_SEARCH_PAGE_SIZE)
+    offset = int(data.get("search_offset") or 0)
+    if offset >= total_count:
+        offset = (pages - 1) * MARKET_SEARCH_PAGE_SIZE
+    page = offset // MARKET_SEARCH_PAGE_SIZE + 1
+    results = valid_results[offset:offset + MARKET_SEARCH_PAGE_SIZE]
 
     new_search_btn = await get_common_menu_button('market_new_search')
     to_market_btn = await get_common_menu_button('market_menu_back')
@@ -523,10 +529,14 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     )] for l in results]
 
     if pages > 1:
-        pager_row = [
-            InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"),
-            InlineKeyboardButton(text="»", callback_data=f"market_search_page:{MARKET_SEARCH_PAGE_SIZE}")
-        ]
+        pager_row = []
+        if page > 1:
+            pager_row.append(InlineKeyboardButton(
+                text="«", callback_data=f"market_search_page:{max(0, offset - MARKET_SEARCH_PAGE_SIZE)}"))
+        pager_row.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if page < pages:
+            pager_row.append(InlineKeyboardButton(
+                text="»", callback_data=f"market_search_page:{offset + MARKET_SEARCH_PAGE_SIZE}"))
         buttons.append(pager_row)
 
     if new_search_btn:
@@ -581,6 +591,7 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     ids = data.get("search_results") or []
     query = data.get("search_query") or ""
+    offset = int(data.get("search_offset") or 0)
 
     # Если FSM пуст — берём из нашего кэша последнего поиска по чату
     # last_search_ctx_by_chat должен быть объявлен глобально рядом с router = Router()
@@ -589,9 +600,12 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
         if ctx:
             ids = ctx.get("ids", []) or []
             query = ctx.get("query", "") or ""
+            offset = int(ctx.get("offset") or 0)
 
     ids, valid_results = await _load_public_market_ids(ids)
-    await state.update_data(search_results=ids)
+    # Восстановленный из RAM контекст кладём в FSM целиком (query/offset),
+    # иначе следующий возврат прочитает из FSM пустой запрос и первую страницу.
+    await state.update_data(search_results=ids, search_query=query)
 
     # Если контекст утерян — понятный fallback
     if not ids:
@@ -621,10 +635,18 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
         )
         return
 
-    results = valid_results[:MARKET_SEARCH_PAGE_SIZE]
+    # Возвращаемся на ту же страницу; после ревалидации прижимаем offset к краю.
+    total_count = len(ids)
+    pages = max(1, (total_count + MARKET_SEARCH_PAGE_SIZE - 1) // MARKET_SEARCH_PAGE_SIZE)
+    if offset >= total_count:
+        offset = (pages - 1) * MARKET_SEARCH_PAGE_SIZE
+    page = offset // MARKET_SEARCH_PAGE_SIZE + 1
+    results = valid_results[offset:offset + MARKET_SEARCH_PAGE_SIZE]
 
-    # синхронизируем кэш
-    last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
+    # синхронизируем FSM и кэш (offset и прочий контекст не теряем)
+    await state.update_data(search_offset=offset)
+    prev_ctx = last_search_ctx_by_chat.get(chat_id) or {}
+    last_search_ctx_by_chat[chat_id] = {**prev_ctx, "ids": ids, "query": query, "offset": offset}
 
     # Если первая страница уже пустая — объявления удалены
     if not results:
@@ -653,10 +675,6 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
         )
         return
 
-    total_count = len(ids)
-    page = 1
-    pages = max(1, (total_count + MARKET_SEARCH_PAGE_SIZE - 1) // MARKET_SEARCH_PAGE_SIZE)
-
     found_count = await get_text('market_found_count', 'ru') or "Found"
     found_query = await get_text('market_found_query', 'ru') or "for"
     found_select = await get_text('market_found_select', 'ru') or "Select a listing"
@@ -667,10 +685,14 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
     )] for l in results]
 
     if pages > 1:
-        pager_row = [
-            InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"),
-            InlineKeyboardButton(text="»", callback_data=f"market_search_page:{MARKET_SEARCH_PAGE_SIZE}")
-        ]
+        pager_row = []
+        if page > 1:
+            pager_row.append(InlineKeyboardButton(
+                text="«", callback_data=f"market_search_page:{max(0, offset - MARKET_SEARCH_PAGE_SIZE)}"))
+        pager_row.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if page < pages:
+            pager_row.append(InlineKeyboardButton(
+                text="»", callback_data=f"market_search_page:{offset + MARKET_SEARCH_PAGE_SIZE}"))
         buttons.append(pager_row)
 
     new_search_btn = await get_common_menu_button('market_new_search', lang='ru')
@@ -1874,6 +1896,7 @@ async def handle_market_search(m: Message, state: FSMContext):
     await state.update_data(
         search_results=[l.id for l in all_results],
         search_query=query,
+        search_offset=0,
         search_query_raw=search_query_raw,
         search_query_normalized=search_query_normalized,
         search_query_effective=search_query_effective,
@@ -1884,6 +1907,7 @@ async def handle_market_search(m: Message, state: FSMContext):
     last_search_ctx_by_chat[chat_id] = {
         "ids": [l.id for l in all_results],
         "query": query,
+        "offset": 0,
         "query_raw": search_query_raw,
         "query_normalized": search_query_normalized,
         "query_effective": search_query_effective,
@@ -1973,21 +1997,30 @@ async def market_search_page(cb: CallbackQuery, state: FSMContext):
         query = ctx.get("query") or ""
 
     ids, valid_results = await _load_public_market_ids(ids)
-    await state.update_data(search_results=ids)
-    last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
 
     if not ids:
+        await state.update_data(search_results=ids)
         msg = await cb.message.answer("Результаты поиска потеряны. Начните новый поиск.")
         last_search_menu_message[chat_id] = msg.message_id
         await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()
         return
 
-    results = valid_results[offset:offset + MARKET_SEARCH_PAGE_SIZE]
-
+    # Старая кнопка пагинации могла нести offset за пределами актуального
+    # списка (результаты «сжались») — прижимаем к последней странице.
     total_count = len(ids)
-    page = (offset // MARKET_SEARCH_PAGE_SIZE) + 1
     pages = max(1, (total_count + MARKET_SEARCH_PAGE_SIZE - 1) // MARKET_SEARCH_PAGE_SIZE)
+    if offset >= total_count:
+        offset = (pages - 1) * MARKET_SEARCH_PAGE_SIZE
+    page = (offset // MARKET_SEARCH_PAGE_SIZE) + 1
+
+    # offset запоминаем и в FSM, и в кэше: возврат из карточки должен
+    # открыть ту же страницу, в том числе после рестарта.
+    await state.update_data(search_results=ids, search_offset=offset)
+    prev_ctx = last_search_ctx_by_chat.get(chat_id) or {}
+    last_search_ctx_by_chat[chat_id] = {**prev_ctx, "ids": ids, "query": query, "offset": offset}
+
+    results = valid_results[offset:offset + MARKET_SEARCH_PAGE_SIZE]
 
     found_count = await get_text('market_found_count', 'ru') or "Found"
     found_query = await get_text('market_found_query', 'ru') or "for"

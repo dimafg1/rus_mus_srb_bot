@@ -353,6 +353,13 @@ async def _clear_pending_album_tasks(chat_id: int, bot: Bot) -> None:
 
 
 
+@dp.callback_query(F.data == "stub")
+async def stub_callback(cb: CallbackQuery):
+    """Индикатор «страница/страниц» в пагинаторах — не кнопка.
+    Без обработчика Telegram крутил бы спиннер до тайм-аута."""
+    await cb.answer()
+
+
 @dp.callback_query(F.data == "go_isk")
 async def go_isk(cb: CallbackQuery, state: FSMContext):
     await cb.answer()                 # 1) сразу закрываем "часики" Telegram

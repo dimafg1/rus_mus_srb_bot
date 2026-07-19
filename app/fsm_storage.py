@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import defaultdict
 from typing import Any, Dict, Mapping, Optional
 
@@ -26,6 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.models import FsmState, utcnow_naive
+
+log = logging.getLogger("app.fsm")
 
 
 def _key_str(key: StorageKey) -> str:
@@ -42,6 +45,24 @@ class SQLiteFsmStorage(BaseStorage):
         self._state_cache: Dict[str, Optional[str]] = {}
         self._data_cache: Dict[str, Dict[str, Any]] = {}
         self._locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Подряд идущие сбои записи в БД: один сбой — эпизод, серия — деградация
+        # (диск, блокировка). Кэш при этом живёт, а «источник правды после
+        # рестарта» молча отстаёт — поэтому кричим в лог с нарастающим счётчиком.
+        self._write_failures = 0
+
+    def _note_write_ok(self) -> None:
+        if self._write_failures:
+            log.warning("FSM: запись в БД восстановилась после %d сбоев подряд",
+                        self._write_failures)
+            self._write_failures = 0
+
+    def _note_write_failure(self, op: str, k: str, e: Exception) -> None:
+        self._write_failures += 1
+        log.error(
+            "FSM: %s не записан в БД (сбой #%d подряд) | key=%s | %s: %s%s",
+            op, self._write_failures, k, type(e).__name__, e,
+            " | СОСТОЯНИЯ НЕ ПЕРЕЖИВУТ РЕСТАРТ" if self._write_failures >= 3 else "",
+        )
 
     # ── внутренние помощники ────────────────────────────────────────────
     async def _load_row(self, k: str) -> Optional[FsmState]:
@@ -74,8 +95,9 @@ class SQLiteFsmStorage(BaseStorage):
             self._state_cache[k] = value
             try:
                 await self._upsert(k, state=value)
+                self._note_write_ok()
             except Exception as e:
-                print(f"[fsm_storage] set_state failed | key={k} | {e}")
+                self._note_write_failure("set_state", k, e)
 
     async def get_state(self, key: StorageKey) -> Optional[str]:
         k = _key_str(key)
@@ -90,7 +112,7 @@ class SQLiteFsmStorage(BaseStorage):
         except Exception as e:
             # Сбой чтения НЕ кэшируем: иначе временная ошибка БД навсегда
             # осела бы как «состояния нет» и пережила бы восстановление БД.
-            print(f"[fsm_storage] get_state failed (not cached) | key={k} | {e}")
+            log.error("FSM: get_state failed (not cached) | key=%s | %s", k, e)
             return None
         value = row.state if row else None
         self._state_cache[k] = value
@@ -106,8 +128,9 @@ class SQLiteFsmStorage(BaseStorage):
         self._data_cache[k] = plain
         try:
             await self._upsert(k, data=json.dumps(plain, ensure_ascii=False, default=str))
+            self._note_write_ok()
         except Exception as e:
-            print(f"[fsm_storage] set_data failed | key={k} | {e}")
+            self._note_write_failure("set_data", k, e)
 
     async def get_data(self, key: StorageKey) -> Dict[str, Any]:
         k = _key_str(key)
@@ -123,7 +146,7 @@ class SQLiteFsmStorage(BaseStorage):
         except Exception as e:
             # Сбой чтения НЕ кэшируем: иначе {} осел бы в кэше и последующий
             # update_data записал бы пустоту поверх настоящего черновика в БД.
-            print(f"[fsm_storage] get_data failed (not cached) | key={k} | {e}")
+            log.error("FSM: get_data failed (not cached) | key=%s | %s", k, e)
             if strict:
                 raise
             return {}
@@ -133,7 +156,7 @@ class SQLiteFsmStorage(BaseStorage):
                 if isinstance(loaded, dict):
                     plain = loaded
             except Exception as e:
-                print(f"[fsm_storage] get_data bad json | key={k} | {e}")
+                log.error("FSM: get_data bad json | key=%s | %s", k, e)
         self._data_cache[k] = plain
         return plain.copy()
 

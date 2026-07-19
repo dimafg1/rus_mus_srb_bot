@@ -1018,19 +1018,25 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
             ensure_expires_at(l)  # срок жизни 30 дней
             s.add(l)
             await s.commit()
-            await s.refresh(l)
-
-        # Сохраняем id для последующего сохранения flex после публикации.
-        # Состояние снимаем сразу после commit: повторный клик по старой
-        # кнопке «Опубликовать» не создаст дубль (данные в FSM остаются —
-        # они нужны мастеру доп. полей).
-        await state.update_data(listing_id=l.id)
-        await state.set_state(None)
+            # refresh не нужен: expire_on_commit=False, l.id уже присвоен.
+            # После commit в этом try ничего нет — «не удалось сохранить»
+            # означает ровно то, что написано.
     except Exception as e:
         await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
         await cb.message.answer(f"❌ Не удалось сохранить объявление.\n<code>{e}</code>", parse_mode="HTML")
         print(f"FUNC: sell_ok | DB ERROR {e}")
         return
+
+    # Сохраняем id для последующего сохранения flex после публикации.
+    # Состояние снимаем сразу после commit: повторный клик по старой
+    # кнопке «Опубликовать» не создаст дубль (данные в FSM остаются —
+    # они нужны мастеру доп. полей). Сбой FSM здесь — отдельная беда:
+    # объявление уже в БД, пользователю нельзя говорить «не сохранилось».
+    try:
+        await state.update_data(listing_id=l.id)
+        await state.set_state(None)
+    except Exception as e:
+        print(f"FUNC: sell_ok | FSM ERROR after save listing_id={l.id}: {e}")
 
     # ── Этап 2: аналитика и экран «опубликовано». Объявление УЖЕ сохранено —
     # любая ошибка здесь не должна выглядеть как «не удалось сохранить».
@@ -1151,8 +1157,16 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
             err_text = (await get_text('sell_delete_only_owner', 'ru')) or "Error! Only the owner can delete."
             await cb.answer(err_text, show_alert=True)
             return
+        # Тип запоминаем до удаления: этим обработчиком пользуются и Услуги,
+        # и навигация после удаления должна вести в родной раздел.
+        listing_type = (l.type or "market").strip()
         await s.delete(l)
         await s.commit()
+
+    # Удаление завершает любой текущий сценарий (поиск и т.п.): иначе
+    # следующий текст пользователя попал бы в обработчик поискового запроса.
+    # Данные не трогаем — контекст поиска ещё нужен для возвратов.
+    await state.set_state(None)
     # 1. Удаляем карточки объявлений, если они есть
     if my_listing_messages.get(chat_id):
         for msg_id in my_listing_messages[chat_id]:
@@ -1172,7 +1186,18 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
 
-    nav_kb = await sell_nav_keyboard()
+    # «Назад» ведёт к списку «Мои …» родного раздела. Прежний sell_back
+    # здесь запускал мастер создания объявления Барахолки — даже после
+    # удаления услуги.
+    if listing_type == "service":
+        back_btn = InlineKeyboardButton(text="⬅️ Мои услуги", callback_data="my_services")
+    else:
+        back_btn = InlineKeyboardButton(text="⬅️ Мои объявления", callback_data="my_listings")
+    rows = [[back_btn]]
+    main_btn = await get_common_menu_button('main_menu', 'ru')
+    if main_btn:
+        rows.append([main_btn])
+    nav_kb = InlineKeyboardMarkup(inline_keyboard=rows)
     menu_text = (await get_text('return_to_menu', 'ru')) or "Return"
     msg2 = await cb.message.answer(menu_text, reply_markup=nav_kb)
     last_bot_messages.setdefault(chat_id, []).append(msg2.message_id)

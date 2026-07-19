@@ -1080,8 +1080,12 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
 
     # Перепроверяем сохранённые ids: услуга могла быть архивирована после поиска.
     ids, results = await _load_public_service_ids(ids)
-    await state.update_data(search_results=ids)
-    services_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
+    # Восстановленный из RAM контекст кладём в FSM целиком (query тоже),
+    # иначе следующий возврат прочитает из FSM пустой запрос.
+    await state.update_data(search_results=ids, search_query=query)
+    # Обновляем ids/query, не затирая offset и прочий контекст поиска.
+    prev_ctx = services_search_ctx_by_chat.get(chat_id) or {}
+    services_search_ctx_by_chat[chat_id] = {**prev_ctx, "ids": ids, "query": query}
 
     if not ids:
         # Например, закрыли единственную услугу из результатов — не бросаем
@@ -1105,12 +1109,16 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
 
     # Возвращаемся на ту же страницу, с которой открывали карточку;
     # после ревалидации offset мог выехать за край — прижимаем.
-    offset = int((services_search_ctx_by_chat.get(chat_id) or {}).get("offset") or 0)
+    # FSM — первичен (переживает рестарт), RAM-кэш — запасной вариант.
+    offset = int(data.get("search_offset")
+                 or (services_search_ctx_by_chat.get(chat_id) or {}).get("offset")
+                 or 0)
     total_count = len(ids)
     pages = max(1, (total_count + SERVICES_SEARCH_PAGE_SIZE - 1) // SERVICES_SEARCH_PAGE_SIZE)
     if offset >= total_count:
         offset = (pages - 1) * SERVICES_SEARCH_PAGE_SIZE
     services_search_ctx_by_chat[chat_id]["offset"] = offset
+    await state.update_data(search_offset=offset)
     page = offset // SERVICES_SEARCH_PAGE_SIZE + 1
     results_page = results[offset:offset + SERVICES_SEARCH_PAGE_SIZE]
 
@@ -1329,6 +1337,7 @@ async def handle_services_search_query(m: Message, state: FSMContext):
     await state.update_data(
         search_results=ids,
         search_query=query,
+        search_offset=0,
         search_query_raw=search_query_raw,
         search_query_normalized=search_query_normalized,
         search_query_effective=search_query_effective,
@@ -1338,6 +1347,7 @@ async def handle_services_search_query(m: Message, state: FSMContext):
     services_search_ctx_by_chat[chat_id] = {
         "ids": ids,
         "query": query,
+        "offset": 0,
         "query_raw": search_query_raw,
         "query_normalized": search_query_normalized,
         "query_effective": search_query_effective,
@@ -1491,6 +1501,12 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
     ids = ctx.get("ids") or []
     query = ctx.get("query") or ""
 
+    # RAM-кэш пуст (например, после рестарта) — поднимаем из FSM (SQLite).
+    if not ids:
+        data = await state.get_data()
+        ids = data.get("search_results") or []
+        query = data.get("search_query") or ""
+
     if not ids:
         msg = await cb.message.answer("Контекст поиска потерян. Начните новый поиск.")
         services_last_search_menu_message[chat_id] = msg.message_id
@@ -1501,13 +1517,18 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
         return
 
     ids, valid_results = await _load_public_service_ids(ids)
-    await state.update_data(search_results=ids)
+
+    # Старая кнопка пагинации могла нести offset за пределами актуального
+    # списка (результаты «сжались») — прижимаем к последней странице.
+    total_count = len(ids)
+    pages = max(1, (total_count + SERVICES_SEARCH_PAGE_SIZE - 1) // SERVICES_SEARCH_PAGE_SIZE)
+    if offset >= total_count:
+        offset = (pages - 1) * SERVICES_SEARCH_PAGE_SIZE
+    page = (offset // SERVICES_SEARCH_PAGE_SIZE) + 1
+
+    await state.update_data(search_results=ids, search_offset=offset)
     services_search_ctx_by_chat[chat_id] = {**ctx, "ids": ids, "query": query, "offset": offset}
     results = valid_results[offset:offset + SERVICES_SEARCH_PAGE_SIZE]
-
-    total_count = len(ids)
-    page = (offset // SERVICES_SEARCH_PAGE_SIZE) + 1
-    pages = max(1, (total_count + SERVICES_SEARCH_PAGE_SIZE - 1) // SERVICES_SEARCH_PAGE_SIZE)
 
     rows = []
     for row in results:

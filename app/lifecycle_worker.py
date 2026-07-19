@@ -14,7 +14,9 @@
 
 import asyncio
 import logging
+import urllib.parse
 from datetime import datetime, timezone
+from html import escape as html_escape
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,12 +30,25 @@ from app.routers.utils import get_text, register_bot_message
 CHECK_INTERVAL_SECONDS = 3600  # раз в час
 EVENT_GRACE_SECONDS = 86400    # событие архивируется через сутки после начала
 
-# Префиксы callback кнопки «Продлить» — как в существующих обработчиках
-_EXTEND_PREFIX = {
-    lc.LISTING_TYPE_MARKET: "market_extend",
-    lc.LISTING_TYPE_SERVICE: "service_extend",
-    lc.LISTING_TYPE_VACANCY: "vac_extend",
-}
+def _extend_callback(listing: Listing, city_slug: dict, cat_slug: dict) -> str | None:
+    """Callback кнопки «Продлить» — строго по контракту обработчика раздела.
+
+    Форматы разные, универсального нет:
+      market_extend:<id>:<city_slug>:<cat_slug>:<source>   (market_view)
+      service_extend:<id>:<urlencoded back_cb>             (services_view)
+      vac_extend:<id>:<source>:<city_slug|->:<cat_id|0>    (vacancy_view)
+    """
+    t = (listing.type or "").strip()
+    if t == lc.LISTING_TYPE_MARKET:
+        cslug = city_slug.get(listing.city_id, "-")
+        kslug = cat_slug.get(listing.category_id, "-")
+        return f"market_extend:{listing.id}:{cslug}:{kslug}:my"
+    if t == lc.LISTING_TYPE_SERVICE:
+        # Возврат после продления — в «Мои услуги»: напоминание приходит владельцу.
+        return f"service_extend:{listing.id}:{urllib.parse.quote('my_services', safe='')}"
+    if t == lc.LISTING_TYPE_VACANCY:
+        return f"vac_extend:{listing.id}:my:-:0"
+    return None
 
 log = logging.getLogger("app.lifecycle")
 
@@ -105,8 +120,8 @@ async def _tick(bot: Bot) -> None:
 
 
 async def _send_reminder(bot: Bot, listing: Listing, city_slug: dict, cat_slug: dict) -> bool:
-    prefix = _EXTEND_PREFIX.get((listing.type or "").strip())
-    if not prefix:
+    extend_cb = _extend_callback(listing, city_slug, cat_slug)
+    if not extend_cb:
         return False
 
     left = lc.days_left(listing) or 0
@@ -115,15 +130,14 @@ async def _send_reminder(bot: Bot, listing: Listing, city_slug: dict, cat_slug: 
         default="⏳ Ваше объявление «{title}» будет архивировано через {days} дн.\n"
                 "Нажмите кнопку ниже, чтобы продлить его на 30 дней.",
     )
-    msg_text = tpl.replace("{title}", listing.title or "").replace("{days}", str(left))
+    # У бота default parse_mode=HTML: «сырой» заголовок с < или & уронил бы
+    # отправку, а reminded_at всё равно бы выставился — владелец остался бы
+    # без напоминания навсегда.
+    msg_text = (tpl.replace("{title}", html_escape(listing.title or ""))
+                   .replace("{days}", str(left)))
 
-    cslug = city_slug.get(listing.city_id, "-")
-    kslug = cat_slug.get(listing.category_id, "-")
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="🔄 Продлить на 30 дней",
-            callback_data=f"{prefix}:{listing.id}:{cslug}:{kslug}:my",
-        )
+        InlineKeyboardButton(text="🔄 Продлить на 30 дней", callback_data=extend_cb)
     ]])
 
     try:
