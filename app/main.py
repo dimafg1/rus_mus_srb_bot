@@ -236,9 +236,12 @@ bot = Bot(
     token=settings.bot_token,
     default=DefaultBotProperties(parse_mode="HTML"),
 )
-# FSM в SQLite: шаг мастера и введённые данные переживают рестарт бота
+# FSM в SQLite: шаг мастера и введённые данные переживают рестарт бота.
+# SimpleEventIsolation сериализует обработку апдейтов одного пользователя:
+# два одновременных фото/нажатия не читают и не затирают один черновик FSM.
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from app.fsm_storage import SQLiteFsmStorage
-dp = Dispatcher(storage=SQLiteFsmStorage())
+dp = Dispatcher(storage=SQLiteFsmStorage(), events_isolation=SimpleEventIsolation())
 
 
 # ── Глобальный обработчик ошибок: полный трейсбек + контекст в лог ──────────

@@ -1311,8 +1311,13 @@ async def market_extend_listing(cb: CallbackQuery):
             await cb.answer("Продлить может только автор объявления.", show_alert=True)
             return
 
-        if not can_owner_reactivate(listing):
-            await cb.answer("Это объявление нельзя вернуть: оно снято с публикации.", show_alert=True)
+        if not should_show_extend_button(listing):
+            # Либо снято с публикации (admin_removed/unpublished), либо до
+            # истечения ещё далеко — старый callback не должен накручивать срок.
+            await cb.answer(
+                "Продление сейчас недоступно. Кнопка появится за 5 дней до истечения срока.",
+                show_alert=True,
+            )
             return
 
         extend_listing(listing)

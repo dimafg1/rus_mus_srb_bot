@@ -88,8 +88,10 @@ class SQLiteFsmStorage(BaseStorage):
         try:
             row = await self._load_row(k)
         except Exception as e:
-            print(f"[fsm_storage] get_state failed | key={k} | {e}")
-            row = None
+            # Сбой чтения НЕ кэшируем: иначе временная ошибка БД навсегда
+            # осела бы как «состояния нет» и пережила бы восстановление БД.
+            print(f"[fsm_storage] get_state failed (not cached) | key={k} | {e}")
+            return None
         value = row.state if row else None
         self._state_cache[k] = value
         return value
@@ -112,18 +114,26 @@ class SQLiteFsmStorage(BaseStorage):
         async with self._locks[k]:
             return await self._get_data_locked(k)
 
-    async def _get_data_locked(self, k: str) -> Dict[str, Any]:
+    async def _get_data_locked(self, k: str, *, strict: bool = False) -> Dict[str, Any]:
         if k in self._data_cache:
             return self._data_cache[k].copy()
         plain: Dict[str, Any] = {}
         try:
             row = await self._load_row(k)
-            if row and row.data:
+        except Exception as e:
+            # Сбой чтения НЕ кэшируем: иначе {} осел бы в кэше и последующий
+            # update_data записал бы пустоту поверх настоящего черновика в БД.
+            print(f"[fsm_storage] get_data failed (not cached) | key={k} | {e}")
+            if strict:
+                raise
+            return {}
+        if row and row.data:
+            try:
                 loaded = json.loads(row.data)
                 if isinstance(loaded, dict):
                     plain = loaded
-        except Exception as e:
-            print(f"[fsm_storage] get_data failed | key={k} | {e}")
+            except Exception as e:
+                print(f"[fsm_storage] get_data bad json | key={k} | {e}")
         self._data_cache[k] = plain
         return plain.copy()
 
@@ -131,9 +141,11 @@ class SQLiteFsmStorage(BaseStorage):
         # Перекрываем дефолт BaseStorage (get + set без блокировки):
         # чтение-изменение-запись целиком под замком ключа, иначе
         # параллельные update_data теряют одно из обновлений.
+        # strict: без базы мержить не во что — лучше упасть громко,
+        # чем записать усечённый черновик поверх настоящего.
         k = _key_str(key)
         async with self._locks[k]:
-            current = await self._get_data_locked(k)
+            current = await self._get_data_locked(k, strict=True)
             current.update(data)
             await self._set_data_locked(k, current)
             return current.copy()

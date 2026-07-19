@@ -235,11 +235,32 @@ def _link_label(url: str) -> str:
     return "Слушать"
 
 
+def _yt_embeddable(url: str) -> bool:
+    """Может ли страница-плеер (video_yt.html) реально открыть эту ссылку.
+
+    Плеер вытаскивает id видео из watch?v=, youtu.be/<id>, /shorts/, /embed/,
+    /live/. Плейлисты, каналы и music.youtube.com не встраиваются — для них
+    кнопка плеера дала бы «Не удалось открыть видео»."""
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    host = (u.hostname or "").lower()
+    path = u.path or ""
+    if host == "youtu.be":
+        return bool(path.strip("/"))
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        if urllib.parse.parse_qs(u.query).get("v"):
+            return True
+        return any(path.startswith(p) for p in ("/shorts/", "/embed/", "/live/"))
+    return False
+
+
 def _youtube_url(links: list[dict]) -> str | None:
+    """Первая YouTube-ссылка, пригодная для встроенного плеера."""
     for l in links:
         url = _normalize_http_url(str(l.get("url") or ""))
-        host = (urllib.parse.urlsplit(url).hostname or "").lower() if url else ""
-        if host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+        if url and _yt_embeddable(url):
             return url
     return None
 
@@ -395,7 +416,8 @@ def _release_caption(listing, meta, artist, tracks, *, hidden: bool = False) -> 
 def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
                 artist=None, back_cb: str = "go_releases",
                 back_label: str = "⬅️ К релизам", source: str = "",
-                yt_btn: InlineKeyboardButton | None = None) -> InlineKeyboardMarkup:
+                yt_btn: InlineKeyboardButton | None = None,
+                yt_url: str | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     playable = _release_is_public(listing, meta, artist, tracks)
     if tracks and playable:
@@ -413,8 +435,10 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
     links = _load_links(meta.links if meta and playable else None)
     row: list[InlineKeyboardButton] = []
     for l in links:
-        if l.get("label") == "YouTube":
-            continue  # YouTube живёт голой ссылкой в тексте — открывается без подтверждений
+        # Из общего ряда убираем только ту YouTube-ссылку, что стала кнопкой
+        # плеера. Плейлисты/каналы/music.youtube остаются обычными кнопками.
+        if yt_url and _normalize_http_url(str(l.get("url") or "")) == yt_url:
+            continue
         row.append(InlineKeyboardButton(text=f"🎧 {l['label']}", url=l["url"]))
         if len(row) == 2:
             rows.append(row)
@@ -582,7 +606,8 @@ async def _show_release_card(cb: CallbackQuery, listing_id: int, src: str = ""):
     yt_btn = _release_yt_button(yt, listing.id) if yt else None
     kb = _release_kb(listing, meta, tracks, artist=artist,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id),
-                     back_cb=back_cb, back_label=back_label, source=src, yt_btn=yt_btn)
+                     back_cb=back_cb, back_label=back_label, source=src,
+                     yt_btn=yt_btn, yt_url=yt)
     await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
     source = "search" if src == "s" else "my" if src == "my" else "artist" if src.startswith("a") else "catalog"
     await log_listing_view(listing_id=listing.id, user_id=cb.from_user.id,
@@ -1726,7 +1751,7 @@ async def _publish_locked(cb: CallbackQuery, state: FSMContext):
     yt_btn = _release_yt_button(yt, listing.id) if yt else None
     kb = _release_kb(listing, meta, tracks, artist=artist,
                      viewer_id=cb.from_user.id, is_admin_user=is_admin(cb.from_user.id),
-                     yt_btn=yt_btn)
+                     yt_btn=yt_btn, yt_url=yt)
     await _send_screen(cb.bot, cb.message.chat.id, caption, kb, photo=listing.photo_file_id)
 
 

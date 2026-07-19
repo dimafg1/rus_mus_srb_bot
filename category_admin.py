@@ -1344,7 +1344,7 @@ def extend_listing_admin(listing_id: int, days: int = 30):
 
     with db() as conn:
         row = conn.execute(
-            "SELECT type, expires_at, created_at FROM listing WHERE id=?",
+            "SELECT type, expires_at, created_at, status FROM listing WHERE id=?",
             (listing_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Listing not found")
@@ -1353,9 +1353,14 @@ def extend_listing_admin(listing_id: int, days: int = 30):
             raise HTTPException(400, "Этот тип объявления не продлевается")
 
         now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-        base = _parse_dt(row[1]) or ((_parse_dt(row[2]) or now) + datetime.timedelta(days=30))
-        if base < now:
+        if (row[3] or "").strip() == "archived":
+            # Реактивация архивного: срок строго от «сейчас» — как в
+            # app/lifecycle.py, иначе закрытое с остатком дней накрутит срок
             base = now
+        else:
+            base = _parse_dt(row[1]) or ((_parse_dt(row[2]) or now) + datetime.timedelta(days=30))
+            if base < now:
+                base = now
         new_expires = base + datetime.timedelta(days=days)
 
         conn.execute("""

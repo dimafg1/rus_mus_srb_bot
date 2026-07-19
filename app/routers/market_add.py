@@ -639,8 +639,9 @@ async def sell_price(m: Message, state: FSMContext):
     await state.update_data(price=price)
     await state.set_state(Sell.photo)
 
-    # Переход на ваш существующий промпт для фото
-    msg = await send_photo_prompt(m, 0, state)
+    # Переход на промпт для фото — с учётом уже загруженных (возврат «Назад»)
+    _cnt = len(((await state.get_data()).get("photos") or []))
+    msg = await send_photo_prompt(m, _cnt, state)
 
     print(f"[market_add.py] sell_price ✓ | chat_id={chat_id} | user_id={m.from_user.id} | field=price | msg_id={getattr(msg, 'message_id', '-')}")
 
@@ -989,6 +990,7 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
             print(f"FUNC: sell_ok | MISSING {k} | data_keys={list(data.keys())}")
             return
 
+    # ── Этап 1: сохранение в БД. Только его ошибка означает «не сохранилось».
     try:
         async with SessionLocal() as s:
             # Собираем данные для нового объявления
@@ -1018,16 +1020,27 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
             await s.commit()
             await s.refresh(l)
 
-            # Сохраняем id для последующего сохранения flex после публикации.
-            # Состояние снимаем сразу после commit: повторный клик по старой
-            # кнопке «Опубликовать» не создаст дубль (данные в FSM остаются —
-            # они нужны мастеру доп. полей).
-            await state.update_data(listing_id=l.id)
-            await state.set_state(None)
+        # Сохраняем id для последующего сохранения flex после публикации.
+        # Состояние снимаем сразу после commit: повторный клик по старой
+        # кнопке «Опубликовать» не создаст дубль (данные в FSM остаются —
+        # они нужны мастеру доп. полей).
+        await state.update_data(listing_id=l.id)
+        await state.set_state(None)
+    except Exception as e:
+        await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
+        await cb.message.answer(f"❌ Не удалось сохранить объявление.\n<code>{e}</code>", parse_mode="HTML")
+        print(f"FUNC: sell_ok | DB ERROR {e}")
+        return
 
+    # ── Этап 2: аналитика и экран «опубликовано». Объявление УЖЕ сохранено —
+    # любая ошибка здесь не должна выглядеть как «не удалось сохранить».
+    try:
         from app.analytics import log_event
-        await log_event("listing_created", user_id=cb.from_user.id,
-                        section="market", entity_type="listing", entity_id=l.id)
+        try:
+            await log_event("listing_created", user_id=cb.from_user.id,
+                            section="market", entity_type="listing", entity_id=l.id)
+        except Exception as e:
+            print(f"FUNC: sell_ok | analytics error listing_id={l.id}: {e}")
 
         # Убираем служебные сообщения
         await clear_bot_messages(chat_id, cb.bot)
@@ -1041,9 +1054,10 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
             text_extra = "При желании укажите дополнительные сведения для этого объявления:"
 
         # Верхние действия
-        # Получаем слаги для кнопки «К объявлению»
-        city = (await s.execute(select(City).where(City.id == l.city_id))).scalar_one()
-        cat  = (await s.execute(select(Category).where(Category.id == l.category_id))).scalar_one()
+        # Получаем слаги для кнопки «К объявлению» — свежей сессией
+        async with SessionLocal() as s2:
+            city = (await s2.execute(select(City).where(City.id == l.city_id))).scalar_one()
+            cat  = (await s2.execute(select(Category).where(Category.id == l.category_id))).scalar_one()
         rows = [
             [InlineKeyboardButton(
                 text="✏️ Редактировать все поля",
@@ -1083,9 +1097,16 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
         print(f"FUNC: sell_ok | SAVED listing_id={l.id} | chat_id={chat_id} | user_id={cb.from_user.id} | msg_id={msg.message_id}")
 
     except Exception as e:
-        await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
-        await cb.message.answer(f"❌ Не удалось сохранить объявление.\n<code>{e}</code>", parse_mode="HTML")
-        print(f"FUNC: sell_ok | ERROR {e}")
+        # Экран не собрался, но объявление сохранено — говорим правду
+        print(f"FUNC: sell_ok | POST-SAVE ERROR listing_id={l.id}: {e}")
+        try:
+            await cb.answer()
+            await cb.message.answer(
+                f"✅ Объявление №{l.id} опубликовано. "
+                "Экран не загрузился — найти его можно в «Моих объявлениях»."
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(Sell.confirm, F.data == "sell_cancel")

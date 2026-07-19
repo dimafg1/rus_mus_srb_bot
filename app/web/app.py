@@ -29,6 +29,7 @@ iframe{border:0;width:100%;height:100%}</style></head>
       id = u.searchParams.get('v') || '';
       if (!id && u.pathname.startsWith('/shorts/')) id = u.pathname.split('/')[2] || '';
       if (!id && u.pathname.startsWith('/embed/')) id = u.pathname.split('/')[2] || '';
+      if (!id && u.pathname.startsWith('/live/')) id = u.pathname.split('/')[2] || '';
     }
   } catch (_) {}
   if (!/^[A-Za-z0-9_-]{6,20}$/.test(id)) return;

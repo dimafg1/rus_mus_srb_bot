@@ -2690,9 +2690,9 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
             })
             await s.commit()
 
-        from app.analytics import log_event
-        await log_event("listing_created", user_id=owner_id,
-                        section="events", entity_type="listing", entity_id=listing_id)
+        # Чистим FSM СРАЗУ после commit: рестарт или сбой интерфейса в этом
+        # окне не оставит состояние preview с возможностью повторной публикации.
+        await state.clear()
     except Exception as e:
         print(f"[AFISHA] publish DB error: {e}")
         sent = await cb.message.answer("Не удалось сохранить объявление. Попробуйте позже.")
@@ -2701,6 +2701,14 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
         await state.clear()
         await cb.answer()
         return
+
+    # Событие УЖЕ сохранено — ошибка аналитики не должна выглядеть как сбой
+    try:
+        from app.analytics import log_event
+        await log_event("listing_created", user_id=owner_id,
+                        section="events", entity_type="listing", entity_id=listing_id)
+    except Exception as e:
+        print(f"[AFISHA] publish analytics error listing_id={listing_id}: {e}")
 
     txt = "✅ Отправлено на модерацию. После проверки событие появится в Афише."
 
@@ -2723,7 +2731,6 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
 
     last_bot_messages.setdefault(chat_id, []).append(sent.message_id)
     await register_bot_messages(chat_id, [sent.message_id])
-    await state.clear()
     await cb.answer()
     print(f"[AFISHA][PUBLISH] ok id={listing_id} | chat_id={chat_id}")
 

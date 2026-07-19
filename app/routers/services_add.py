@@ -380,9 +380,10 @@ async def service_price_deal(cb: CallbackQuery, state: FSMContext):
     await state.update_data(price="Договорная")
     await state.set_state(ServiceForm.photo)
 
-    # ВАЖНО: первый промпт по фото — через _send_photo_prompt
+    # ВАЖНО: промпт по фото — с учётом уже загруженных (могли вернуться «Назад»)
     await state.update_data(photo_prompt_msgs=[])
-    await _send_photo_prompt(cb.message, 0, state)
+    _cnt = len(((await state.get_data()).get("photos") or []))
+    await _send_photo_prompt(cb.message, _cnt, state)
 
     await cb.answer()
     print(f"[services_add.py] service_price_deal ✓ | chat_id={chat_id} user_id={cb.from_user.id} price='Договорная'")
@@ -413,7 +414,8 @@ async def service_price_set(m: Message, state: FSMContext):
     # выглядел зависшим после ручного ввода цены.
     await state.set_state(ServiceForm.photo)
     await state.update_data(photo_prompt_msgs=[])
-    await _send_photo_prompt(m, 0, state)
+    _cnt = len(((await state.get_data()).get("photos") or []))
+    await _send_photo_prompt(m, _cnt, state)
 
     print(f"[services_add.py] service_price_set ✓ | chat_id={chat_id} user_id={m.from_user.id} price={raw!r}")
 
@@ -957,7 +959,9 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         print(f"[services_add.py] services_back → photo ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
 
-    # Возврат к списку категорий
+    # Возврат к списку категорий. Состояние гасим: иначе случайный текст
+    # пользователя продолжил бы скрытый мастер с шага заголовка.
+    await state.set_state(None)
     async with SessionLocal() as s:
         cats = (await s.execute(
             select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(sql_text("order_num"), Category.name)
