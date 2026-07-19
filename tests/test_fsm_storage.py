@@ -146,6 +146,37 @@ class FsmStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Синтезатор", row.data)
         self.assertEqual(json.loads(row.data)["title"], "Синтезатор")
 
+    async def test_clear_evicts_in_memory_draft_but_db_stays_cleared(self):
+        # Завершённый мастер не должен оставаться в кэше памяти (иначе рост
+        # O(число пользователей)); при этом в БД остаётся очищенное состояние.
+        storage = self._storage()
+        k = "1:100:100:default"
+        await storage.set_state(KEY, "Sell:photo")
+        await storage.set_data(KEY, {"title": "x", "photos": ["f1", "f2"]})
+        self.assertIn(k, storage._data_cache)
+
+        await storage.set_state(KEY, None)
+        await storage.set_data(KEY, {})  # как делает clear()
+
+        # Тяжёлый черновик выселен из обоих кэшей памяти
+        self.assertNotIn(k, storage._data_cache)
+        self.assertNotIn(k, storage._state_cache)
+        # Но чтение (из БД) отдаёт корректное очищенное состояние
+        self.assertIsNone(await storage.get_state(KEY))
+        self.assertEqual(await storage.get_data(KEY), {})
+
+    async def test_cancel_step_keeps_data_cached(self):
+        # set_state(None) без set_data({}) — это «отмена шага» (напр. правка
+        # вакансии): данные (контекст поиска) должны остаться, не выселяться.
+        storage = self._storage()
+        k = "1:100:100:default"
+        await storage.set_state(KEY, "Edit:title")
+        await storage.set_data(KEY, {"search_ctx": [1, 2, 3]})
+        await storage.set_state(KEY, None)
+
+        self.assertIn(k, storage._data_cache)
+        self.assertEqual(await storage.get_data(KEY), {"search_ctx": [1, 2, 3]})
+
 
 if __name__ == "__main__":
     unittest.main()

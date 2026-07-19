@@ -125,6 +125,20 @@ class SQLiteFsmStorage(BaseStorage):
 
     async def _set_data_locked(self, k: str, data: Mapping[str, Any]) -> None:
         plain = dict(data)
+        # Пустой словарь ставит только clear() (завершение/отмена мастера):
+        # update_data никогда не мержит в пустоту. Записываем очистку в БД,
+        # но НЕ держим завершённый черновик в памяти — иначе in-memory кэш
+        # рос бы по числу всех, кто когда-либо открывал мастер. Строку в БД
+        # чистит уже отдельная политика TTL fsmstate (см. CLAUDE.md).
+        if not plain:
+            try:
+                await self._upsert(k, data="{}")
+                self._note_write_ok()
+            except Exception as e:
+                self._note_write_failure("set_data", k, e)
+            self._state_cache.pop(k, None)
+            self._data_cache.pop(k, None)
+            return
         self._data_cache[k] = plain
         try:
             await self._upsert(k, data=json.dumps(plain, ensure_ascii=False, default=str))

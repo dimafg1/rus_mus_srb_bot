@@ -547,5 +547,21 @@ class FeedbackNotifiesAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.bot.send_message.await_count, 3)  # 2 админа + ответ юзеру
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# init_db: миграции глотают только «колонка уже есть», прочее — наружу
+# ─────────────────────────────────────────────────────────────────────────────
+class InitDbDuplicateColumnGuardTests(unittest.TestCase):
+    def test_duplicate_column_recognised(self):
+        from app.database import _is_duplicate_column
+        self.assertTrue(_is_duplicate_column(
+            Exception("(sqlite3.OperationalError) duplicate column name: first_seen")))
+
+    def test_lock_and_disk_errors_not_swallowed(self):
+        from app.database import _is_duplicate_column
+        self.assertFalse(_is_duplicate_column(Exception("database is locked")))
+        self.assertFalse(_is_duplicate_column(Exception("disk I/O error")))
+        self.assertFalse(_is_duplicate_column(Exception("no such table: artist")))
+
+
 if __name__ == "__main__":
     unittest.main()

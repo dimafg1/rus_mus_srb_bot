@@ -74,6 +74,14 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with SessionLocal() as session:
         yield session
 
+def _is_duplicate_column(exc: Exception) -> bool:
+    """SQLite бросает 'duplicate column name: X', когда ALTER TABLE ADD COLUMN
+    добавляет уже существующую колонку — это ожидаемый, безопасный случай.
+    Любую другую ошибку (database is locked, нет места, синтаксис) глушить
+    нельзя: иначе бот стартует с недомигрированной БД."""
+    return "duplicate column name" in str(exc).lower()
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)
@@ -81,13 +89,15 @@ async def init_db() -> None:
         try:
             await conn.execute(text("ALTER TABLE BotUser ADD COLUMN first_seen DATETIME"))
             await conn.execute(text("UPDATE BotUser SET first_seen = last_seen WHERE first_seen IS NULL"))
-        except Exception:
-            pass  # колонка уже есть — нормально
+        except Exception as e:
+            if not _is_duplicate_column(e):
+                raise  # колонка уже есть — нормально; остальное — громко наружу
         # Миграция: источник первого входа (deep-link параметр /start)
         try:
             await conn.execute(text("ALTER TABLE BotUser ADD COLUMN first_source VARCHAR(64)"))
-        except Exception:
-            pass  # колонка уже есть — нормально
+        except Exception as e:
+            if not _is_duplicate_column(e):
+                raise
         # Посев выключателей монетизации (все выключены; словарь: app/features.py)
         try:
             for key in (
@@ -117,5 +127,6 @@ async def init_db() -> None:
         ):
             try:
                 await conn.execute(text(f"ALTER TABLE artist ADD COLUMN {col} {ddl}"))
-            except Exception:
-                pass  # колонка уже есть — нормально
+            except Exception as e:
+                if not _is_duplicate_column(e):
+                    raise  # колонка уже есть — нормально; остальное — громко наружу
