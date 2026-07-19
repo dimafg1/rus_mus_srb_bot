@@ -6,14 +6,14 @@ from app.states import FeedbackStates
 from app.routers.utils import clear_bot_messages, last_bot_messages, get_text, register_bot_messages
 from sqlalchemy import text
 from app.database import SessionLocal
+from html import escape as html_escape
 import inspect
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.keyboards import get_common_menu_button
+from app.admin_ids import ADMIN_IDS
 
 router = Router()
-
-ADMIN_IDS = [519335258]
 
 # ====== Обратная связь: выбор в главном меню ======
 @router.callback_query(F.data == "feedback")
@@ -94,6 +94,20 @@ async def feedback_receive(message: Message, state: FSMContext):
             {"user_id": user_id, "username": username, "message": text_msg}
         )
         await session.commit()
+
+    # Уведомляем админов. Один заблокировавший бота админ не должен ронять
+    # ответ пользователю — рассылка идёт независимо по каждому ID.
+    who = f"@{username}" if username else f"id{user_id}"
+    admin_text = (
+        f"✉️ <b>Новое обращение</b>\n"
+        f"От: {who} (<code>{user_id}</code>)\n\n"
+        f"{html_escape(text_msg or '')}"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(admin_id, admin_text, parse_mode="HTML")
+        except Exception as e:
+            print(f"[WARN] feedback_receive | admin notify failed | admin_id={admin_id}: {e}")
 
     # Очищаем старые сообщения
     await clear_bot_messages(chat_id, message.bot)

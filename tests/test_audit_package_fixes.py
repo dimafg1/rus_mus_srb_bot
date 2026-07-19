@@ -18,10 +18,13 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app import lifecycle_worker
+from app import admin_ids, lifecycle_worker
 from app.fsm_storage import SQLiteFsmStorage
 from app.models import FsmState  # noqa: F401 — регистрирует таблицу в metadata
-from app.routers import market_add, market_view, services_view, vacancy_edit_overview
+from app.routers import (
+    admin_panel, feedback, market_add, market_view, services_view,
+    vacancy_edit_overview,
+)
 
 
 class FakeState:
@@ -477,6 +480,71 @@ class FsmWriteFailureCounterTests(unittest.IsolatedAsyncioTestCase):
             await storage.set_state(key, "Wizard:step3")
         self.assertEqual(storage._write_failures, 0)
         self.assertIn("восстановилась после 3", logs.output[0])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN_IDS: единый источник + уведомление админа из feedback
+# ─────────────────────────────────────────────────────────────────────────────
+class AdminIdsSingleSourceTests(unittest.TestCase):
+    def test_admin_panel_and_feedback_share_same_list_object(self):
+        self.assertIs(admin_panel.ADMIN_IDS, admin_ids.ADMIN_IDS)
+        self.assertIs(feedback.ADMIN_IDS, admin_ids.ADMIN_IDS)
+
+
+class FeedbackNotifiesAdminTests(unittest.IsolatedAsyncioTestCase):
+    async def test_receive_saves_and_notifies_every_admin(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=1001),
+            from_user=SimpleNamespace(id=17, username="tester"),
+            text="Сломалась кнопка",
+            delete=AsyncMock(),
+            bot=SimpleNamespace(send_message=AsyncMock()),
+        )
+        state = FakeState()
+        session = SimpleNamespace(execute=AsyncMock(), commit=AsyncMock())
+        with (
+            patch.object(feedback, "ADMIN_IDS", [111, 222]),
+            patch("app.database.SessionLocal", lambda: _Ctx(session)),
+            patch("app.routers.utils.clear_bot_messages", AsyncMock()),
+            patch("app.routers.utils.register_bot_messages", AsyncMock()),
+            patch("app.keyboards.get_common_menu_button", AsyncMock(return_value=None)),
+            patch("builtins.print"),
+        ):
+            await feedback.feedback_receive(message, state)
+
+        self.assertTrue(session.execute.await_args is not None)  # сохранено в БД
+        calls = message.bot.send_message.await_args_list
+        # Первые два вызова — уведомления админам, последний — ответ юзеру.
+        self.assertEqual([c.args[0] for c in calls[:2]], [111, 222])
+        admin_call_text = calls[0].args[1]
+        self.assertIn("Сломалась кнопка", admin_call_text)
+        self.assertIn("tester", admin_call_text)
+
+    async def test_one_admin_send_failure_does_not_block_the_other(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=1001),
+            from_user=SimpleNamespace(id=17, username=None),
+            text="привет",
+            delete=AsyncMock(),
+            bot=SimpleNamespace(
+                send_message=AsyncMock(side_effect=[
+                    Exception("blocked"), None, SimpleNamespace(message_id=999),
+                ])),
+        )
+        state = FakeState()
+        session = SimpleNamespace(execute=AsyncMock(), commit=AsyncMock())
+        with (
+            patch.object(feedback, "ADMIN_IDS", [111, 222]),
+            patch("app.database.SessionLocal", lambda: _Ctx(session)),
+            patch("app.routers.utils.clear_bot_messages", AsyncMock()),
+            patch("app.routers.utils.register_bot_messages", AsyncMock()),
+            patch("app.keyboards.get_common_menu_button", AsyncMock(return_value=None)),
+            patch("builtins.print"),
+        ):
+            await feedback.feedback_receive(message, state)
+
+        # Второй админ всё равно получил уведомление, а пользователю ушёл ответ.
+        self.assertEqual(message.bot.send_message.await_count, 3)  # 2 админа + ответ юзеру
 
 
 if __name__ == "__main__":

@@ -16,13 +16,12 @@ from app.models import utcnow_naive
 import json
 import pytz
 from html import escape as html_escape
+from app.admin_ids import ADMIN_IDS, is_admin
 SERBIA_TZ = pytz.timezone("Europe/Belgrade")
 FEEDBACK_PAGE_SIZE = 10
 
 
 router = Router()
-
-ADMIN_IDS = [519335258]  # замените на свой Telegram ID
 
 
 def _normalized_category_name(value: str | None) -> str:
@@ -41,9 +40,6 @@ def _normalized_category_slug(value: str | None) -> str:
     if len(slug) > 100:
         raise ValueError("Slug длиннее 100 символов")
     return slug
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
 
 def get_admin_menu():
     return InlineKeyboardMarkup(
