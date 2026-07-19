@@ -1060,6 +1060,14 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
 
     ids, valid_rows = await _load_public_vacancy_ids(ids)
     await state.update_data(vac_search_result_ids=ids)
+
+    # После ревалидации offset мог выехать за край (закрыли вакансии) — прижимаем.
+    total_count = len(ids)
+    pages = max(1, (total_count + VACANCY_SEARCH_PAGE_SIZE - 1) // VACANCY_SEARCH_PAGE_SIZE)
+    if offset >= total_count:
+        offset = (pages - 1) * VACANCY_SEARCH_PAGE_SIZE
+        await state.update_data(vac_search_offset=offset)
+    page = offset // VACANCY_SEARCH_PAGE_SIZE + 1
     rows = valid_rows[offset:offset + VACANCY_SEARCH_PAGE_SIZE]
 
     buttons: List[List[InlineKeyboardButton]] = []
@@ -1074,6 +1082,18 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
             )
         ])
 
+    # Пагинация — как в vac_search_page, иначе возврат со 2-й страницы её терял
+    if pages > 1:
+        pager = []
+        if page > 1:
+            pager.append(InlineKeyboardButton(
+                text="«", callback_data=f"vac_search_page:{max(0, offset - VACANCY_SEARCH_PAGE_SIZE)}"))
+        pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if page < pages:
+            pager.append(InlineKeyboardButton(
+                text="»", callback_data=f"vac_search_page:{offset + VACANCY_SEARCH_PAGE_SIZE}"))
+        buttons.append(pager)
+
     buttons.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")])
     buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
 
@@ -1085,7 +1105,7 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
 
     msg = await cb.bot.send_message(
         chat_id,
-        f"Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {len(ids)}",
+        f"Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {total_count}",
         reply_markup=kb,
         parse_mode="HTML",
     )

@@ -411,10 +411,14 @@ async def edit_listing_overview(cb: CallbackQuery, state: FSMContext):
     if len(parts) >= 3 and parts[2] == "search":
         return_cb = "market_search_results"
     elif len(parts) >= 5:
-        city_slug = parts[2] or city.slug
-        cat_slug = parts[3] or cat.slug
         source = parts[4]
-        if source == "my":
+        # Слаги "-" приходят с экранов, где категория неизвестна (поиск) —
+        # подставляем реальные из БД, чтобы маршрут возврата был рабочим.
+        city_slug = (parts[2] if parts[2] and parts[2] != "-" else city.slug)
+        cat_slug = (parts[3] if parts[3] and parts[3] != "-" else cat.slug)
+        if source == "search":
+            return_cb = "market_search_results"
+        elif source == "my":
             return_cb = f"listing:{listing_id}:{city_slug}:{cat_slug}:my"
         else:
             return_cb = f"listing:{listing_id}:{city_slug}:{cat_slug}"

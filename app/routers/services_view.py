@@ -1084,19 +1084,55 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
     services_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
 
     if not ids:
-        msg = await cb.message.answer("Все услуги из результатов уже недоступны. Начните новый поиск.")
+        # Например, закрыли единственную услугу из результатов — не бросаем
+        # пользователя на экране без навигации.
+        rows = [
+            [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")],
+        ]
+        main_btn = await get_common_menu_button("main_menu", "ru")
+        if main_btn:
+            rows.append([main_btn])
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
+        msg = await cb.message.answer(
+            "Все услуги из результатов уже недоступны. Начните новый поиск.",
+            reply_markup=kb,
+        )
         await register_bot_messages(chat_id, [msg.message_id])
+        await state.clear()
         await cb.answer()
         return
 
+    # Возвращаемся на ту же страницу, с которой открывали карточку;
+    # после ревалидации offset мог выехать за край — прижимаем.
+    offset = int((services_search_ctx_by_chat.get(chat_id) or {}).get("offset") or 0)
+    total_count = len(ids)
+    pages = max(1, (total_count + SERVICES_SEARCH_PAGE_SIZE - 1) // SERVICES_SEARCH_PAGE_SIZE)
+    if offset >= total_count:
+        offset = (pages - 1) * SERVICES_SEARCH_PAGE_SIZE
+    services_search_ctx_by_chat[chat_id]["offset"] = offset
+    page = offset // SERVICES_SEARCH_PAGE_SIZE + 1
+    results_page = results[offset:offset + SERVICES_SEARCH_PAGE_SIZE]
+
     # строим клавиатуру — обязательно помечаем ':s', чтобы карточка знала, что мы из поиска
     rows = []
-    for r in results:
+    for r in results_page:
         title = (r.title or f"#{r.id}")[:64]
         rows.append([InlineKeyboardButton(
             text=title,
             callback_data=f"sv:item:{r.id}:{r.city_id}:{r.category_id}:s"
         )])
+
+    if pages > 1:
+        pager_row = []
+        if page > 1:
+            pager_row.append(InlineKeyboardButton(
+                text="«", callback_data=f"services_search_page:{max(0, offset - SERVICES_SEARCH_PAGE_SIZE)}"))
+        pager_row.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if page < pages:
+            pager_row.append(InlineKeyboardButton(
+                text="»", callback_data=f"services_search_page:{offset + SERVICES_SEARCH_PAGE_SIZE}"))
+        rows.append(pager_row)
 
     rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")])
@@ -1108,7 +1144,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     msg = await cb.message.answer(
-        f"🔎 Найдено: <b>{len(results)}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
+        f"🔎 Найдено: <b>{total_count}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1466,7 +1502,7 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
 
     ids, valid_results = await _load_public_service_ids(ids)
     await state.update_data(search_results=ids)
-    services_search_ctx_by_chat[chat_id] = {**ctx, "ids": ids, "query": query}
+    services_search_ctx_by_chat[chat_id] = {**ctx, "ids": ids, "query": query, "offset": offset}
     results = valid_results[offset:offset + SERVICES_SEARCH_PAGE_SIZE]
 
     total_count = len(ids)

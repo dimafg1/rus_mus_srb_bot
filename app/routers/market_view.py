@@ -3,7 +3,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy.exc import NoResultFound
 import logging
 import inspect
@@ -478,19 +478,29 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
     last_search_ctx_by_chat[chat_id] = {"ids": ids, "query": query}
 
     if not ids:
+        # Например, закрыли/удалили единственный результат поиска.
+        # Не бросаем на пустом экране: новый поиск + меню раздела + главное меню.
+        new_search_btn = await get_common_menu_button('market_new_search')
+        to_market_btn = await get_common_menu_button('market_menu_back')
         main_menu_btn = await get_common_menu_button('main_menu')
         buttons = []
+        if new_search_btn:
+            buttons.append([new_search_btn])
+        if to_market_btn:
+            buttons.append([to_market_btn])
         if main_menu_btn:
             buttons.append([main_menu_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
         msg = await cb.message.answer(
-            "Search results not found.",
+            "В результатах поиска не осталось активных объявлений. "
+            "Начните новый поиск или вернитесь в меню Барахолки.",
             reply_markup=kb
         )
         last_search_menu_message[chat_id] = msg.message_id
         await register_bot_messages(chat_id, [msg.message_id])
         await state.clear()
+        await cb.answer()
         return
 
     results = valid_results[:MARKET_SEARCH_PAGE_SIZE]
@@ -749,30 +759,34 @@ async def market_menu_back(cb: CallbackQuery, state: FSMContext):
     )
 
 
-@router.callback_query(F.data == "my_listings")
-async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
+MY_LISTINGS_PAGE_SIZE = 10
+# RU: последняя открытая страница «Моих объявлений» — чтобы «Назад к моим
+# объявлениям» с карточки возвращал на ту же страницу, а не на первую.
+my_listings_offset_by_chat: dict[int, int] = {}
+
+
+async def _render_my_listings(cb: CallbackQuery, offset: int = 0):
+    """Единый рендер списка «Мои объявления» с пагинацией."""
     chat_id = cb.message.chat.id
     user_id = cb.from_user.id
 
-    # Сбрасываем старый флаг поиска, чтобы "Мои объявления" не считались поиском
-    came_from_search_by_chat.pop(chat_id, None)
-
-    # Удаляем карточки моих объявлений
-    for msg_id in my_listing_messages.get(chat_id, []):
-        try:
-            await cb.bot.delete_message(chat_id, msg_id)
-        except Exception:
-            pass
-
-    await clear_bot_messages(chat_id, cb.bot)
-    await state.clear()
-
     async with SessionLocal() as s:
+        total = (await s.execute(
+            select(func.count()).select_from(Listing)
+            .where(Listing.owner_id == user_id, Listing.type == "market")
+        )).scalar_one()
+
+        # Прижимаем offset к допустимому диапазону (например, после удаления)
+        if offset >= total:
+            offset = max(0, ((total - 1) // MY_LISTINGS_PAGE_SIZE) * MY_LISTINGS_PAGE_SIZE)
+        my_listings_offset_by_chat[chat_id] = offset
+
         listings = (await s.execute(
             select(Listing)
             .where(Listing.owner_id == user_id, Listing.type == "market")
             .order_by(Listing.created_at.desc())
-            .limit(10)
+            .offset(offset)
+            .limit(MY_LISTINGS_PAGE_SIZE)
         )).scalars().all()
 
     if not listings:
@@ -793,12 +807,30 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    header = await get_text('market_my_listings', 'ru') or "Your listings"
+    header = await get_text('market_my_listings', 'ru') or "Ваши объявления"
 
-    keyboard = [[InlineKeyboardButton(
-        text=f"{listing.title}" + (f" — {listing.price}" if listing.price else ""),
-        callback_data=f"listing:{listing.id}:{listing.city_id}:{listing.category_id}:my"
-    )] for listing in listings]
+    keyboard = []
+    for listing in listings:
+        title = f"{listing.title}" + (f" — {listing.price}" if listing.price else "")
+        if listing.status == "archived":
+            title = f"📦 {title}"  # закрытое/архивное видно сразу
+        keyboard.append([InlineKeyboardButton(
+            text=title,
+            callback_data=f"listing:{listing.id}:{listing.city_id}:{listing.category_id}:my"
+        )])
+
+    pages = (total + MY_LISTINGS_PAGE_SIZE - 1) // MY_LISTINGS_PAGE_SIZE
+    if pages > 1:
+        page = offset // MY_LISTINGS_PAGE_SIZE + 1
+        pager = []
+        if offset > 0:
+            pager.append(InlineKeyboardButton(
+                text="«", callback_data=f"mylist_page:{offset - MY_LISTINGS_PAGE_SIZE}"))
+        pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if offset + MY_LISTINGS_PAGE_SIZE < total:
+            pager.append(InlineKeyboardButton(
+                text="»", callback_data=f"mylist_page:{offset + MY_LISTINGS_PAGE_SIZE}"))
+        keyboard.append(pager)
 
     back_btn = await get_common_menu_button('back')
     if back_btn:
@@ -811,24 +843,46 @@ async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    await safe_edit_or_send(cb, f"<b>{header}:</b>", markup)
+    suffix = f" ({total})" if pages > 1 else ""
+    await safe_edit_or_send(cb, f"<b>{header}{suffix}:</b>\nВыберите для просмотра или управления.", markup)
     await cb.answer()
-
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | user_id: {cb.from_user.id} | "
-        f"came_from_search={came_from_search_by_chat.get(chat_id)} | "
-        f"last_search_query_message: {last_search_query_message.get(chat_id)} | "
-        f"last_search_menu_message: {last_search_menu_message.get(chat_id)} | "
-        f"last_bot_messages: {last_bot_messages.get(chat_id)}"
-    )
+    print(f"FUNC: _render_my_listings | chat_id={chat_id} user_id={user_id} offset={offset} total={total}")
 
 
+@router.callback_query(F.data == "my_listings")
+async def my_listings_handler(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+
+    # Сбрасываем старый флаг поиска, чтобы "Мои объявления" не считались поиском
+    came_from_search_by_chat.pop(chat_id, None)
+
+    # Удаляем карточки моих объявлений
+    for msg_id in my_listing_messages.get(chat_id, []):
+        try:
+            await cb.bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass
+
+    await clear_bot_messages(chat_id, cb.bot)
+    await state.clear()
+
+    await _render_my_listings(cb, offset=0)
+
+
+@router.callback_query(F.data.startswith("mylist_page:"))
+async def my_listings_page_handler(cb: CallbackQuery, state: FSMContext):
+    chat_id = cb.message.chat.id
+    try:
+        offset = max(0, int(cb.data.split(":", 1)[1]))
+    except (IndexError, ValueError):
+        offset = 0
+    await clear_bot_messages(chat_id, cb.bot)
+    await _render_my_listings(cb, offset=offset)
 
 
 @router.callback_query(F.data == "my_listings_back")
 async def my_listings_back_handler(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
-    user_id = cb.from_user.id
 
     # Сбрасываем старый флаг поиска, чтобы "Мои объявления" не считались поиском
     came_from_search_by_chat.pop(chat_id, None)
@@ -847,58 +901,8 @@ async def my_listings_back_handler(cb: CallbackQuery, state: FSMContext):
 
     await clear_bot_messages(chat_id, cb.bot)
 
-    async with SessionLocal() as s:
-        listings = (await s.execute(
-            select(Listing)
-            .where(Listing.owner_id == user_id, Listing.type == "market")
-            .order_by(Listing.created_at.desc())
-            .limit(10)
-        )).scalars().all()
-
-    if not listings:
-        keyboard = []
-
-        back_btn = await get_common_menu_button('back')
-        if back_btn:
-            back_btn.callback_data = "go_market"
-            keyboard.append([back_btn])
-
-        main_menu_btn = await get_common_menu_button('main_menu')
-        if main_menu_btn:
-            keyboard.append([main_menu_btn])
-
-        markup = InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
-
-        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", markup)
-        await cb.answer()
-        return
-
-    keyboard = [[InlineKeyboardButton(
-        text=f"{listing.title}" + (f" — {listing.price}" if listing.price else ""),
-        callback_data=f"listing:{listing.id}:{listing.city_id}:{listing.category_id}:my"
-    )] for listing in listings]
-
-    back_btn = await get_common_menu_button('back')
-    if back_btn:
-        back_btn.callback_data = "go_market"
-        keyboard.append([back_btn])
-
-    main_menu_btn = await get_common_menu_button('main_menu')
-    if main_menu_btn:
-        keyboard.append([main_menu_btn])
-
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-    await safe_edit_or_send(cb, "<b>Ваши объявления:</b>\nВыберите для просмотра или управления.", markup)
-    await cb.answer()
-
-    print(
-        f"FUNC: {inspect.currentframe().f_code.co_name} | chat_id: {chat_id} | user_id: {cb.from_user.id} | "
-        f"came_from_search={came_from_search_by_chat.get(chat_id)} | "
-        f"last_search_query_message: {last_search_query_message.get(chat_id)} | "
-        f"last_search_menu_message: {last_search_menu_message.get(chat_id)} | "
-        f"last_bot_messages: {last_bot_messages.get(chat_id)}"
-    )
+    # Возвращаемся на ту же страницу, с которой открывали карточку
+    await _render_my_listings(cb, offset=my_listings_offset_by_chat.get(chat_id, 0))
 
 
 
