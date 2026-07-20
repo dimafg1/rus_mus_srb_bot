@@ -95,7 +95,7 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
     # RU: Меню «Доп. поля категории». Поддерживает прямой вызов с cat_id,
     #     чтобы перерисовывать экран без "фейкового" CallbackQuery.
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     if cat_id is None:
@@ -197,7 +197,7 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
 @router.callback_query(F.data.regexp(r"^admin:fields:add:(\d+)$"))
 async def admin_fields_add_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     cat_id = int(re.match(r"^admin:fields:add:(\d+)$", cb.data).group(1))
@@ -225,7 +225,7 @@ async def admin_fields_add_start(cb: CallbackQuery, state: FSMContext):
 async def admin_field_edit_menu(cb: CallbackQuery):
     # Заголовок: меню действий для конкретного поля
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     try:
@@ -288,7 +288,7 @@ async def admin_field_edit_menu(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("admin:field_toggle_required:"))
 async def admin_field_toggle_required(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     _, _, cat_id_s, idx_s = cb.data.split(":")
@@ -319,7 +319,7 @@ async def admin_field_toggle_required(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("admin:field_delete_confirm:"))
 async def admin_field_delete_confirm(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     _, _, cat_id_s, idx_s = cb.data.split(":")
@@ -343,7 +343,7 @@ async def admin_field_delete_confirm(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("admin:field_delete_yes:"))
 async def admin_field_delete_yes(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     _, _, cat_id_s, idx_s = cb.data.split(":")
@@ -375,7 +375,7 @@ async def admin_field_delete_yes(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("admin:field_edit_label:"))
 async def admin_field_edit_label_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     _, _, cat_id_s, idx_s = cb.data.split(":")
@@ -441,7 +441,7 @@ async def admin_field_edit_label_save(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:field_edit_key:"))
 async def admin_field_edit_key_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     _, _, cat_id_s, idx_s = cb.data.split(":")
@@ -534,7 +534,7 @@ async def admin_field_edit_key_save(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:field_edit_options:"))
 async def admin_field_edit_options_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     _, _, cat_id_s, idx_s = cb.data.split(":")
@@ -588,7 +588,7 @@ async def admin_field_edit_options_save(message: Message, state: FSMContext):
 @router.callback_query(F.data.regexp(r"^admin:field_type:(text|number|select|checkbox|video)$"), AdminFieldStates.choosing_type)
 async def admin_field_pick_type(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     ftype = cb.data.split(":")[-1]
@@ -632,7 +632,7 @@ async def admin_field_label(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:field_keepkey:"), AdminFieldStates.waiting_key)
 async def admin_field_keep_key(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     key = cb.data.split(":")[-1]
@@ -732,7 +732,7 @@ async def admin_field_key(message: Message, state: FSMContext):
 @router.callback_query(F.data.regexp(r"^admin:field_required:(1|0)$"), AdminFieldStates.waiting_required)
 async def admin_field_required(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     required = cb.data.endswith(":1")
@@ -824,7 +824,7 @@ async def admin_field_view(cb: CallbackQuery, state: FSMContext):
     ⬆️/⬇️ переместить, ✏️ редактировать, 🗑 удалить, ⬅️ назад.
     """
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
     try:
@@ -905,7 +905,7 @@ async def admin_field_move(cb: CallbackQuery, state: FSMContext):
     Перемещает поле в списке полей категории.
     """
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     chat_id = cb.message.chat.id
 
@@ -995,7 +995,7 @@ async def admin_fields_toggle_extra(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
 
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True); return
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True); return
 
     m = re.match(r"^admin:fields:toggle_extra:(\d+):(0|1)$", (cb.data or ""))
     if not m:

@@ -315,8 +315,19 @@ path = await render_category_path(session, category_id)
      `user_extra_fields.py`(4) — **готово**, 4 новых кода
      `extra_field_need_number`/`extra_field_not_video_file`/
      `extra_field_not_video_link`/`extra_field_need_video`.
-     Далее по возрастанию: `events_admin.py`(16),
-     `admin_analytics.py`(20), `services_edit.py`(23), `market_edit.py`(25),
+     `events_admin.py`(16) — **готово**, плюс попутно найден и закрыт
+     ещё один крупный кросс-файловый дубль, упущенный в шаге 2: «Нет
+     доступа» (БЕЗ точки — не путать с «Нет доступа.» из шага 2) —
+     46 мест в 4 файлах (`admin_analytics.py`, `admin_fields.py`,
+     `admin_panel.py`, `events_admin.py`) → новый код
+     `err_no_access_short`. Плюс 4 кода для `events_admin.py`:
+     `events_admin_no_pending`/`events_admin_not_found`/
+     `events_admin_stale_button`/`events_admin_already_processed`.
+     **Урок:** при подсчёте кандидатов для дедупа не фильтровать только
+     по точным строкам из плана — проверять и близкие варианты (с
+     точкой/без, с restбукв) перед тем как считать шаг «закрытым».
+     `admin_analytics.py`(6 осталось после вычета «Нет доступа»),
+     `services_edit.py`(23), `market_edit.py`(25),
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

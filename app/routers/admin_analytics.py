@@ -22,7 +22,7 @@ from sqlalchemy import text as sql
 
 from app.database import SessionLocal
 from app.routers.admin_panel import is_admin
-from app.routers.utils import clear_bot_messages, last_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, get_text
 
 
 router = Router()
@@ -394,7 +394,7 @@ def _contacts_count_label(contacts_raw: object) -> str:
 @router.callback_query(F.data == "admin:analytics")
 async def admin_analytics_menu(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -468,7 +468,7 @@ async def admin_analytics_menu(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:growth")
 async def admin_analytics_growth(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     today = date.today()
@@ -525,7 +525,7 @@ async def admin_analytics_growth(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:sections")
 async def admin_analytics_sections(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -597,7 +597,7 @@ async def admin_analytics_sections(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:top_searches")
 async def admin_analytics_top_searches(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     q = sql("""
@@ -632,7 +632,7 @@ async def admin_analytics_top_searches(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:no_results")
 async def admin_analytics_no_results(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     q = sql("""
@@ -668,7 +668,7 @@ async def admin_analytics_no_results(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:search_quality")
 async def admin_analytics_search_quality(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -707,7 +707,7 @@ async def admin_analytics_search_quality(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:top_cards")
 async def admin_analytics_top_cards(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     q = sql("""
@@ -753,7 +753,7 @@ async def admin_analytics_top_cards(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:sources")
 async def admin_analytics_sources(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     q = sql("""
@@ -787,7 +787,7 @@ async def admin_analytics_sources(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:search_conversion")
 async def admin_analytics_search_conversion(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -839,7 +839,7 @@ async def admin_analytics_search_conversion(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "admin:analytics:cities")
 async def admin_analytics_cities(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -962,7 +962,7 @@ async def _show_owners_page(cb: CallbackQuery, offset: int = 0) -> None:
 @router.callback_query(F.data == "admin:analytics:owners")
 async def admin_analytics_owners(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
     await _show_owners_page(cb, 0)
 
@@ -970,7 +970,7 @@ async def admin_analytics_owners(cb: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("admin:analytics:owners:"))
 async def admin_analytics_owners_page(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     try:
@@ -984,7 +984,7 @@ async def admin_analytics_owners_page(cb: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("admin:analytics:owner:"))
 async def admin_analytics_owner_detail(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     parts = (cb.data or "").split(":")
@@ -1100,7 +1100,7 @@ async def admin_analytics_owner_detail(cb: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("admin:analytics:listing:"))
 async def admin_analytics_listing_detail(cb: CallbackQuery) -> None:
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     parts = (cb.data or "").split(":")

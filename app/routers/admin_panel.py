@@ -114,7 +114,7 @@ async def admin_panel_entry(message: Message):
 @router.callback_query(F.data == "admin:edit_categories")
 async def admin_edit_categories_cb(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -152,7 +152,7 @@ async def admin_edit_categories_cb(cb: CallbackQuery):
 @router.callback_query(F.data == "admin")
 async def admin_main_menu_cb(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     chat_id = cb.message.chat.id
@@ -203,7 +203,7 @@ async def admin_main_menu_cb(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("admin:edit_category:"))
 async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = None):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -329,7 +329,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
 @router.callback_query(F.data.startswith("admin:add_category:"))
 async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -528,7 +528,7 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:rename_category:"))
 async def admin_rename_category_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -794,7 +794,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:keep_slug:"))
 async def admin_keep_slug_cb(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -841,7 +841,7 @@ async def admin_keep_slug_cb(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:delete_category:"))
 async def admin_delete_category_confirm(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -877,7 +877,7 @@ async def admin_delete_category_confirm(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("admin:delete_category_yes:"))
 async def admin_delete_category(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -1048,7 +1048,7 @@ def _fb_status_marker(answered_at, needs_reply, is_read) -> str:
 @router.callback_query(F.data == "admin_feedback")
 async def admin_feedback_entry(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
     # Убираем сообщение, с которого нажали (уведомление/меню), как в карточке обращения
     try:
@@ -1147,7 +1147,7 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
 @router.callback_query(F.data == "admin_feedback_unanswered")
 async def admin_feedback_unanswered_entry(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
     try:
         await cb.message.delete()
@@ -1241,7 +1241,7 @@ async def admin_feedback_view(cb: CallbackQuery):
         pass
 
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     chat_id = cb.message.chat.id
@@ -1363,7 +1363,7 @@ async def admin_feedback_view(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("admin_feedback_delete:"))
 async def admin_feedback_delete_confirm(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     fb_id = int(cb.data.split(":")[1])
@@ -1390,7 +1390,7 @@ async def admin_feedback_delete_yes(cb: CallbackQuery):
         pass
 
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     fb_id = int(cb.data.split(":")[1])

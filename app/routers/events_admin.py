@@ -17,7 +17,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy import text as sql
 from app.database import SessionLocal
 from app.events_meta import ensure_events_meta
-from app.routers.utils import clear_bot_messages, last_bot_messages, log, escape_html
+from app.routers.utils import clear_bot_messages, last_bot_messages, log, escape_html, get_text
 from app.routers.admin_panel import is_admin
 
 
@@ -120,7 +120,7 @@ def _kb_event(event_id: int, back_offset: int) -> InlineKeyboardMarkup:
 async def admin_events_list(cb: CallbackQuery):
     chat_id = cb.message.chat.id
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     # offset
@@ -139,7 +139,7 @@ async def admin_events_list(cb: CallbackQuery):
 
     items = await _fetch_pending(offset)
     if not items:
-        msg = await cb.message.answer("Нет событий на модерации.", reply_markup=_kb_list(offset=0, has_more=False))
+        msg = await cb.message.answer(await get_text("events_admin_no_pending", "ru") or "Нет событий на модерации.", reply_markup=_kb_list(offset=0, has_more=False))
         last_bot_messages[chat_id] = [msg.message_id]
         await cb.answer()
         return
@@ -163,7 +163,7 @@ async def admin_events_list(cb: CallbackQuery):
 async def admin_event_view(cb: CallbackQuery):
     chat_id = cb.message.chat.id
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
 
     parts = cb.data.split(":")
@@ -186,7 +186,7 @@ async def admin_event_view(cb: CallbackQuery):
 
     row = await _fetch_one(event_id)
     if not row:
-        msg = await cb.message.answer("Не найдено.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ К списку", callback_data=f"admin:events:{back_offset}")]]))
+        msg = await cb.message.answer(await get_text("events_admin_not_found", "ru") or "Не найдено.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ К списку", callback_data=f"admin:events:{back_offset}")]]))
         last_bot_messages[chat_id] = [msg.message_id]
         await cb.answer()
         return
@@ -244,17 +244,17 @@ async def _set_status(event_id: int, status: str) -> bool:
 @router.callback_query(F.data.startswith("admin:event:pub:"))
 async def admin_event_publish(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
     try:
         parts = (cb.data or "").split(":")
         event_id = int(parts[3])
         back_offset = max(0, int(parts[4]))
     except (IndexError, TypeError, ValueError):
-        await cb.answer("Некорректная или устаревшая кнопка.", show_alert=True)
+        await cb.answer(await get_text("events_admin_stale_button", "ru") or "Некорректная или устаревшая кнопка.", show_alert=True)
         return
     if not await _set_status(event_id, "published"):
-        await cb.answer("Событие уже обработано или недоступно.", show_alert=True)
+        await cb.answer(await get_text("events_admin_already_processed", "ru") or "Событие уже обработано или недоступно.", show_alert=True)
         return
     cb.data = f"admin:events:{back_offset}"
     await admin_events_list(cb)
@@ -263,17 +263,17 @@ async def admin_event_publish(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("admin:event:rej:"))
 async def admin_event_reject(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа", show_alert=True)
+        await cb.answer(await get_text("err_no_access_short", "ru") or "Нет доступа", show_alert=True)
         return
     try:
         parts = (cb.data or "").split(":")
         event_id = int(parts[3])
         back_offset = max(0, int(parts[4]))
     except (IndexError, TypeError, ValueError):
-        await cb.answer("Некорректная или устаревшая кнопка.", show_alert=True)
+        await cb.answer(await get_text("events_admin_stale_button", "ru") or "Некорректная или устаревшая кнопка.", show_alert=True)
         return
     if not await _set_status(event_id, "rejected"):
-        await cb.answer("Событие уже обработано или недоступно.", show_alert=True)
+        await cb.answer(await get_text("events_admin_already_processed", "ru") or "Событие уже обработано или недоступно.", show_alert=True)
         return
     cb.data = f"admin:events:{back_offset}"
     await admin_events_list(cb)
