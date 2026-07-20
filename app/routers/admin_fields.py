@@ -118,13 +118,18 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
 
     # Статус + явное действие в одной строке
     allow_flag = _get_allow_extra_flag_from_fields_raw(category.fields)
+    extras_status_tmpl = await get_text("admin_fields_extras_status_tmpl", "ru") or "Доп.категории: {status}"
+    extras_on = await get_text("admin_fields_extras_on", "ru") or "включены"
+    extras_off = await get_text("admin_fields_extras_off", "ru") or "выключены"
+    extras_disable_btn = await get_text("admin_fields_btn_extras_disable", "ru") or "❌ Выключить"
+    extras_enable_btn = await get_text("admin_fields_btn_extras_enable", "ru") or "✅ Включить"
     rows: list[list[InlineKeyboardButton]] = [[
         InlineKeyboardButton(
-            text=f"Доп.категории: {'включены' if allow_flag else 'выключены'}",
+            text=extras_status_tmpl.format(status=extras_on if allow_flag else extras_off),
             callback_data="noop"  # это просто индикатор статуса
         ),
         InlineKeyboardButton(
-            text=("❌ Выключить" if allow_flag else "✅ Включить"),
+            text=(extras_disable_btn if allow_flag else extras_enable_btn),
             callback_data=f"admin:fields:toggle_extra:{cat_id}:{0 if allow_flag else 1}"
         ),
     ]]
@@ -145,17 +150,19 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
                 continue
             visible_idxs.append(i)
 
+        no_fields_placeholder = await get_text("admin_fields_no_fields_placeholder", "ru") or "— Полей пока нет —"
+        default_label_tmpl = await get_text("admin_fields_field_default_label_tmpl", "ru") or "Поле {n}"
         if not visible_idxs:
-            rows.append([InlineKeyboardButton(text="— Полей пока нет —", callback_data="noop")])
+            rows.append([InlineKeyboardButton(text=no_fields_placeholder, callback_data="noop")])
         else:
             for pos, idx in enumerate(visible_idxs):
                 fld = fields[idx]
                 if isinstance(fld, dict):
                     ftype = (fld.get("type") or "text")
                     required_star = "★ " if fld.get("required") else ""
-                    label = (fld.get("label") or fld.get("name") or f"Поле {pos+1}")
+                    label = (fld.get("label") or fld.get("name") or default_label_tmpl.format(n=pos+1))
                 else:
-                    ftype, required_star, label = "text", "", f"Поле {pos+1}"
+                    ftype, required_star, label = "text", "", default_label_tmpl.format(n=pos+1)
 
                 title = f"{required_star}{pos+1}. {label} ({ftype})"
 
@@ -170,18 +177,20 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
 
                 rows.append(line)
     else:
-        rows.append([InlineKeyboardButton(text="— Полей пока нет —", callback_data="noop")])
+        no_fields_placeholder = await get_text("admin_fields_no_fields_placeholder", "ru") or "— Полей пока нет —"
+        rows.append([InlineKeyboardButton(text=no_fields_placeholder, callback_data="noop")])
 
 
 
-    rows.append([InlineKeyboardButton(text="✚ Добавить поле", callback_data=f"admin:fields:add:{cat_id}")])
+    rows.append([InlineKeyboardButton(text=(await get_text("admin_fields_btn_add_field", "ru") or "✚ Добавить поле"), callback_data=f"admin:fields:add:{cat_id}")])
     back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
     back_btn.callback_data = f"admin:edit_category:{cat_id}"
     rows.append([back_btn])
 
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
+    menu_header_tmpl = await get_text("admin_fields_menu_header_tmpl", "ru") or "⚙️ <b>Дополнительные поля категории</b>\n<b>{name}</b>\n\nВыберите поле или действие."
     msg = await cb.message.answer(
-        f"⚙️ <b>Дополнительные поля категории</b>\n<b>{category.name}</b>\n\nВыберите поле или действие.",
+        menu_header_tmpl.format(name=category.name),
         reply_markup=markup, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -204,16 +213,16 @@ async def admin_fields_add_start(cb: CallbackQuery, state: FSMContext):
     await state.update_data(field_cat_id=cat_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Текст",   callback_data="admin:field_type:text"),
-        InlineKeyboardButton(text="🔢 Число",   callback_data="admin:field_type:number")],
-        [InlineKeyboardButton(text="📋 Список",  callback_data="admin:field_type:select"),
-        InlineKeyboardButton(text="☑️ Чекбокс", callback_data="admin:field_type:checkbox")],
-        [InlineKeyboardButton(text="🎬 Видео",   callback_data="admin:field_type:video")],
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_type_text", "ru") or "✍️ Текст"),   callback_data="admin:field_type:text"),
+        InlineKeyboardButton(text=(await get_text("admin_fields_btn_type_number", "ru") or "🔢 Число"),   callback_data="admin:field_type:number")],
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_type_select", "ru") or "📋 Список"),  callback_data="admin:field_type:select"),
+        InlineKeyboardButton(text=(await get_text("admin_fields_btn_type_checkbox", "ru") or "☑️ Чекбокс"), callback_data="admin:field_type:checkbox")],
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_type_video", "ru") or "🎬 Видео"),   callback_data="admin:field_type:video")],
     ])
     back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")
     back_btn.callback_data = f"admin:fields:{cat_id}"
     kb.inline_keyboard.append([back_btn])
-    msg = await cb.message.answer("➕ <b>Новое поле</b>\nВыберите <b>тип</b> поля:", reply_markup=kb, parse_mode="HTML")
+    msg = await cb.message.answer(await get_text("admin_fields_ask_type", "ru") or "➕ <b>Новое поле</b>\nВыберите <b>тип</b> поля:", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.choosing_type)
@@ -242,35 +251,43 @@ async def admin_field_edit_menu(cb: CallbackQuery):
 
     if not isinstance(fields, list) or idx < 0 or idx >= len(fields):
         # вернёмся к списку полей
-        await cb.answer("Поле не найдено", show_alert=True)
+        await cb.answer(await get_text("admin_fields_field_not_found", "ru") or "Поле не найдено", show_alert=True)
         fake = CallbackQuery(id="fake", from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message, data=f"admin:fields:{cat_id}")
         await admin_fields_menu(fake, None)
         return
 
+    no_label_text = await get_text("admin_fields_no_label", "ru") or "(без названия)"
+    required_yes = await get_text("admin_fields_required_yes", "ru") or "✅ Обязательное"
+    required_no = await get_text("admin_fields_required_no", "ru") or "❌ Необязательное"
+    opts_dash = await get_text("admin_fields_opts_dash", "ru") or "—"
+
     f = fields[idx] if isinstance(fields[idx], dict) else {}
     ftype = f.get("type", "text")
-    label = f.get("label", "(без названия)")
+    label = f.get("label", no_label_text)
     key = f.get("key", "field")
-    req = "✅ Обязательное" if f.get("required") else "❌ Необязательное"
-    opts = ", ".join(f.get("options", [])) if ftype == "select" else "—"
+    req = required_yes if f.get("required") else required_no
+    opts = ", ".join(f.get("options", [])) if ftype == "select" else opts_dash
 
-    text = (
-        f"⚙️ <b>Поле</b> — <b>{label}</b>\n"
-        f"<b>Тип:</b> {ftype}\n"
-        f"<b>Ключ:</b> <code>{key}</code>\n"
-        f"<b>Обязательность:</b> {req}\n"
-        f"<b>Варианты:</b> {opts}"
+    field_menu_text_tmpl = await get_text("admin_fields_field_menu_text_tmpl", "ru") or (
+        "⚙️ <b>Поле</b> — <b>{label}</b>\n"
+        "<b>Тип:</b> {ftype}\n"
+        "<b>Ключ:</b> <code>{key}</code>\n"
+        "<b>Обязательность:</b> {req}\n"
+        "<b>Варианты:</b> {opts}"
     )
+    text = field_menu_text_tmpl.format(label=label, ftype=ftype, key=key, req=req, opts=opts)
 
     rows = [
-        [InlineKeyboardButton(text="✏️ Заголовок", callback_data=f"admin:field_edit_label:{cat_id}:{idx}"),
-         InlineKeyboardButton(text="🔑 Ключ",      callback_data=f"admin:field_edit_key:{cat_id}:{idx}")]
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_edit_label", "ru") or "✏️ Заголовок"), callback_data=f"admin:field_edit_label:{cat_id}:{idx}"),
+         InlineKeyboardButton(text=(await get_text("admin_fields_btn_edit_key", "ru") or "🔑 Ключ"),      callback_data=f"admin:field_edit_key:{cat_id}:{idx}")]
     ]
     if ftype == "select":
-        rows.append([InlineKeyboardButton(text="📋 Варианты (select)", callback_data=f"admin:field_edit_options:{cat_id}:{idx}")])
-    rows.append([InlineKeyboardButton(text=("❎ Сделать необязательным" if f.get("required") else "✅ Сделать обязательным"),
+        rows.append([InlineKeyboardButton(text=(await get_text("admin_fields_btn_edit_options", "ru") or "📋 Варианты (select)"), callback_data=f"admin:field_edit_options:{cat_id}:{idx}")])
+    make_optional_btn = await get_text("admin_fields_btn_make_optional", "ru") or "❎ Сделать необязательным"
+    make_required_btn = await get_text("admin_fields_btn_make_required", "ru") or "✅ Сделать обязательным"
+    rows.append([InlineKeyboardButton(text=(make_optional_btn if f.get("required") else make_required_btn),
                                       callback_data=f"admin:field_toggle_required:{cat_id}:{idx}")])
-    rows.append([InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"admin:field_delete_confirm:{cat_id}:{idx}")])
+    rows.append([InlineKeyboardButton(text=(await get_text("admin_fields_btn_delete", "ru") or "🗑️ Удалить"), callback_data=f"admin:field_delete_confirm:{cat_id}:{idx}")])
     back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")
     back_btn.callback_data = f"admin:fields:{cat_id}"
     rows.append([back_btn])
@@ -299,7 +316,7 @@ async def admin_field_toggle_required(cb: CallbackQuery):
     async with SessionLocal() as s:
         fields = await load_category_fields(s, cat_id)
         if not isinstance(fields, list) or idx < 0 or idx >= len(fields):
-            await cb.answer("Поле не найдено", show_alert=True)
+            await cb.answer(await get_text("admin_fields_field_not_found", "ru") or "Поле не найдено", show_alert=True)
             fake = CallbackQuery(id="fake", from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message, data=f"admin:fields:{cat_id}")
             await admin_fields_menu(fake, None)
             return
@@ -328,10 +345,10 @@ async def admin_field_delete_confirm(cb: CallbackQuery):
     await clear_bot_messages(chat_id, cb.bot)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin:field_edit:{cat_id}:{idx}")],
-        [InlineKeyboardButton(text="✅ Удалить", callback_data=f"admin:field_delete_yes:{cat_id}:{idx}")]
+        [InlineKeyboardButton(text=(await get_text("btn_cancel", "ru") or "❌ Отмена"), callback_data=f"admin:field_edit:{cat_id}:{idx}")],
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_delete_yes", "ru") or "✅ Удалить"), callback_data=f"admin:field_delete_yes:{cat_id}:{idx}")]
     ])
-    msg = await cb.message.answer("Удалить это поле безвозвратно?", reply_markup=kb)
+    msg = await cb.message.answer(await get_text("admin_fields_delete_confirm", "ru") or "Удалить это поле безвозвратно?", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
 
@@ -361,9 +378,11 @@ async def admin_field_delete_yes(cb: CallbackQuery):
 
     # назад к списку полей
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="ОК", callback_data=f"admin:fields:{cat_id}")]
+        [InlineKeyboardButton(text=(await get_text("admin_panel_btn_ok", "ru") or "ОК"), callback_data=f"admin:fields:{cat_id}")]
     ])
-    msg = await cb.message.answer("🗑️ Поле удалено." if removed else "Поле не найдено.", reply_markup=kb)
+    deleted_text = await get_text("admin_fields_field_deleted", "ru") or "🗑️ Поле удалено."
+    not_found_text = await get_text("admin_fields_field_not_found_dot", "ru") or "Поле не найдено."
+    msg = await cb.message.answer(deleted_text if removed else not_found_text, reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
 
@@ -398,9 +417,10 @@ async def admin_field_edit_label_start(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [back_btn]
     ])
+    empty_value = await get_text("admin_fields_empty_value", "ru") or "(пусто)"
+    current_label_tmpl = await get_text("admin_fields_current_label_tmpl", "ru") or "Текущий заголовок: <b>{label}</b>\n\nВведите новый <b>заголовок</b> поля:"
     msg = await cb.message.answer(
-        f"Текущий заголовок: <b>{old_label or '(пусто)'}</b>\n\n"
-        f"Введите новый <b>заголовок</b> поля:",
+        current_label_tmpl.format(label=old_label or empty_value),
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -428,8 +448,8 @@ async def admin_field_edit_label_save(message: Message, state: FSMContext):
             await save_category_fields(s, cat_id, fields)
 
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
-    msg = await message.answer("✅ Заголовок обновлён.", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=(await get_text("admin_panel_btn_ok", "ru") or "ОК"), callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
+    msg = await message.answer(await get_text("admin_fields_label_updated", "ru") or "✅ Заголовок обновлён.", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
     await register_bot_messages(message.chat.id, [msg.message_id])
 
@@ -464,9 +484,10 @@ async def admin_field_edit_key_start(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [back_btn]
     ])
+    empty_value = await get_text("admin_fields_empty_value", "ru") or "(пусто)"
+    current_key_tmpl = await get_text("admin_fields_current_key_tmpl", "ru") or "Текущий ключ: <code>{key}</code>\n\nВведите новый <b>ключ</b> (латиница/цифры/_):"
     msg = await cb.message.answer(
-        f"Текущий ключ: <code>{old_key or '(пусто)'}</code>\n\n"
-        f"Введите новый <b>ключ</b> (латиница/цифры/_):",
+        current_key_tmpl.format(key=old_key or empty_value),
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -486,7 +507,7 @@ async def admin_field_edit_key_save(message: Message, state: FSMContext):
     import re
     key = (message.text or "").strip().lower()
     if not re.fullmatch(r'[a-z0-9_]+', key):
-        msg = await message.answer("❗️Только латиница/цифры/нижнее подчёркивание. Введите снова.")
+        msg = await message.answer(await get_text("admin_fields_key_invalid_simple", "ru") or "❗️Только латиница/цифры/нижнее подчёркивание. Введите снова.")
         last_bot_messages[message.chat.id] = [msg.message_id]
         await register_bot_messages(message.chat.id, [msg.message_id])
         print(
@@ -506,7 +527,7 @@ async def admin_field_edit_key_save(message: Message, state: FSMContext):
             for i, f in enumerate(fields)
         )
         if duplicate:
-            msg = await message.answer("❗️Ключ уже используется в этой категории. Введите другой.")
+            msg = await message.answer(await get_text("admin_fields_key_duplicate_simple", "ru") or "❗️Ключ уже используется в этой категории. Введите другой.")
             last_bot_messages[message.chat.id] = [msg.message_id]
             await register_bot_messages(message.chat.id, [msg.message_id])
             print(
@@ -520,8 +541,8 @@ async def admin_field_edit_key_save(message: Message, state: FSMContext):
             await save_category_fields(s, cat_id, fields)
 
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
-    msg = await message.answer("✅ Ключ обновлён.", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=(await get_text("admin_panel_btn_ok", "ru") or "ОК"), callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
+    msg = await message.answer(await get_text("admin_fields_key_updated", "ru") or "✅ Ключ обновлён.", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
     await register_bot_messages(message.chat.id, [msg.message_id])
 
@@ -548,7 +569,7 @@ async def admin_field_edit_options_start(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [back_btn]
     ])
-    msg = await cb.message.answer("Введите варианты через запятую:\n<code>Опция 1, Опция 2, ...</code>", reply_markup=kb, parse_mode="HTML")
+    msg = await cb.message.answer(await get_text("admin_fields_ask_options", "ru") or "Введите варианты через запятую:\n<code>Опция 1, Опция 2, ...</code>", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     await state.set_state(AdminFieldStates.editing_options)
@@ -574,8 +595,8 @@ async def admin_field_edit_options_save(message: Message, state: FSMContext):
             await save_category_fields(s, cat_id, fields)
 
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
-    msg = await message.answer("✅ Варианты обновлены.", reply_markup=kb)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=(await get_text("admin_panel_btn_ok", "ru") or "ОК"), callback_data=f"admin:field_edit:{cat_id}:{idx}")]])
+    msg = await message.answer(await get_text("admin_fields_options_updated", "ru") or "✅ Варианты обновлены.", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
     await register_bot_messages(message.chat.id, [msg.message_id])
 
@@ -600,7 +621,7 @@ async def admin_field_pick_type(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [back_btn]
     ])
-    msg = await cb.message.answer("Введите <b>заголовок</b> поля (например: <i>Модель</i>)", reply_markup=kb, parse_mode="HTML")
+    msg = await cb.message.answer(await get_text("admin_fields_ask_label_new_field", "ru") or "Введите <b>заголовок</b> поля (например: <i>Модель</i>)", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_label)
@@ -619,9 +640,9 @@ async def admin_field_label(message: Message, state: FSMContext):
 
     key_suggest = re.sub(r'[^a-z0-9_]+', '_', label.lower()).strip("_") or "field"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⬇️ Оставить ключ: {key_suggest}", callback_data=f"admin:field_keepkey:{key_suggest}")]
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_keep_key_tmpl", "ru") or "⬇️ Оставить ключ: {key}").format(key=key_suggest), callback_data=f"admin:field_keepkey:{key_suggest}")]
     ])
-    msg = await message.answer("Введите <b>ключ</b> (латиница/цифры/_)\nили нажмите кнопку ниже.", reply_markup=kb, parse_mode="HTML")
+    msg = await message.answer(await get_text("admin_fields_ask_key_new_field", "ru") or "Введите <b>ключ</b> (латиница/цифры/_)\nили нажмите кнопку ниже.", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[message.chat.id] = [msg.message_id]
     await register_bot_messages(message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_key)
@@ -642,7 +663,7 @@ async def admin_field_keep_key(cb: CallbackQuery, state: FSMContext):
     # проверка дубликата
     async with SessionLocal() as s:
         if await field_key_exists(s, cat_id, key):
-            msg = await cb.message.answer("❗️Ключ уже используется в этой категории. Введите другой.")
+            msg = await cb.message.answer(await get_text("admin_fields_key_duplicate_simple", "ru") or "❗️Ключ уже используется в этой категории. Введите другой.")
             last_bot_messages[cb.message.chat.id] = [msg.message_id]
             await register_bot_messages(cb.message.chat.id, [msg.message_id])
             # остаёмся в состоянии waiting_key
@@ -657,10 +678,10 @@ async def admin_field_keep_key(cb: CallbackQuery, state: FSMContext):
     await state.update_data(field_key=key)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Обязательно", callback_data="admin:field_required:1"),
-         InlineKeyboardButton(text="❌ Необязательно", callback_data="admin:field_required:0")]
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_required_yes", "ru") or "✅ Обязательно"), callback_data="admin:field_required:1"),
+         InlineKeyboardButton(text=(await get_text("admin_fields_btn_required_no", "ru") or "❌ Необязательно"), callback_data="admin:field_required:0")]
     ])
-    msg = await cb.message.answer("Поле обязательное?", reply_markup=kb)
+    msg = await cb.message.answer(await get_text("admin_fields_ask_required", "ru") or "Поле обязательное?", reply_markup=kb)
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_required)
@@ -683,7 +704,7 @@ async def admin_field_key(message: Message, state: FSMContext):
     import re
     key = (message.text or "").strip().lower()
     if not re.fullmatch(r'[a-z0-9_]+', key):
-        msg = await message.answer("❗️Ключ: только латиница/цифры/нижнее подчёркивание. Введите снова.")
+        msg = await message.answer(await get_text("admin_fields_key_invalid_prefixed", "ru") or "❗️Ключ: только латиница/цифры/нижнее подчёркивание. Введите снова.")
         last_bot_messages[message.chat.id] = [msg.message_id]
         await register_bot_messages(message.chat.id, [msg.message_id])
         import inspect
@@ -699,7 +720,7 @@ async def admin_field_key(message: Message, state: FSMContext):
     # проверка дубликата
     async with SessionLocal() as s:
         if await field_key_exists(s, cat_id, key):
-            msg = await message.answer("❗️Ключ уже используется в этой категории. Введите другой ключ.")
+            msg = await message.answer(await get_text("admin_fields_key_duplicate_with_word", "ru") or "❗️Ключ уже используется в этой категории. Введите другой ключ.")
             last_bot_messages[message.chat.id] = [msg.message_id]
             await register_bot_messages(message.chat.id, [msg.message_id])
             import inspect
@@ -713,10 +734,10 @@ async def admin_field_key(message: Message, state: FSMContext):
     await state.update_data(field_key=key)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Обязательно", callback_data="admin:field_required:1"),
-         InlineKeyboardButton(text="❌ Необязательно", callback_data="admin:field_required:0")]
+        [InlineKeyboardButton(text=(await get_text("admin_fields_btn_required_yes", "ru") or "✅ Обязательно"), callback_data="admin:field_required:1"),
+         InlineKeyboardButton(text=(await get_text("admin_fields_btn_required_no", "ru") or "❌ Необязательно"), callback_data="admin:field_required:0")]
     ])
-    msg = await message.answer("Поле обязательное?", reply_markup=kb)
+    msg = await message.answer(await get_text("admin_fields_ask_required", "ru") or "Поле обязательное?", reply_markup=kb)
     last_bot_messages[message.chat.id] = [msg.message_id]
     await register_bot_messages(message.chat.id, [msg.message_id])
     await state.set_state(AdminFieldStates.waiting_required)
@@ -740,7 +761,7 @@ async def admin_field_required(cb: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     if data.get("field_type") == "select":
-        msg = await cb.message.answer("Укажите варианты через запятую:\n<code>Sony, Yamaha, AKG</code>", parse_mode="HTML")
+        msg = await cb.message.answer(await get_text("admin_fields_ask_options_new_field", "ru") or "Укажите варианты через запятую:\n<code>Sony, Yamaha, AKG</code>", parse_mode="HTML")
         last_bot_messages[cb.message.chat.id] = [msg.message_id]
         await register_bot_messages(cb.message.chat.id, [msg.message_id])
         await state.set_state(AdminFieldStates.waiting_options)
@@ -789,9 +810,9 @@ async def persist_field_and_back(cb_or_msg, state: FSMContext):
         # защита от дубликатов (на случай гонки)
         if any(isinstance(f, dict) and str(f.get("key", "")).lower() == field["key"] for f in fields):
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад к полям", callback_data=f"admin:fields:{cat_id}")]
+                [InlineKeyboardButton(text=(await get_text("admin_fields_btn_back_to_fields", "ru") or "⬅️ Назад к полям"), callback_data=f"admin:fields:{cat_id}")]
             ])
-            msg = await send("❗️Ключ уже используется в этой категории.\nВведите другой ключ (латиница/цифры/_):", reply_markup=kb)
+            msg = await send(await get_text("admin_fields_key_duplicate_new_field", "ru") or "❗️Ключ уже используется в этой категории.\nВведите другой ключ (латиница/цифры/_):", reply_markup=kb)
             last_bot_messages[chat_id] = [msg.message_id]
             await register_bot_messages(chat_id, [msg.message_id])
             await state.set_state(AdminFieldStates.waiting_key)
@@ -805,9 +826,10 @@ async def persist_field_and_back(cb_or_msg, state: FSMContext):
 
 
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data=f"admin:fields:{cat_id}")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=(await get_text("admin_panel_btn_ok", "ru") or "ОК"), callback_data=f"admin:fields:{cat_id}")]])
+    field_added_tmpl = await get_text("admin_fields_field_added_tmpl", "ru") or "✅ Поле добавлено:\n<b>{label}</b> [{type}] (key: <code>{key}</code>)"
     msg = await send(
-        f"✅ Поле добавлено:\n<b>{field['label']}</b> [{field['type']}] (key: <code>{field['key']}</code>)",
+        field_added_tmpl.format(label=field['label'], type=field['type'], key=field['key']),
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -845,7 +867,7 @@ async def admin_field_view(cb: CallbackQuery, state: FSMContext):
         fields = await load_category_fields(s, cat_id)
 
     if not isinstance(fields, list) or idx < 0 or idx >= len(fields):
-        await cb.answer("Поле не найдено", show_alert=True)
+        await cb.answer(await get_text("admin_fields_field_not_found", "ru") or "Поле не найдено", show_alert=True)
         # вернёмся к списку полей
         fake = CallbackQuery(
             id="fake", from_user=cb.from_user, chat_instance=cb.chat_instance,
@@ -854,32 +876,40 @@ async def admin_field_view(cb: CallbackQuery, state: FSMContext):
         await admin_fields_menu(fake, state)
         return
 
+    no_label_text = await get_text("admin_fields_no_label", "ru") or "(без названия)"
+    yes_text = await get_text("admin_fields_yes", "ru") or "Да"
+    no_text = await get_text("admin_fields_no", "ru") or "Нет"
+
     f = fields[idx] if isinstance(fields[idx], dict) else {}
     ftype   = f.get("type", "text")
-    flabel  = f.get("label", "(без названия)")
+    flabel  = f.get("label", no_label_text)
     fkey    = f.get("key", "-")
-    freq    = "Да" if f.get("required") else "Нет"
+    freq    = yes_text if f.get("required") else no_text
     fopts   = f.get("options") if isinstance(f.get("options"), list) else None
 
-    text = (
-        f"⚙️ <b>Поле категории:</b> {category.name}\n\n"
-        f"<b>Название:</b> {flabel}\n"
-        f"<b>Ключ:</b> <code>{fkey}</code>\n"
-        f"<b>Тип:</b> {ftype}\n"
-        f"<b>Обязательно:</b> {freq}\n"
-        + (f"<b>Варианты:</b> {', '.join(map(str, fopts))}\n" if ftype == "select" and fopts else "")
+    view_options_line_tmpl = await get_text("admin_fields_view_options_line_tmpl", "ru") or "<b>Варианты:</b> {opts}\n"
+    opts_line = view_options_line_tmpl.format(opts=", ".join(map(str, fopts))) if ftype == "select" and fopts else ""
+
+    view_text_tmpl = await get_text("admin_fields_view_text_tmpl", "ru") or (
+        "⚙️ <b>Поле категории:</b> {category}\n\n"
+        "<b>Название:</b> {label}\n"
+        "<b>Ключ:</b> <code>{key}</code>\n"
+        "<b>Тип:</b> {ftype}\n"
+        "<b>Обязательно:</b> {req}\n"
+        "{opts_line}"
     )
+    text = view_text_tmpl.format(category=category.name, label=flabel, key=fkey, ftype=ftype, req=freq, opts_line=opts_line)
 
     rows = []
     # перемещение
     rows.append([
-        InlineKeyboardButton(text="⬆️ Выше", callback_data=f"admin:field_move:{cat_id}:{idx}:up"),
-        InlineKeyboardButton(text="⬇️ Ниже", callback_data=f"admin:field_move:{cat_id}:{idx}:down"),
+        InlineKeyboardButton(text=(await get_text("admin_fields_btn_move_up", "ru") or "⬆️ Выше"), callback_data=f"admin:field_move:{cat_id}:{idx}:up"),
+        InlineKeyboardButton(text=(await get_text("admin_fields_btn_move_down", "ru") or "⬇️ Ниже"), callback_data=f"admin:field_move:{cat_id}:{idx}:down"),
     ])
     # редактирование/удаление (предполагаем, что эти обработчики у вас уже есть)
     rows.append([
-        InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"admin:field_edit:{cat_id}:{idx}"),
-        InlineKeyboardButton(text="🗑 Удалить",       callback_data=f"admin:field_delete_confirm:{cat_id}:{idx}"),
+        InlineKeyboardButton(text=(await get_text("admin_fields_btn_edit_full", "ru") or "✏️ Редактировать"), callback_data=f"admin:field_edit:{cat_id}:{idx}"),
+        InlineKeyboardButton(text=(await get_text("btn_delete", "ru") or "🗑 Удалить"),       callback_data=f"admin:field_delete_confirm:{cat_id}:{idx}"),
     ])
     back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")
     back_btn.callback_data = f"admin:fields:{cat_id}"
@@ -936,7 +966,7 @@ async def admin_field_move(cb: CallbackQuery, state: FSMContext):
         n = len(fields)
 
         if idx < 0 or idx >= n:
-            await cb.answer("Поле не найдено", show_alert=True)
+            await cb.answer(await get_text("admin_fields_field_not_found", "ru") or "Поле не найдено", show_alert=True)
             fake = CallbackQuery(
                 id="fake", from_user=cb.from_user, chat_instance=cb.chat_instance,
                 message=cb.message, data=f"admin:fields:{cat_id}"
@@ -947,20 +977,20 @@ async def admin_field_move(cb: CallbackQuery, state: FSMContext):
         new_idx = idx
         if direction == "up":
             if idx == 0:
-                await cb.answer("Уже наверху", show_alert=True)
+                await cb.answer(await get_text("admin_fields_move_top", "ru") or "Уже наверху", show_alert=True)
             else:
                 fields[idx-1], fields[idx] = fields[idx], fields[idx-1]
                 new_idx = idx - 1
                 await save_category_fields(s, cat_id, fields)
         elif direction == "down":
             if idx == n - 1:
-                await cb.answer("Уже внизу", show_alert=True)
+                await cb.answer(await get_text("admin_fields_move_bottom", "ru") or "Уже внизу", show_alert=True)
             else:
                 fields[idx+1], fields[idx] = fields[idx], fields[idx+1]
                 new_idx = idx + 1
                 await save_category_fields(s, cat_id, fields)
         else:
-            await cb.answer("Неизвестное направление", show_alert=True)
+            await cb.answer(await get_text("admin_fields_move_unknown_dir", "ru") or "Неизвестное направление", show_alert=True)
 
     # после перемещения просто перерисуем список полей
     fake = CallbackQuery(
@@ -1009,7 +1039,7 @@ async def admin_fields_toggle_extra(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         await _set_allow_extra_flag(s, cat_id, new_val)
 
-    await cb.answer("Сохранено")
+    await cb.answer(await get_text("admin_fields_extra_saved", "ru") or "Сохранено")
     # перерисовываем без "фейкового" CallbackQuery
     await admin_fields_menu(cb, state, cat_id=cat_id)
 

@@ -321,9 +321,15 @@ path = await render_category_path(session, category_id)
      про исключение `admin_panel.py`): персистентная Reply-клавиатура
      «⬅️ Назад» и сверки `message.text == "⬅️ Назад"`; пагинационные
      «◀️ Назад» — другая семантика, как и в остальных файлах.
+     `admin_fields.py`(57) — **готово (2026-07-20)**: 63 новых кодов
+     `admin_fields_*` (владельческий раздел — меню доп.полей категории,
+     добавление/редактирование/удаление/перемещение поля, тумблер
+     «доп.категории вкл/выкл», все связанные кнопки и шаблоны текстов),
+     плюс переиспользованы `btn_cancel`/`btn_delete`/`admin_panel_btn_ok`
+     (точное совпадение текста кнопок).
      > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
-     > `admin_fields.py`(57). Дальше по списку —
-     > `vacancy_add.py`(62), `services_view.py`(70),
+     > `vacancy_add.py`(62). Дальше по списку —
+     > `services_view.py`(70),
      > `services_edit_overview.py`(73), `market_edit_overview.py`(78),
      > `events_view.py`(86), `market_view.py`(89), `releases.py`(110,
      > частично уже задет — 8 мест кодами `music_*` из шага `artists.py`),
