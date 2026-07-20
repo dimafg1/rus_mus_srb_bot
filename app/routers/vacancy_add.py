@@ -466,7 +466,10 @@ async def vacancy_choose_city(cb: CallbackQuery, state: FSMContext):
 
     # навигация: «Назад» -> список городов; «Главное меню»
     rows = list(kb_base.inline_keyboard or [])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_add_citylist")])
+    back_btn = await get_common_menu_button('back', 'ru')
+    if back_btn:
+        back_btn.callback_data = "vac_add_citylist"
+        rows.append([back_btn])
 
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:
@@ -547,10 +550,10 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
 
         # «Назад» только если это НЕ корень (чтобы не зациклиться)
         if parent_id is not None:
-            rows.append([InlineKeyboardButton(
-                text="⬅️ Назад",
-                callback_data=f"vac_add_cat:{city_slug}:{parent_id}"
-            )])
+            back_btn = await get_common_menu_button('back')
+            if back_btn:
+                back_btn.callback_data = f"vac_add_cat:{city_slug}:{parent_id}"
+                rows.append([back_btn])
 
         # «Главное меню»
         main_btn = await get_common_menu_button('main_menu')
@@ -580,10 +583,11 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
 
     # 5Б.1) Рисуем «Возврат» (только если есть куда вернуться)
     if back_to_id is not None:
-        nav_rows = [[InlineKeyboardButton(
-            text="⬅️ Назад",
-            callback_data=f"vac_add_cat:{city_slug}:{back_to_id}"
-        )]]
+        back_btn = await get_common_menu_button('back')
+        nav_rows = []
+        if back_btn:
+            back_btn.callback_data = f"vac_add_cat:{city_slug}:{back_to_id}"
+            nav_rows.append([back_btn])
         main_btn = await get_common_menu_button('main_menu')
         if main_btn:
             nav_rows.append([main_btn])
@@ -659,12 +663,10 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
 
             buttons: list[list[InlineKeyboardButton]] = []
             if city_slug and back_to_id is not None:
-                buttons.append([
-                    InlineKeyboardButton(
-                        text="⬅️ Назад",
-                        callback_data=f"vac_add_cat:{city_slug}:{back_to_id}"
-                    )
-                ])
+                back_btn = await get_common_menu_button('back', 'ru')
+                if back_btn:
+                    back_btn.callback_data = f"vac_add_cat:{city_slug}:{back_to_id}"
+                    buttons.append([back_btn])
             main_btn = await get_common_menu_button('main_menu', 'ru')
             if main_btn:
                 buttons.append([main_btn])
@@ -683,7 +685,11 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
 
         if target == "descr":
             # Назад к вводу описания. "Назад" на этом экране ведёт на шаг «Заголовок».
-            buttons = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_add_back:title")]]
+            back_btn = await get_common_menu_button('back', 'ru')
+            buttons = []
+            if back_btn:
+                back_btn.callback_data = "vac_add_back:title"
+                buttons.append([back_btn])
             main_btn = await get_common_menu_button('main_menu', 'ru')
             if main_btn:
                 buttons.append([main_btn])
@@ -809,7 +815,10 @@ async def vacancy_input_title(m: Message, state: FSMContext):
 
     buttons: list[list[InlineKeyboardButton]] = []
     if city_slug is not None and back_to_id is not None:
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_add_back:title")])
+        back_btn = await get_common_menu_button('back', 'ru')
+        if back_btn:
+            back_btn.callback_data = "vac_add_back:title"
+            buttons.append([back_btn])
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:
         buttons.append([main_btn])
@@ -875,9 +884,11 @@ async def vacancy_input_descr(m: Message, state: FSMContext):
     await state.set_state(VacForm.price)
 
     # 4) новое «Возврат»
-    buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_add_back:descr")]
-    ]
+    buttons: list[list[InlineKeyboardButton]] = []
+    back_btn = await get_common_menu_button('back', 'ru')
+    if back_btn:
+        back_btn.callback_data = "vac_add_back:descr"
+        buttons.append([back_btn])
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:
         buttons.append([main_btn])
@@ -939,9 +950,11 @@ async def vacancy_descr_skip(cb: CallbackQuery, state: FSMContext):
     await state.set_state(VacForm.price)
 
     # «Возврат» + подсказка цены — как в vacancy_input_descr
-    buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_add_back:descr")]
-    ]
+    buttons: list[list[InlineKeyboardButton]] = []
+    back_btn = await get_common_menu_button('back', 'ru')
+    if back_btn:
+        back_btn.callback_data = "vac_add_back:descr"
+        buttons.append([back_btn])
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:
         buttons.append([main_btn])
@@ -1076,9 +1089,10 @@ async def vac_back_to_title(cb: CallbackQuery, state: FSMContext):
 
     buttons: list[list[InlineKeyboardButton]] = []
     if city_slug and back_to_id is not None:
-        buttons.append([InlineKeyboardButton(
-            text="⬅️ Назад", callback_data=f"vac_add_cat:{city_slug}:{back_to_id}"
-        )])
+        back_btn = await get_common_menu_button('back', 'ru')
+        if back_btn:
+            back_btn.callback_data = f"vac_add_cat:{city_slug}:{back_to_id}"
+            buttons.append([back_btn])
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:
         buttons.append([main_btn])
@@ -1118,7 +1132,11 @@ async def vac_back_to_descr(cb: CallbackQuery, state: FSMContext):
                 pass
 
     # навигация: Назад = к шагу «Заголовок»
-    buttons = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_add_back:title")]]
+    buttons = []
+    back_btn = await get_common_menu_button('back', 'ru')
+    if back_btn:
+        back_btn.callback_data = "vac_add_back:title"
+        buttons.append([back_btn])
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:
         buttons.append([main_btn])
