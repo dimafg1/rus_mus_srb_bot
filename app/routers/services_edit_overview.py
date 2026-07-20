@@ -19,11 +19,19 @@ from urllib.parse import urlsplit
 from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.keyboards import get_common_menu_button
 
 from collections import defaultdict
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 _user_input_msgs = defaultdict(list)
+
+
+async def _back_row(callback_data: str) -> list[InlineKeyboardButton]:
+    """Строка «Назад» из одной кнопки (общий хелпер, текст берётся из menu)."""
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=callback_data)
+    back_btn.callback_data = callback_data
+    return [back_btn]
 
 async def _remember_and_delete_user_message(msg: Message):
     # RU: Запоминаем и удаляем пользовательское сообщение (текст/фото/видео/документ)
@@ -997,7 +1005,7 @@ async def extra_open_services(cb: CallbackQuery, state: FSMContext):
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"sextra:del:{listing_id}:1")])
         if cat2:
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"sextra:del:{listing_id}:2")])
-        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
+        kb_rows.append(await _back_row(f"sextra:back:{listing_id}"))
 
         # Показ меню
         msg = await cb.message.answer(
@@ -1126,7 +1134,7 @@ async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"sextra:del:{listing_id}:1")])
         if cat2:
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"sextra:del:{listing_id}:2")])
-        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
+        kb_rows.append(await _back_row(f"sextra:back:{listing_id}"))
 
     msg = await cb.message.answer(
         f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
@@ -1198,7 +1206,7 @@ async def sextra_add_services(cb: CallbackQuery, state: FSMContext):
             return
         cats = (await s.execute(select(Category).where(Category.parent_id == 80))).scalars().all()
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"sextra:pick:{listing_id}:{c.id}")] for c in cats]
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
+        rows.append(await _back_row(f"sextra:back:{listing_id}"))
 
     msg = await cb.message.answer(
         "Выберите категорию (Услуги):",
@@ -1253,9 +1261,9 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
         if children:
             rows = [[InlineKeyboardButton(text=c.name, callback_data=f"sextra:pick:{listing_id}:{c.id}")] for c in children]
             if cat.parent_id and cat.parent_id != 80:
-                rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:up:{listing_id}:{cat.parent_id}")])
+                rows.append(await _back_row(f"sextra:up:{listing_id}:{cat.parent_id}"))
             else:
-                rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")])
+                rows.append(await _back_row(f"sextra:add:{listing_id}"))
 
             msg = await cb.message.answer(
                 f"Категория: <b>{html_escape(cat.name or '')}</b>\nВыберите подкатегорию:",
@@ -1288,7 +1296,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
             print(f"[services_edit_overview.py] handler=sextra_pick_services REJECT branch chat_id={chat_id} cat_id={cat_id}")
             back_cb = f"sextra:up:{listing_id}:{cat.parent_id}" if (cat.parent_id and cat.parent_id != 80) else f"sextra:add:{listing_id}"
             back_msg = await cb.message.answer("Выберите категорию (Услуги):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)]
+                await _back_row(back_cb)
             ]))
             last_bot_messages[chat_id] = [back_msg.message_id]
             await register_bot_messages(chat_id, [back_msg.message_id])
@@ -1298,7 +1306,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
         if cat_id == listing.category_id:
             await cb.answer("Нельзя выбирать основную категорию объявления.", show_alert=True)
             print(f"[services_edit_overview.py] handler=sextra_pick_services REJECT base chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
-            rows = [[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")]]
+            rows = [await _back_row(f"sextra:add:{listing_id}")]
             back_msg = await cb.message.answer("Выберите другую категорию (Услуги):", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
             last_bot_messages[chat_id] = [back_msg.message_id]
             await register_bot_messages(chat_id, [back_msg.message_id])
@@ -1308,7 +1316,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
         if listing.extra_category_id1 == cat_id or listing.extra_category_id2 == cat_id:
             await cb.answer("Такая доп. категория уже выбрана.", show_alert=True)
             print(f"[services_edit_overview.py] handler=sextra_pick_services REJECT dup chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
-            rows = [[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")]]
+            rows = [await _back_row(f"sextra:add:{listing_id}")]
             back_msg = await cb.message.answer("Выберите другую категорию (Услуги):", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
             last_bot_messages[chat_id] = [back_msg.message_id]
             await register_bot_messages(chat_id, [back_msg.message_id])
@@ -1325,7 +1333,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
                 kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"sextra:del:{listing_id}:1")])
             if cat2:
                 kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"sextra:del:{listing_id}:2")])
-            kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
+            kb_rows.append(await _back_row(f"sextra:back:{listing_id}"))
             msg = await cb.message.answer(
                 f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: 2/2",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
@@ -1356,7 +1364,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"sextra:del:{listing_id}:1")])
         if cat2:
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"sextra:del:{listing_id}:2")])
-        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
+        kb_rows.append(await _back_row(f"sextra:back:{listing_id}"))
 
     msg = await cb.message.answer(
         f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
@@ -1406,7 +1414,7 @@ async def sextra_up_services(cb: CallbackQuery, state: FSMContext):
         if not parent or parent.id == 80:
             cats = (await s.execute(select(Category).where(Category.parent_id == 80))).scalars().all()
             rows = [[InlineKeyboardButton(text=c.name, callback_data=f"sextra:pick:{listing_id}:{c.id}")] for c in cats]
-            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:back:{listing_id}")])
+            rows.append(await _back_row(f"sextra:back:{listing_id}"))
             msg = await cb.message.answer(
                 "Выберите категорию (Услуги):",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -1421,9 +1429,9 @@ async def sextra_up_services(cb: CallbackQuery, state: FSMContext):
         children = (await s.execute(select(Category).where(Category.parent_id == parent.id))).scalars().all()
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"sextra:pick:{listing_id}:{c.id}")] for c in children]
         if parent.parent_id and parent.parent_id != 80:
-            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:up:{listing_id}:{parent.parent_id}")])
+            rows.append(await _back_row(f"sextra:up:{listing_id}:{parent.parent_id}"))
         else:
-            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sextra:add:{listing_id}")])
+            rows.append(await _back_row(f"sextra:add:{listing_id}"))
 
     msg = await cb.message.answer(
         f"Категория: <b>{html_escape(parent.name or '')}</b>\nВыберите подкатегорию:",

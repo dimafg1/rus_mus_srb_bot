@@ -282,9 +282,9 @@ path = await render_category_path(session, category_id)
      хелпер `_back_row(callback_data)`, применён массово через
      скрипт-замену — паттерн везде был одинаковый:
      `X.append([InlineKeyboardButton(text="⬅️ Назад",
-     callback_data=EXPR)])`). **Осталось** (файл: число мест
-     с `text="⬅️ Назад"`):
-     `services_edit_overview.py`(13),
+     callback_data=EXPR)])`), `app/routers/services_edit_overview.py`
+     (13 мест, тот же приём — файл почти зеркало market_edit_overview.py).
+     **Осталось** (файл: число мест с `text="⬅️ Назад"`):
      `services_view.py`(13). (Отдельный вариант «◀️ Назад» в
      `admin_panel.py`/`admin_analytics.py`/`events_view.py`/`events_add.py` —
      это пагинация «пред./след.», НЕ трогать, другая семантика.)
