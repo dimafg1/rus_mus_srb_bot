@@ -358,6 +358,15 @@ path = await render_category_path(session, category_id)
      `services_edit_invalid_id`/`market_edit_title_empty` (уже заведены
      на этом проходе), плюс 3 новых: `err_session_lost_vacancy`,
      `vacancy_edit_price_empty`, `vacancy_edit_field_unavailable`.
+     `artists.py`(29) — **готово**, 10 новых кодов (`music_*` — общие
+     для музыкального слоя, т.к. 5 из 10 фраз дублировались и в
+     `releases.py`, подключены сразу в обоих: `music_section_unavailable`,
+     `artist_not_found`, `music_card_unavailable`,
+     `music_no_rights_or_unavailable`, `music_no_rights_or_field_locked`,
+     `music_field_cleared`, `music_link_needs_scheme`,
+     `music_save_failed_no_rights`, `music_admin_only`, `music_not_found`).
+     Заодно частично продвинули `releases.py` (8 мест этими же кодами) —
+     он всё равно следующий в очереди.
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

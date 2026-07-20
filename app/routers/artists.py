@@ -78,7 +78,7 @@ class ArtistEdit(StatesGroup):
 @router.callback_query(F.data.startswith("art:list:"))
 async def artists_feed(cb: CallbackQuery, state: FSMContext):
     if not await is_enabled("releases_enabled", user_id=cb.from_user.id):
-        await cb.answer("Раздел временно недоступен.", show_alert=True)
+        await cb.answer(await get_text("music_section_unavailable", "ru") or "Раздел временно недоступен.", show_alert=True)
         return
     await cb.answer()
     await state.clear()
@@ -162,12 +162,12 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
             select(Artist).where(Artist.id == artist_id)
         )).scalar_one_or_none()
         if not artist:
-            await cb.answer("Исполнитель не найден.", show_alert=True)
+            await cb.answer(await get_text("artist_not_found", "ru") or "Исполнитель не найден.", show_alert=True)
             return
         if artist.status != "active" and not (
             is_admin(cb.from_user.id) or artist.owner_user_id == cb.from_user.id
         ):
-            await cb.answer("Карточка недоступна.", show_alert=True)
+            await cb.answer(await get_text("music_card_unavailable", "ru") or "Карточка недоступна.", show_alert=True)
             return
         # админ и владелец карточки видят и скрытые релизы (с пометкой) —
         # иначе скрытое из бота не найти и не вернуть
@@ -334,7 +334,7 @@ async def artist_edit_field(cb: CallbackQuery, state: FSMContext):
             select(Artist).where(Artist.id == artist_id)
         )).scalar_one_or_none()
     if not await _can_edit(cb.from_user.id, artist):
-        await cb.answer("Нет прав или карточка недоступна.", show_alert=True)
+        await cb.answer(await get_text("music_no_rights_or_unavailable", "ru") or "Нет прав или карточка недоступна.", show_alert=True)
         return
     await cb.answer()
     if field == "type":  # тип — кнопками
@@ -399,7 +399,7 @@ async def artist_edit_type(cb: CallbackQuery, state: FSMContext):
         return
     t = ARTIST_TYPES[idx_int] if 0 <= idx_int < len(ARTIST_TYPES) else "Другое"
     if not await _save_artist_field(cb.from_user.id, int(aid), "type", t):
-        await cb.answer("Нет прав или карточка недоступна.", show_alert=True)
+        await cb.answer(await get_text("music_no_rights_or_unavailable", "ru") or "Нет прав или карточка недоступна.", show_alert=True)
         return
     await cb.answer()
     await _render_edit_overview(cb.bot, cb.message.chat.id, cb.from_user.id, int(aid))
@@ -416,9 +416,9 @@ async def artist_edit_clear(cb: CallbackQuery, state: FSMContext):
     elif field in CLEARABLE:
         saved = await _save_artist_field(cb.from_user.id, int(aid), field, None)
     if not saved:
-        await cb.answer("Нет прав или поле нельзя очистить.", show_alert=True)
+        await cb.answer(await get_text("music_no_rights_or_field_locked", "ru") or "Нет прав или поле нельзя очистить.", show_alert=True)
         return
-    await cb.answer("Очищено.")
+    await cb.answer(await get_text("music_field_cleared", "ru") or "Очищено.")
     await state.clear()
     await _render_edit_overview(cb.bot, cb.message.chat.id, cb.from_user.id, int(aid))
 
@@ -439,7 +439,7 @@ async def artist_edit_text(message: Message, state: FSMContext):
     if field == "links":
         links = _parse_link_text(text_val, limit=MAX_LINKS)
         if not links:
-            await message.answer("Нужна полноценная ссылка с http:// или https://.")
+            await message.answer(await get_text("music_link_needs_scheme", "ru") or "Нужна полноценная ссылка с http:// или https://.")
             return
         value = json.dumps(links, ensure_ascii=False)
     elif field == "contact":
@@ -455,7 +455,7 @@ async def artist_edit_text(message: Message, state: FSMContext):
         limits = {"descr": 600, "genres": 128, "city_text": 64, "contact": 128}
         value = text_val[:limits.get(field, 255)] or None
     if not await _save_artist_field(message.from_user.id, artist_id, field, value):
-        await message.answer("Не удалось сохранить: нет прав или карточка недоступна.")
+        await message.answer(await get_text("music_save_failed_no_rights", "ru") or "Не удалось сохранить: нет прав или карточка недоступна.")
         return
     await state.clear()
     await _render_edit_overview(message.bot, message.chat.id, message.from_user.id, artist_id)
@@ -473,7 +473,7 @@ async def artist_edit_photo(message: Message, state: FSMContext):
         return
     if not await _save_artist_field(message.from_user.id, artist_id, "photo_file_id",
                                     message.photo[-1].file_id):
-        await message.answer("Не удалось сохранить: нет прав или карточка недоступна.")
+        await message.answer(await get_text("music_save_failed_no_rights", "ru") or "Не удалось сохранить: нет прав или карточка недоступна.")
         return
     await state.clear()
     await _render_edit_overview(message.bot, message.chat.id, message.from_user.id, artist_id)
@@ -483,7 +483,7 @@ async def artist_edit_photo(message: Message, state: FSMContext):
 async def artist_hide(cb: CallbackQuery):
     from app.routers.admin_panel import is_admin
     if not is_admin(cb.from_user.id):
-        await cb.answer("Только для администратора.", show_alert=True)
+        await cb.answer(await get_text("music_admin_only", "ru") or "Только для администратора.", show_alert=True)
         return
     artist_id = int(cb.data.split(":")[2])
     async with SessionLocal() as s:
@@ -491,7 +491,7 @@ async def artist_hide(cb: CallbackQuery):
             select(Artist).where(Artist.id == artist_id)
         )).scalar_one_or_none()
         if not artist:
-            await cb.answer("Не найден.", show_alert=True)
+            await cb.answer(await get_text("music_not_found", "ru") or "Не найден.", show_alert=True)
             return
         artist.status = "hidden"
         s.add(artist)
@@ -504,7 +504,7 @@ async def artist_hide(cb: CallbackQuery):
 async def artist_show(cb: CallbackQuery):
     from app.routers.admin_panel import is_admin
     if not is_admin(cb.from_user.id):
-        await cb.answer("Только для администратора.", show_alert=True)
+        await cb.answer(await get_text("music_admin_only", "ru") or "Только для администратора.", show_alert=True)
         return
     artist_id = int(cb.data.split(":")[2])
     async with SessionLocal() as s:
@@ -512,7 +512,7 @@ async def artist_show(cb: CallbackQuery):
             select(Artist).where(Artist.id == artist_id)
         )).scalar_one_or_none()
         if not artist:
-            await cb.answer("Не найден.", show_alert=True)
+            await cb.answer(await get_text("music_not_found", "ru") or "Не найден.", show_alert=True)
             return
         artist.status = "active"
         s.add(artist)

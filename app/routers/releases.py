@@ -95,7 +95,7 @@ class _MusicEnabledMiddleware:
         if user is None or await is_enabled("releases_enabled", user_id=user.id):
             return await handler(event, data)
         if isinstance(event, CallbackQuery):
-            await event.answer("Раздел временно недоступен.", show_alert=True)
+            await event.answer(await get_text("music_section_unavailable", "ru") or "Раздел временно недоступен.", show_alert=True)
         elif isinstance(event, Message):
             await event.answer("Музыкальный раздел временно недоступен.")
         return None
@@ -502,7 +502,7 @@ def _clean_release_source(src: str) -> str:
 @router.callback_query(F.data.startswith("rel:list:"))
 async def releases_feed(cb: CallbackQuery, state: FSMContext):
     if not await is_enabled("releases_enabled", user_id=cb.from_user.id):
-        await cb.answer("Раздел временно недоступен.", show_alert=True)
+        await cb.answer(await get_text("music_section_unavailable", "ru") or "Раздел временно недоступен.", show_alert=True)
         return
     await state.clear()
     offset = 0
@@ -873,7 +873,7 @@ async def _notify_report(bot, from_user, listing_id, listing, artist, reason_lab
 async def release_admin_hide(cb: CallbackQuery):
     from app.routers.admin_panel import is_admin
     if not is_admin(cb.from_user.id):
-        await cb.answer("Только для администратора.", show_alert=True)
+        await cb.answer(await get_text("music_admin_only", "ru") or "Только для администратора.", show_alert=True)
         return
     listing_id = int(cb.data.split(":")[2])
     async with SessionLocal() as s:
@@ -884,7 +884,7 @@ async def release_admin_hide(cb: CallbackQuery):
             select(ReleaseMeta).where(ReleaseMeta.listing_id == listing_id)
         )).scalar_one_or_none()
         if not listing or not meta or meta.status == "deleted":
-            await cb.answer("Не найден.", show_alert=True)
+            await cb.answer(await get_text("music_not_found", "ru") or "Не найден.", show_alert=True)
             return
         meta.status = "hidden"
         s.add(meta)
@@ -897,7 +897,7 @@ async def release_admin_hide(cb: CallbackQuery):
 async def release_admin_show(cb: CallbackQuery):
     from app.routers.admin_panel import is_admin
     if not is_admin(cb.from_user.id):
-        await cb.answer("Только для администратора.", show_alert=True)
+        await cb.answer(await get_text("music_admin_only", "ru") or "Только для администратора.", show_alert=True)
         return
     listing_id = int(cb.data.split(":")[2])
     async with SessionLocal() as s:
@@ -919,7 +919,7 @@ async def release_admin_show(cb: CallbackQuery):
             or not meta
             or meta.status == "deleted"
         ):
-            await cb.answer("Не найден.", show_alert=True)
+            await cb.answer(await get_text("music_not_found", "ru") or "Не найден.", show_alert=True)
             return
         if (
             not artist
@@ -2093,7 +2093,7 @@ async def rel_edit_clear(cb: CallbackQuery, state: FSMContext):
         )
         await cb.answer(text, show_alert=True)
         return
-    await cb.answer("Очищено.")
+    await cb.answer(await get_text("music_field_cleared", "ru") or "Очищено.")
     await state.clear()
     await _render_rel_edit(cb.bot, cb.message.chat.id, cb.from_user.id, int(lid))
 
@@ -2119,7 +2119,7 @@ async def rel_edit_text(message: Message, state: FSMContext):
     elif field == "links":
         links = _parse_link_text(text_val)
         if not links:
-            await message.answer("Нужна полноценная ссылка с http:// или https://.")
+            await message.answer(await get_text("music_link_needs_scheme", "ru") or "Нужна полноценная ссылка с http:// или https://.")
             return
         value = json.dumps(links, ensure_ascii=False)
     elif field == "genre":
