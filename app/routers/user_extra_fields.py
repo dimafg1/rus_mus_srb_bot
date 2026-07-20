@@ -13,6 +13,7 @@ from html import escape as html_escape
 from app.database import SessionLocal
 from app.models import Category, Listing
 from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.keyboards import get_common_menu_button
 from aiogram.filters import BaseFilter
 from aiogram import types
 
@@ -118,14 +119,16 @@ async def _current_value_from_listing(state: FSMContext, key: str):
     except Exception:
         return None
 
-def _controls_row():
+async def _controls_row():
     """Нижняя панель управления: Пропустить / Завершить / Назад.
     ВНИМАНИЕ: эти callback-и обрабатывает market_edit.py (edit:skip / edit:finish / edit:back)
     """
+    back_btn = await get_common_menu_button('back')
+    back_btn.callback_data = "edit:back"
     return [
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data="edit:skip")],
         [InlineKeyboardButton(text="✅ Завершить", callback_data="edit:finish")],
-        [InlineKeyboardButton(text="⬅️ Назад",      callback_data="edit:back")],
+        [back_btn],
     ]
 async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, resume_data: str | None):
     """
@@ -271,7 +274,7 @@ async def _ask_current_field(ev, state: FSMContext):
     cur_val = await _current_value_from_listing(state, key)
     cur_line = f"Текущее значение: <code>{_fmt_value_for_display(cur_val)}</code>"
 
-    controls = _controls_row()
+    controls = await _controls_row()
 
     # text / number
     if ftype in ("text", "number"):
@@ -317,7 +320,7 @@ async def _ask_current_field(ev, state: FSMContext):
     
     # video
     if ftype == "video":
-        rows = _controls_row()
+        rows = await _controls_row()
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         # Показываем текущее видео (если это загруженный file_id, а не ссылка),
         # чтобы пользователь видел, что уже есть, пока не заменил.
@@ -442,7 +445,7 @@ async def user_extra_value_message(message: Message, state: FSMContext):
             if num.is_integer():
                 num = int(num)
         except Exception:
-            kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
+            kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
             msg = await message.answer("Нужно число. Попробуйте ещё раз.", reply_markup=kb)
             last_bot_messages[chat_id] = [msg.message_id]
             await register_bot_messages(chat_id, [msg.message_id])
@@ -475,7 +478,7 @@ async def user_extra_video_by_document(message: Message, state: FSMContext):
         return
 
     # Если это не видео-файл — попросим снова
-    kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
+    kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
     msg = await message.answer("Это не видео-файл. Отправьте видео (как видео или как файл с типом video/*).", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -502,7 +505,7 @@ async def user_extra_video_by_text(message: Message, state: FSMContext):
         return
 
     # не ссылка на видео
-    kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
+    kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
     msg = await message.answer(
         "Это не ссылка на видео. Отправьте видео-файл или ссылку на YouTube.",
         reply_markup=kb
@@ -516,7 +519,7 @@ async def user_extra_video_by_text(message: Message, state: FSMContext):
 async def user_extra_video_wrong_content(message: Message, state: FSMContext):
     chat_id = message.chat.id
     await clear_bot_messages(chat_id, message.bot)
-    kb = InlineKeyboardMarkup(inline_keyboard=_controls_row())
+    kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
     msg = await message.answer("Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])

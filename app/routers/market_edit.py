@@ -36,12 +36,14 @@ async def _slugs_for_listing(s, listing: Listing):
     cat  = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
     return city.slug, cat.slug
 
-def _nav_row(city_slug: str, cat_slug: str, listing_id: int):
+async def _nav_row(city_slug: str, cat_slug: str, listing_id: int):
     # Кнопки: Пропустить, Завершить, Назад (унифицировано)
+    back_btn = await get_common_menu_button('back')
+    back_btn.callback_data = "edit:back"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data="edit:skip")],
         [InlineKeyboardButton(text="✅ Завершить", callback_data=f"edit:finish:{listing_id}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="edit:back")]
+        [back_btn]
     ])
 
 def _is_extra_mode(data: dict) -> bool:
@@ -58,7 +60,7 @@ async def _ask_title(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     bot = ev.message.bot if isinstance(ev, CallbackQuery) else ev.bot
     await clear_bot_messages(chat_id, bot)
 
-    kb = _nav_row(city_slug, cat_slug, listing.id)
+    kb = await _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
         f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{html.escape(str(listing.title or '—'))}</code>\n\n"
         "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
@@ -74,7 +76,7 @@ async def _ask_price(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     bot = ev.message.bot if isinstance(ev, CallbackQuery) else ev.bot
     await clear_bot_messages(chat_id, bot)
 
-    kb = _nav_row(city_slug, cat_slug, listing.id)
+    kb = await _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
         f"💰 <b>Цена</b>\n\nТекущее значение:\n<code>{html.escape(str(listing.price or '—'))}</code>\n\n"
         "Отправьте новую цену (или скопируйте текущую ↑ и отредактируйте):",
@@ -90,7 +92,7 @@ async def _ask_descr(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     bot = ev.message.bot if isinstance(ev, CallbackQuery) else ev.bot
     await clear_bot_messages(chat_id, bot)
 
-    kb = _nav_row(city_slug, cat_slug, listing.id)
+    kb = await _nav_row(city_slug, cat_slug, listing.id)
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
         "📝 <b>Описание</b>\n\nТекущее значение:\n"
         f"<code>{html.escape(str(listing.descr or '—'))}</code>\n\n"
