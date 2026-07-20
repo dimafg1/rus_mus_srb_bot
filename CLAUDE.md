@@ -361,9 +361,23 @@ path = await render_category_path(session, category_id)
      `vacancy_edit_field_unavailable` (точное совпадение). `_build_overview_text()`
      стала async (была `def`, не `async def`) — единственный вызов обёрнут
      в `await`.
+     `market_edit_overview.py`(78) — **готово (2026-07-20)**: 34 новых
+     кода `market_edit_*` (обзор редактирования объявления Барахолки:
+     заголовок/город/категория/поля-лейблы, кнопки «Править …», запрос
+     значения основного/доп.поля text-number/select-checkbox/видео,
+     мини-меню «Доп. категории»), плюс переиспользованы `vacancy_edit_field_unavailable`/
+     `err_field_type`/`extra_field_not_video_link`/`extra_field_need_video`/
+     `services_edit_field_not_found`/`_extra_disabled`/`_btn_add_extra_category`/
+     `_extra_slots_full`/`_category_not_found`/`_extra_same_as_main`/`_extra_duplicate`/
+     `_removed_toast`/`_added_toast`/`_btn_delete_extra_category_tmpl`/`_extra_menu_tmpl`/
+     `_choose_extra_subcategory_tmpl`/`vac_add_checkbox_yes`/`admin_panel_btn_no`/
+     `admin_fields_yes`/`admin_fields_no` (точное совпадение — почти зеркало
+     `services_edit_overview.py`, разница только в словах «Барахолка»/«объявление»
+     vs «Услуги»/«услуга»). `_controls_cancel()` и `_fmt()` стали async (были
+     `def`) — все вызовы обёрнуты в `await`.
      > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
-     > `market_edit_overview.py`(78). Дальше по списку —
-     > `events_view.py`(86), `market_view.py`(89), `releases.py`(110,
+     > `events_view.py`(86). Дальше по списку —
+     > `market_view.py`(89), `releases.py`(110,
      > частично уже задет — 8 мест кодами `music_*` из шага `artists.py`),
      > `events_add.py`(154). Порядок действий на каждый файл (наработан,
      > повторять без дополнительных вопросов, если пользователь просто
