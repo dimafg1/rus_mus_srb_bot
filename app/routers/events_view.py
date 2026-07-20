@@ -137,12 +137,14 @@ async def _fetch_month_marks_all(year: int, month: int) -> set[int]:
 
 async def _kb_calendar_month_all(year: int, month: int, marks: set[int]) -> InlineKeyboardMarkup:
     weeks = pycal.monthcalendar(year, month)
-    wd = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    wd_text = await get_text("events_view_calendar_weekdays", "ru") or "Пн,Вт,Ср,Чт,Пт,Сб,Вс"
+    wd = wd_text.split(",")
 
-    month_name = [
-        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
-    ][month - 1]
+    months_text = (
+        await get_text("events_view_calendar_months", "ru")
+        or "Январь,Февраль,Март,Апрель,Май,Июнь,Июль,Август,Сентябрь,Октябрь,Ноябрь,Декабрь"
+    )
+    month_name = months_text.split(",")[month - 1]
 
     prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
     next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
@@ -2286,12 +2288,14 @@ async def _fetch_month_marks_city(slug: str, year: int, month: int) -> set[int]:
 
 async def _kb_calendar_month_city(slug: str, year: int, month: int, marks: set[int]) -> InlineKeyboardMarkup:
     weeks = pycal.monthcalendar(year, month)
-    wd = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    wd_text = await get_text("events_view_calendar_weekdays", "ru") or "Пн,Вт,Ср,Чт,Пт,Сб,Вс"
+    wd = wd_text.split(",")
 
-    month_name = [
-        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
-    ][month - 1]
+    months_text = (
+        await get_text("events_view_calendar_months", "ru")
+        or "Январь,Февраль,Март,Апрель,Май,Июнь,Июль,Август,Сентябрь,Октябрь,Ноябрь,Декабрь"
+    )
+    month_name = months_text.split(",")[month - 1]
 
     prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
     next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
