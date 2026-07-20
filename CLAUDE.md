@@ -277,9 +277,14 @@ path = await render_category_path(session, category_id)
      import get_common_menu_button` (см. коммит 067a633). **Урок:**
      после каждой правки, трогающей `app/keyboards.py` или
      `admin_panel.py`, проверять `python -c "import app.main"`, тестов
-     недостаточно. `app/routers/vacancy_add.py` (10 мест). **Осталось**
-     (файл: число мест с `text="⬅️ Назад"`):
-     `market_edit_overview.py`(13), `services_edit_overview.py`(13),
+     недостаточно. `app/routers/vacancy_add.py` (10 мест),
+     `app/routers/market_edit_overview.py` (13 мест, добавлен локальный
+     хелпер `_back_row(callback_data)`, применён массово через
+     скрипт-замену — паттерн везде был одинаковый:
+     `X.append([InlineKeyboardButton(text="⬅️ Назад",
+     callback_data=EXPR)])`). **Осталось** (файл: число мест
+     с `text="⬅️ Назад"`):
+     `services_edit_overview.py`(13),
      `services_view.py`(13). (Отдельный вариант «◀️ Назад» в
      `admin_panel.py`/`admin_analytics.py`/`events_view.py`/`events_add.py` —
      это пагинация «пред./след.», НЕ трогать, другая семантика.)

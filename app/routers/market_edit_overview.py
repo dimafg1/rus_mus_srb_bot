@@ -25,6 +25,13 @@ from aiogram.types import Message
 import re
 
 
+async def _back_row(callback_data: str) -> list[InlineKeyboardButton]:
+    """Строка «Назад» из один кнопки (общий хелпер, текст берётся из menu)."""
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=callback_data)
+    back_btn.callback_data = callback_data
+    return [back_btn]
+
+
 _user_input_msgs = defaultdict(list)
 
 async def _remember_and_delete_user_message(msg: Message):
@@ -1028,7 +1035,7 @@ async def extra_open_market(cb: CallbackQuery, state: FSMContext):
         kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
     if cat2:
         kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
-    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+    kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
 
 
     msg = await cb.message.answer(
@@ -1138,7 +1145,7 @@ async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
         if cat2:
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
-        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+        kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
 
     # Показ обновлённого мини-меню (остаёмся на месте)
     msg = await cb.message.answer(
@@ -1212,7 +1219,7 @@ async def mextra_add_market(cb: CallbackQuery, state: FSMContext):
             return
         cats = (await s.execute(select(Category).where(Category.parent_id == 30))).scalars().all()
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in cats]
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+        rows.append(await _back_row(f"mextra:back:{listing_id}"))
 
     msg = await cb.message.answer(
         "Выберите категорию (Барахолка):",
@@ -1269,9 +1276,9 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
         if children:
             rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in children]
             if cat.parent_id and cat.parent_id != 30:
-                rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:up:{listing_id}:{cat.parent_id}")])
+                rows.append(await _back_row(f"mextra:up:{listing_id}:{cat.parent_id}"))
             else:
-                rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")])
+                rows.append(await _back_row(f"mextra:add:{listing_id}"))
 
             msg = await cb.message.answer(
                 f"Категория: <b>{html_escape(cat.name or '')}</b>\nВыберите подкатегорию:",
@@ -1302,7 +1309,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
             print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT branch chat_id={chat_id} cat_id={cat_id}")
             back_cb = f"mextra:up:{listing_id}:{cat.parent_id}" if (cat.parent_id and cat.parent_id != 30) else f"mextra:add:{listing_id}"
             back_msg = await cb.message.answer("Выберите категорию (Барахолка):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)]
+                await _back_row(back_cb)
             ]))
             last_bot_messages[chat_id] = [back_msg.message_id]
             await register_bot_messages(chat_id, [back_msg.message_id])
@@ -1314,7 +1321,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
             print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT base chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
             back_msg = await cb.message.answer("Выберите другую категорию (Барахолка):",
                                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                                   [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")]
+                                                   await _back_row(f"mextra:add:{listing_id}")
                                                ]),
                                                parse_mode="HTML")
             last_bot_messages[chat_id] = [back_msg.message_id]
@@ -1327,7 +1334,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
             print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT dup chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
             back_msg = await cb.message.answer("Выберите другую категорию (Барахолка):",
                                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                                   [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")]
+                                                   await _back_row(f"mextra:add:{listing_id}")
                                                ]),
                                                parse_mode="HTML")
             last_bot_messages[chat_id] = [back_msg.message_id]
@@ -1345,7 +1352,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
                 kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
             if cat2:
                 kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
-            kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+            kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
             msg = await cb.message.answer(
                 f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: 2/2",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
@@ -1376,7 +1383,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat1.name}", callback_data=f"mextra:del:{listing_id}:1")])
         if cat2:
             kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить: {cat2.name}", callback_data=f"mextra:del:{listing_id}:2")])
-        kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+        kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
 
     msg = await cb.message.answer(
         f"Доп. категории для «{html_escape(listing.title or '')}»\nЗанято слотов: {used}/2",
@@ -1425,7 +1432,7 @@ async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
         if not parent or parent.id == 30:
             cats = (await s.execute(select(Category).where(Category.parent_id == 30))).scalars().all()
             rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in cats]
-            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:back:{listing_id}")])
+            rows.append(await _back_row(f"mextra:back:{listing_id}"))
             msg = await cb.message.answer(
                 "Выберите категорию (Барахолка):",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -1440,9 +1447,9 @@ async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
         children = (await s.execute(select(Category).where(Category.parent_id == parent.id))).scalars().all()
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in children]
         if parent.parent_id and parent.parent_id != 30:
-            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:up:{listing_id}:{parent.parent_id}")])
+            rows.append(await _back_row(f"mextra:up:{listing_id}:{parent.parent_id}"))
         else:
-            rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"mextra:add:{listing_id}")])
+            rows.append(await _back_row(f"mextra:add:{listing_id}"))
 
     msg = await cb.message.answer(
         f"Категория: <b>{html_escape(parent.name or '')}</b>\nВыберите подкатегорию:",
