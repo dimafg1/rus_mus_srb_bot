@@ -542,7 +542,7 @@ async def art_search_start(cb: CallbackQuery, state: FSMContext):
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
                           "🔍 Введите запрос: название исполнителя, жанр или город "
                           "(от 2 символов).",
-                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_artists")]))
+                          InlineKeyboardMarkup(inline_keyboard=[await _nav_row("go_artists")]))
 
 
 async def _render_art_search(bot, chat_id: int, state: FSMContext, offset: int = 0):
@@ -566,7 +566,7 @@ async def _render_art_search(bot, chat_id: int, state: FSMContext, offset: int =
             nav.append(InlineKeyboardButton(text="▶️", callback_data=f"art:spage:{offset + SEARCH_PAGE}"))
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="art:search")])
-    rows.append(_nav_row("go_artists"))
+    rows.append(await _nav_row("go_artists"))
     await _send_screen(bot, chat_id,
                        f"{note}Результаты по запросу: <b>{_e(q)}</b>\nНайдено: {total}",
                        InlineKeyboardMarkup(inline_keyboard=rows))
@@ -582,7 +582,7 @@ async def art_search_do(message: Message, state: FSMContext):
     if len(q) < 2:
         await _replace_prompt(state, message.bot, message.chat.id,
                               "Минимум 2 символа. Введите запрос ещё раз:",
-                              InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_artists")]))
+                              InlineKeyboardMarkup(inline_keyboard=[await _nav_row("go_artists")]))
         return
 
     async with SessionLocal() as s:

@@ -265,9 +265,20 @@ path = await render_category_path(session, category_id)
      `KeyboardButton`, синхронизированная с проверками `message.text ==
      "⬅️ Назад"` в нескольких хендлерах — сознательно не трогали,
      риск рассинхронизации не оправдан для owner-only экрана).
-     `app/routers/admin_fields.py` (8 мест). **Осталось** (файл: число
-     мест с `text="⬅️ Назад"`):
-     `releases.py`(9), `vacancy_add.py`(10),
+     `app/routers/admin_fields.py` (8 мест), `app/routers/releases.py`
+     (общий хелпер `_nav_row(back_cb)` → async, 24 места вызова разом —
+     в т.ч. 3 в `app/routers/artists.py`, который его импортирует).
+     **ВАЖНО (найденный и исправленный баг):** первая правка
+     `admin_panel.py` создала циклический импорт `app.keyboards` ↔
+     `app.routers.admin_panel` (keyboards.py импортирует `is_admin`
+     оттуда) — падал `import app.main`, но не тесты (у них другой
+     порядок импорта, маскирует цикл). Исправлено: в admin_panel.py
+     `import app.keyboards as _keyboards` вместо `from app.keyboards
+     import get_common_menu_button` (см. коммит 067a633). **Урок:**
+     после каждой правки, трогающей `app/keyboards.py` или
+     `admin_panel.py`, проверять `python -c "import app.main"`, тестов
+     недостаточно. **Осталось** (файл: число мест с `text="⬅️ Назад"`):
+     `vacancy_add.py`(10),
      `market_edit_overview.py`(13), `services_edit_overview.py`(13),
      `services_view.py`(13). (Отдельный вариант «◀️ Назад» в
      `admin_panel.py`/`admin_analytics.py`/`events_view.py`/`events_add.py` —

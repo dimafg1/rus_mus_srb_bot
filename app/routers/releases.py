@@ -31,6 +31,7 @@ from aiogram.types import (
 from sqlmodel import select
 
 from app.database import SessionLocal
+from app.keyboards import get_common_menu_button
 from app.models import Artist, Category, City, Listing, ReleaseMeta, ReleaseTrack, utcnow_naive
 from app.analytics import log_event
 from app.analytics.listing_views import log_listing_view
@@ -184,9 +185,11 @@ def _menu_btn() -> InlineKeyboardButton:
     return InlineKeyboardButton(text="☰ Главное меню", callback_data="main_menu")
 
 
-def _nav_row(back_cb: str) -> list[InlineKeyboardButton]:
+async def _nav_row(back_cb: str) -> list[InlineKeyboardButton]:
     """Железобетонное правило: на каждом экране «Назад» (один шаг) + меню."""
-    return [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb), _menu_btn()]
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)
+    back_btn.callback_data = back_cb
+    return [back_btn, _menu_btn()]
 
 
 async def _send_screen(bot, chat_id: int, text: str, kb=None, photo=None):
@@ -727,7 +730,7 @@ async def release_report_ask(cb: CallbackQuery):
         return
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:repdo:{listing_id}:{code}")]
             for code, label in REPORT_REASONS.items()]
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="rel:repcancel"), _menu_btn()])
+    rows.append(await _nav_row("rel:repcancel"))
     msg = await cb.bot.send_message(
         cb.message.chat.id, "Что не так с этим релизом?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -775,8 +778,7 @@ async def release_report_send(cb: CallbackQuery, state: FSMContext):
             await cb.message.edit_text(
                 "Опишите своими словами, что не так:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"rel:repback:{listing_id}"),
-                     _menu_btn()]]))
+                    await _nav_row(f"rel:repback:{listing_id}")]))
         except Exception:
             pass
         return
@@ -804,7 +806,7 @@ async def release_report_back(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:repdo:{listing_id}:{code}")]
             for code, label in REPORT_REASONS.items()]
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="rel:repcancel"), _menu_btn()])
+    rows.append(await _nav_row("rel:repcancel"))
     try:
         await cb.message.edit_text("Что не так с этим релизом?",
                                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -1035,7 +1037,7 @@ async def add_start(cb: CallbackQuery, state: FSMContext):
     rows = [[InlineKeyboardButton(text=f"🎤 {a.name}", callback_data=f"rel:art:{a.id}")]
             for a in artists]
     rows.append([InlineKeyboardButton(text="➕ Создать нового исполнителя", callback_data="rel:artnew")])
-    rows.append(_nav_row("go_releases"))
+    rows.append(await _nav_row("go_releases"))
     await _send_screen(cb.bot, cb.message.chat.id,
                        "Чей это релиз?\n\nВыберите вашего исполнителя или создайте нового.",
                        InlineKeyboardMarkup(inline_keyboard=rows))
@@ -1084,7 +1086,7 @@ async def _ask_artname(bot, chat_id: int, state: FSMContext):
     back_cb = "go_artists" if data.get("artist_flow") == "standalone" else "rel:add"
     await _replace_prompt(state, bot, chat_id,
                           "Название исполнителя или группы?",
-                          InlineKeyboardMarkup(inline_keyboard=[_nav_row(back_cb)]))
+                          InlineKeyboardMarkup(inline_keyboard=[await _nav_row(back_cb)]))
 
 
 @router.message(ReleaseAdd.artist_name, F.text)
@@ -1121,7 +1123,7 @@ async def _ask_arttype(bot, chat_id: int, state: FSMContext):
     name = (data.get("new_artist") or {}).get("name", "")
     rows = [[InlineKeyboardButton(text=t, callback_data=f"rel:atype:{i}")]
             for i, t in enumerate(ARTIST_TYPES)]
-    rows.append(_nav_row("rel:back:artname"))
+    rows.append(await _nav_row("rel:back:artname"))
     await _replace_prompt(state, bot, chat_id,
                           f"«{_e(name)}» — это:", InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -1159,7 +1161,7 @@ async def _ask_artphoto(bot, chat_id: int, state: FSMContext):
                           "Фото или логотип исполнителя?\n\nПришлите картинку — или пропустите.",
                           InlineKeyboardMarkup(inline_keyboard=[
                               [InlineKeyboardButton(text="⏭ Пропустить", callback_data="rel:askip")],
-                              _nav_row("rel:back:arttype"),
+                              await _nav_row("rel:back:arttype"),
                           ]))
 
 
@@ -1278,7 +1280,7 @@ async def _ask_rel_type(event, state: FSMContext):
     back_cb = "rel:back:artphoto" if data.get("created_artist_id") else "rel:add"
     rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:rtype:{code}")]
             for code, label in RELEASE_TYPES.items()]
-    rows.append(_nav_row(back_cb))
+    rows.append(await _nav_row(back_cb))
     await _replace_prompt(state, bot, chat_id, "Что выпускаем?",
                           InlineKeyboardMarkup(inline_keyboard=rows))
     if isinstance(event, CallbackQuery):
@@ -1292,14 +1294,14 @@ async def _ask_title(bot, chat_id: int, state: FSMContext):
     await state.set_state(ReleaseAdd.rel_title)
     await _replace_prompt(state, bot, chat_id,
                           "Название релиза?\n\n(без имени исполнителя — только название)",
-                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:back:rtype")]))
+                          InlineKeyboardMarkup(inline_keyboard=[await _nav_row("rel:back:rtype")]))
 
 
 async def _ask_cover(bot, chat_id: int, state: FSMContext):
     await state.set_state(ReleaseAdd.cover)
     await _replace_prompt(state, bot, chat_id,
                           "Обложка релиза?\n\nПришлите картинку — обложка обязательна.",
-                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:back:title")]))
+                          InlineKeyboardMarkup(inline_keyboard=[await _nav_row("rel:back:title")]))
 
 
 async def _ask_media(bot, chat_id: int, state: FSMContext):
@@ -1326,7 +1328,7 @@ async def _ask_media(bot, chat_id: int, state: FSMContext):
         "Можно вперемешку. Когда закончите — нажмите «Готово»." + status,
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
-            _nav_row("rel:back:cover"),
+            await _nav_row("rel:back:cover"),
         ]))
 
 
@@ -1419,7 +1421,7 @@ async def media_audio(message: Message, state: FSMContext):
         f"Принято треков: {len(tracks)} ✔️\n\nПрисылайте следующий или жмите «Готово».",
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
-            _nav_row("rel:back:cover"),
+            await _nav_row("rel:back:cover"),
         ]))
 
 
@@ -1436,7 +1438,7 @@ async def media_video(message: Message, state: FSMContext):
         "Клип принят ✔️\n\nЖмите «Готово».",
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
-            _nav_row("rel:back:cover"),
+            await _nav_row("rel:back:cover"),
         ]))
 
 
@@ -1452,7 +1454,7 @@ async def media_document(message: Message, state: FSMContext):
         "Пришлите как <b>аудио</b> (через скрепку → «Музыка») или как видео.",
         InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
-            _nav_row("rel:back:cover"),
+            await _nav_row("rel:back:cover"),
         ]))
 
 
@@ -1464,7 +1466,7 @@ async def cover_wrong_type(message: Message, state: FSMContext):
         pass
     await _replace_prompt(state, message.bot, message.chat.id,
                           "Нужна именно картинка-обложка. Пришлите фото 🙂",
-                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("rel:back:title")]))
+                          InlineKeyboardMarkup(inline_keyboard=[await _nav_row("rel:back:title")]))
 
 
 @router.message(ReleaseAdd.media, F.text)
@@ -1478,7 +1480,7 @@ async def media_links(message: Message, state: FSMContext):
     data = await state.get_data()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Готово", callback_data="rel:mdone")],
-        _nav_row("rel:back:cover"),
+        await _nav_row("rel:back:cover"),
     ])
     if not new_links:
         await _replace_prompt(state, message.bot, message.chat.id,
@@ -1522,7 +1524,7 @@ async def _ask_descr(event, state: FSMContext):
                           "Пара слов о релизе? (по желанию)",
                           InlineKeyboardMarkup(inline_keyboard=[
                               [InlineKeyboardButton(text="⏭ Пропустить", callback_data="rel:dskip")],
-                              _nav_row("rel:back:media"),
+                              await _nav_row("rel:back:media"),
                           ]))
     if isinstance(event, CallbackQuery):
         try:
@@ -1570,7 +1572,7 @@ async def _confirm(event, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Публикую — я автор или представитель",
                               callback_data="rel:pub")],
-        _nav_row("rel:back:descr"),
+        await _nav_row("rel:back:descr"),
     ])
     await _replace_prompt(state, bot, chat_id, "\n".join(parts), kb)
     if isinstance(event, CallbackQuery):
@@ -1700,7 +1702,7 @@ async def _publish_locked(cb: CallbackQuery, state: FSMContext):
         await _replace_prompt(
             state, cb.bot, cb.message.chat.id,
             "Исполнитель больше недоступен. Начните публикацию заново.",
-            InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_releases")]),
+            InlineKeyboardMarkup(inline_keyboard=[await _nav_row("go_releases")]),
         )
         return
     except Exception as e:
@@ -1711,7 +1713,7 @@ async def _publish_locked(cb: CallbackQuery, state: FSMContext):
             "Не удалось опубликовать релиз. Данные сохранены в мастере — попробуйте ещё раз.",
             InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔄 Повторить", callback_data="rel:pub")],
-                _nav_row("rel:back:descr"),
+                await _nav_row("rel:back:descr"),
             ]),
         )
         return
@@ -1781,7 +1783,7 @@ async def rel_search_start(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
                           "🔍 Введите запрос: название релиза или исполнителя (от 2 символов).",
-                          InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_releases")]))
+                          InlineKeyboardMarkup(inline_keyboard=[await _nav_row("go_releases")]))
 
 
 async def _render_rel_search(bot, chat_id: int, state: FSMContext, offset: int = 0):
@@ -1805,7 +1807,7 @@ async def _render_rel_search(bot, chat_id: int, state: FSMContext, offset: int =
             nav.append(InlineKeyboardButton(text="▶️", callback_data=f"rel:spage:{offset + SEARCH_PAGE}"))
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="rel:search")])
-    rows.append(_nav_row("go_releases"))
+    rows.append(await _nav_row("go_releases"))
     await _send_screen(bot, chat_id,
                        f"{note}Результаты по запросу: <b>{_e(q)}</b>\nНайдено: {total}",
                        InlineKeyboardMarkup(inline_keyboard=rows))
@@ -1821,7 +1823,7 @@ async def rel_search_do(message: Message, state: FSMContext):
     if len(q) < 2:
         await _replace_prompt(state, message.bot, message.chat.id,
                               "Минимум 2 символа. Введите запрос ещё раз:",
-                              InlineKeyboardMarkup(inline_keyboard=[_nav_row("go_releases")]))
+                              InlineKeyboardMarkup(inline_keyboard=[await _nav_row("go_releases")]))
         return
 
     # собираем опубликованные релизы с именами исполнителей
@@ -1958,8 +1960,7 @@ async def _render_rel_edit(bot, chat_id: int, user_id: int, listing_id: int):
             for code, (label, _) in REL_EDIT_FIELDS.items()]
     rows.append([InlineKeyboardButton(text=f"🎼 Треки ({len(tracks)})",
                                       callback_data=f"rel:rtracks:{listing_id}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад",
-                                      callback_data=f"rel:view:{listing_id}"), _menu_btn()])
+    rows.append(await _nav_row(f"rel:view:{listing_id}"))
     await _send_screen(bot, chat_id, "\n".join(lines),
                        InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -1989,8 +1990,7 @@ async def rel_edit_field(cb: CallbackQuery, state: FSMContext):
     if field == "rtype":
         rows = [[InlineKeyboardButton(text=label, callback_data=f"rel:retype:{listing_id}:{code}")]
                 for code, label in RELEASE_TYPES.items()]
-        rows.append([InlineKeyboardButton(text="⬅️ Назад",
-                                          callback_data=f"rel:edit:{listing_id}"), _menu_btn()])
+        rows.append(await _nav_row(f"rel:edit:{listing_id}"))
         await _replace_prompt(state, cb.bot, cb.message.chat.id, "Выберите тип:",
                               InlineKeyboardMarkup(inline_keyboard=rows))
         return
@@ -2001,8 +2001,7 @@ async def rel_edit_field(cb: CallbackQuery, state: FSMContext):
     if field in REL_CLEARABLE:
         rows.append([InlineKeyboardButton(text="🗑 Очистить поле",
                                           callback_data=f"rel:reclr:{listing_id}:{field}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад",
-                                      callback_data=f"rel:edit:{listing_id}"), _menu_btn()])
+    rows.append(await _nav_row(f"rel:edit:{listing_id}"))
     await _replace_prompt(state, cb.bot, cb.message.chat.id, hint,
                           InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -2189,8 +2188,7 @@ async def _render_rel_tracks(bot, chat_id: int, user_id: int, listing_id: int):
         ])
     rows.append([InlineKeyboardButton(text="➕ Добавить трек",
                                       callback_data=f"rel:tadd:{listing_id}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад",
-                                      callback_data=f"rel:edit:{listing_id}"), _menu_btn()])
+    rows.append(await _nav_row(f"rel:edit:{listing_id}"))
     await _send_screen(bot, chat_id,
                        f"🎼 <b>Треки релиза «{_e(listing.title)}»</b>\n\n"
                        "🗑 удаляет трек; порядок пересчитывается автоматически.",
@@ -2272,10 +2270,8 @@ async def rel_track_add(cb: CallbackQuery, state: FSMContext):
     await state.update_data(redit_field="track", redit_listing_id=listing_id)
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
                           "Пришлите аудио-трек (как музыку).",
-                          InlineKeyboardMarkup(inline_keyboard=[[
-                              InlineKeyboardButton(text="⬅️ Назад",
-                                                   callback_data=f"rel:rtracks:{listing_id}"),
-                              _menu_btn()]]))
+                          InlineKeyboardMarkup(inline_keyboard=[
+                              await _nav_row(f"rel:rtracks:{listing_id}")]))
 
 
 @router.message(RelEdit.value, F.audio)
