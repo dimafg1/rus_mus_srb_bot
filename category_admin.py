@@ -2484,6 +2484,12 @@ li.drag-over-below>.node{box-shadow:0 2px 0 0 #5a9cf5}
        box-shadow:0 10px 50px rgba(0,0,0,.7);margin:auto;
        resize:both;overflow:auto;min-width:340px;min-height:160px}
 .modal.wide{width:640px}
+
+/* fb-tooltip: своя подсказка вместо нативной title — управляемый шрифт */
+.fb-tooltip{position:fixed;z-index:10001;background:#161630;color:#e2e6f5;
+  border:1px solid #2a3560;border-radius:8px;padding:10px 14px;font-size:15px;
+  line-height:1.45;max-width:420px;white-space:pre-wrap;word-break:break-word;
+  box-shadow:0 10px 30px rgba(0,0,0,.55);pointer-events:none;display:none}
 .modal h2{font-size:14px;margin-bottom:16px;color:#fff;font-weight:600}
 .field-row{margin-bottom:11px}
 .field-row label{display:block;font-size:11px;color:#778;margin-bottom:3px}
@@ -3604,7 +3610,8 @@ async function loadFeedback() {
         <td style="padding:7px 8px;font-weight:600;color:#99a">${r.username?'@'+esc(r.username):'id'+r.user_id}</td>
         <td style="padding:7px 8px;color:#778">${esc(r.created_at)}</td>
         <td style="padding:7px 8px;color:#ccd;cursor:pointer" onclick="openFeedback(${r.id})"
-          title="${esc(r.message||'')}">
+          onmouseenter="fbTipShow(event,this)" onmousemove="fbTipMove(event)" onmouseleave="fbTipHide()"
+          data-tip="${esc(r.message||'')}">
           ${esc((r.message||'').slice(0,60))}${(r.message||'').length>60?'…':''}</td>
         <td style="padding:7px 8px;white-space:nowrap">
           <button class="btn btn-sm" onclick="openFeedback(${r.id})">👁 Открыть</button>
@@ -3701,6 +3708,36 @@ async function fbDelete(id, fromModal) {
 
 function closeFeedbackModal() {
   document.getElementById('modal-feedback').classList.remove('open');
+}
+
+// Своя подсказка (вместо нативной title) — можно управлять размером шрифта
+let _fbTipEl = null;
+function _fbTip() {
+  if (!_fbTipEl) {
+    _fbTipEl = document.createElement('div');
+    _fbTipEl.className = 'fb-tooltip';
+    document.body.appendChild(_fbTipEl);
+  }
+  return _fbTipEl;
+}
+function fbTipShow(e, el) {
+  const tip = _fbTip();
+  tip.textContent = el.getAttribute('data-tip') || '';
+  tip.style.display = 'block';
+  fbTipMove(e);
+}
+function fbTipMove(e) {
+  const tip = _fbTip();
+  const pad = 16;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  const rect = tip.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth) x = Math.max(pad, window.innerWidth - rect.width - pad);
+  if (y + rect.height > window.innerHeight) y = Math.max(pad, window.innerHeight - rect.height - pad);
+  tip.style.left = x + 'px';
+  tip.style.top = y + 'px';
+}
+function fbTipHide() {
+  if (_fbTipEl) _fbTipEl.style.display = 'none';
 }
 
 function _artistReleaseRows(releases) {
