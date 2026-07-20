@@ -353,6 +353,11 @@ path = await render_category_path(session, category_id)
      `market_edit_saved`, `market_edit_return_to_listing`,
      `market_edit_title_empty` (тоже задело 2-е место в
      `market_edit_overview.py`).
+     `vacancy_edit_overview.py`(27) — **готово**: переиспользованы
+     `err_no_rights`/`err_field_404` (готовые из старого набора),
+     `services_edit_invalid_id`/`market_edit_title_empty` (уже заведены
+     на этом проходе), плюс 3 новых: `err_session_lost_vacancy`,
+     `vacancy_edit_price_empty`, `vacancy_edit_field_unavailable`.
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

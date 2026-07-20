@@ -82,7 +82,7 @@ async def _authorize_vacancy_callback(cb: CallbackQuery, listing_id: int) -> boo
     async with SessionLocal() as s:
         listing = await _owned_vacancy_in_session(s, listing_id, cb.from_user.id)
     if listing is None:
-        await cb.answer("⛔️ Недостаточно прав.", show_alert=True)
+        await cb.answer(await get_text("err_no_rights", "ru") or "⛔️ Недостаточно прав.", show_alert=True)
         return False
     return True
 
@@ -286,7 +286,7 @@ async def vacancy_edit_overview_entry(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(parts[1])
     except Exception:
-        await cb.answer("Некорректный ID", show_alert=True)
+        await cb.answer(await get_text("services_edit_invalid_id", "ru") or "Некорректный ID", show_alert=True)
         print(f"[vacancy_edit_overview.py] handler=vacancy_edit_overview_entry chat_id={chat_id} data={cb.data!r} err=bad_id")
         return
 
@@ -330,7 +330,7 @@ async def vef_main_title_start(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[3])
     except (IndexError, TypeError, ValueError):
-        await cb.answer("Некорректный ID", show_alert=True)
+        await cb.answer(await get_text("services_edit_invalid_id", "ru") or "Некорректный ID", show_alert=True)
         return
     if not await _authorize_vacancy_callback(cb, listing_id):
         await state.set_state(None)
@@ -370,16 +370,16 @@ async def vef_main_title_save(m: Message, state: FSMContext):
         listing_id = int(data["vef_listing_id"])
     except (KeyError, TypeError, ValueError):
         await state.set_state(None)
-        await m.answer("Сеанс редактирования потерян. Откройте вакансию ещё раз.")
+        await m.answer(await get_text("err_session_lost_vacancy", "ru") or "Сеанс редактирования потерян. Откройте вакансию ещё раз.")
         return
     title = (m.text or "").strip()
     if not title:
-        await m.answer("Заголовок не может быть пустым.")
+        await m.answer(await get_text("market_edit_title_empty", "ru") or "Заголовок не может быть пустым.")
         return
     async with SessionLocal() as s:
         l = await _owned_vacancy_in_session(s, listing_id, m.from_user.id)
         if not l:
-            await m.answer("⛔️ Недостаточно прав.")
+            await m.answer(await get_text("err_no_rights", "ru") or "⛔️ Недостаточно прав.")
             await state.set_state(None)
             _pp("vef_main_title_save", chat_id=chat_id, listing_id=listing_id, err="forbidden")
             return
@@ -400,7 +400,7 @@ async def vef_main_descr_start(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[3])
     except (IndexError, TypeError, ValueError):
-        await cb.answer("Некорректный ID", show_alert=True)
+        await cb.answer(await get_text("services_edit_invalid_id", "ru") or "Некорректный ID", show_alert=True)
         return
     if not await _authorize_vacancy_callback(cb, listing_id):
         await state.set_state(None)
@@ -442,12 +442,12 @@ async def vef_main_descr_save(m: Message, state: FSMContext):
         listing_id = int(data["vef_listing_id"])
     except (KeyError, TypeError, ValueError):
         await state.set_state(None)
-        await m.answer("Сеанс редактирования потерян. Откройте вакансию ещё раз.")
+        await m.answer(await get_text("err_session_lost_vacancy", "ru") or "Сеанс редактирования потерян. Откройте вакансию ещё раз.")
         return
     async with SessionLocal() as s:
         l = await _owned_vacancy_in_session(s, listing_id, m.from_user.id)
         if not l:
-            await m.answer("⛔️ Недостаточно прав.")
+            await m.answer(await get_text("err_no_rights", "ru") or "⛔️ Недостаточно прав.")
             await state.set_state(None)
             _pp("vef_main_descr_save", chat_id=chat_id, listing_id=listing_id, err="forbidden")
             return
@@ -467,7 +467,7 @@ async def vef_main_price_start(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[3])
     except (IndexError, TypeError, ValueError):
-        await cb.answer("Некорректный ID", show_alert=True)
+        await cb.answer(await get_text("services_edit_invalid_id", "ru") or "Некорректный ID", show_alert=True)
         return
     if not await _authorize_vacancy_callback(cb, listing_id):
         await state.set_state(None)
@@ -508,16 +508,16 @@ async def vef_main_price_save(m: Message, state: FSMContext):
         listing_id = int(data["vef_listing_id"])
     except (KeyError, TypeError, ValueError):
         await state.set_state(None)
-        await m.answer("Сеанс редактирования потерян. Откройте вакансию ещё раз.")
+        await m.answer(await get_text("err_session_lost_vacancy", "ru") or "Сеанс редактирования потерян. Откройте вакансию ещё раз.")
         return
     price = (m.text or "").strip()
     if not price:
-        await m.answer("Оплата не может быть пустой.")
+        await m.answer(await get_text("vacancy_edit_price_empty", "ru") or "Оплата не может быть пустой.")
         return
     async with SessionLocal() as s:
         l = await _owned_vacancy_in_session(s, listing_id, m.from_user.id)
         if not l:
-            await m.answer("⛔️ Недостаточно прав.")
+            await m.answer(await get_text("err_no_rights", "ru") or "⛔️ Недостаточно прав.")
             await state.set_state(None)
             _pp("vef_main_price_save", chat_id=chat_id, listing_id=listing_id, err="forbidden")
             return
@@ -554,7 +554,7 @@ async def vef_extra_start(cb: CallbackQuery, state: FSMContext):
     l, _, _, defs, flex_vals = await _load_listing_bundle(listing_id)
     fdef = next((d for d in defs if str(d.get("key","")).strip().lower() == key), None)
     if not fdef:
-        await cb.answer("Поле не найдено.", show_alert=True)
+        await cb.answer(await get_text("err_field_404", "ru") or "Поле не найдено.", show_alert=True)
         _pp("vef_extra_start", chat_id=chat_id, listing_id=listing_id, key=key, err="no_field")
         return
 
@@ -598,14 +598,14 @@ async def vef_extra_value(m: Message, state: FSMContext):
         key = str(data["vef_key"]).strip().lower()
     except (KeyError, TypeError, ValueError):
         await state.set_state(None)
-        await m.answer("Сеанс редактирования потерян. Откройте вакансию ещё раз.")
+        await m.answer(await get_text("err_session_lost_vacancy", "ru") or "Сеанс редактирования потерян. Откройте вакансию ещё раз.")
         return
     newv = (m.text or m.caption or "").strip()
 
     async with SessionLocal() as s:
         l = await _owned_vacancy_in_session(s, listing_id, m.from_user.id)
         if not l:
-            await m.answer("⛔️ Недостаточно прав.")
+            await m.answer(await get_text("err_no_rights", "ru") or "⛔️ Недостаточно прав.")
             await state.set_state(None)
             _pp("vef_extra_value", chat_id=chat_id, listing_id=listing_id, err="forbidden")
             return
@@ -621,7 +621,7 @@ async def vef_extra_value(m: Message, state: FSMContext):
         ), None)
         if fdef is None:
             await state.set_state(None)
-            await m.answer("Поле больше недоступно для редактирования.")
+            await m.answer(await get_text("vacancy_edit_field_unavailable", "ru") or "Поле больше недоступно для редактирования.")
             return
         # загрузить и обновить flex
         try:
