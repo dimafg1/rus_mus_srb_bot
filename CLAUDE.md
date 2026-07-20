@@ -300,17 +300,32 @@ path = await render_category_path(session, category_id)
      добавляемые в код с этого момента, заводятся сразу через `BotText`
      (`get_text`) — не хардкодом**, даже если это разовая строка на
      один экран.
-  3. **Файл за файлом — уникальные тексты экранов**, начиная с крупных:
-     `events_add.py`(84), `releases.py`(65), `admin_fields.py`(52),
-     `market_edit_overview.py`(49), `services_edit_overview.py`(41),
-     `vacancy_add.py`(32), `events_view.py`(30), `admin_panel.py`(30),
-     `market_view.py`(28), и далее по убыванию (полный список: команда
-     `grep -cE "(send_message|\.answer|edit_message_text|caption=)\s*\(" app/routers/*.py`
-     + фильтр по кириллице). Не начато. `admin_panel.py`/`admin_analytics.py`/
-     `admin_fields.py` — внутренние инструменты владельца, эти можно
-     оставить на последнюю очередь (сами по себе никогда не переводятся
-     на другой язык), но не пропускать совсем — по решению владельца
-     переносить всё.
+  3. **Файл за файлом — уникальные тексты экранов.** Решение по схеме
+     БД (2026-07-20): отдельную таблицу под кнопки НЕ заводить — `menu`
+     остаётся только для структурной переиспользуемой навигации (Назад/
+     Главное меню, есть order_num/parent_code/callback_data), а разовые
+     кнопки конкретных экранов идут в `BotText` вместе с сообщениями
+     (обеим нужна только пара text_ru/text_en под кодом, лишняя таблица
+     не нужна).
+     Идём от маленьких файлов к большим (полный список по кол-ву
+     `send_message|.answer|edit_message_text|caption=`, отсортирован
+     по возрастанию — актуален на 2026-07-20, `for f in app/routers/*.py;
+     do echo "$(grep -cE ...) $f"; done | sort -n`):
+     `partner_view.py`(3) — **готово** → `err_invalid_data`-паттерн,
+     код `partner_card_unavailable`. Далее по возрастанию:
+     `user_extra_fields.py`(4), `events_admin.py`(16),
+     `admin_analytics.py`(20), `services_edit.py`(23), `market_edit.py`(25),
+     `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
+     `market_edit_photos.py`/`services_edit_photos.py`(35),
+     `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),
+     `admin_fields.py`(57), `market_add.py`(61), `vacancy_add.py`(62),
+     `services_view.py`(70), `services_edit_overview.py`(73),
+     `market_edit_overview.py`(78), `events_view.py`(86),
+     `market_view.py`(89), `releases.py`(110), `events_add.py`(154).
+     Счётчики выше не фильтрованы по кириллице (включают уже переведённые
+     вызовы) — реальных строк на перенос меньше, уточнять по ходу.
+     `admin_panel.py`/`admin_analytics.py`/`admin_fields.py` — owner-only,
+     но по решению владельца тоже переносятся, просто не первыми.
 - Публичный сайт для пользователей (веб-интерфейс объявлений)
 - Запуск бота в Казахстане после отладки на Сербии
 - Basic Auth + nginx для category_admin при деплое на сервер

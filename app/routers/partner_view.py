@@ -16,7 +16,7 @@ from sqlmodel import select
 from app.database import SessionLocal
 from app.models import Campaign
 from app.analytics import log_event
-from app.routers.utils import register_bot_messages
+from app.routers.utils import register_bot_messages, get_text
 
 router = Router(name="partner_view")
 
@@ -31,7 +31,7 @@ async def partner_card(cb: CallbackQuery):
         )).scalar_one_or_none()
 
     if c is None:
-        await cb.answer("Карточка сейчас недоступна.", show_alert=True)
+        await cb.answer(await get_text("partner_card_unavailable", "ru") or "Карточка сейчас недоступна.", show_alert=True)
         return
 
     await log_event(
