@@ -63,7 +63,7 @@ async def _reset_step_ui(state: FSMContext, chat_id: int, bot):
 # чтобы clear_bot_messages() его не удалял на каждом шаге. Удаляем черновик только
 # при Publish/Cancel/Back->entry.
 
-def _draft_text_from_data(data: dict, city_name: str | None = None) -> str:
+async def _draft_text_from_data(data: dict, city_name: str | None = None) -> str:
     # Важно: делаем компактно, но с заголовками полей (как вы просили).
     title = (data.get("title") or "—")
     date_local = data.get("date_local") or "—"       # YYYY-MM-DD
@@ -83,15 +83,15 @@ def _draft_text_from_data(data: dict, city_name: str | None = None) -> str:
 
     # Делаем аккуратные заголовки (HTML).
     parts = [
-        "🧾 <b>Черновик объявления</b>",
-        f"<b>Название:</b> {escape_html(title)}",
-        f"<b>Дата:</b> {escape_html(date_local)}",
-        f"<b>Время:</b> {escape_html(time_str)}",
-        f"<b>Город:</b> {escape_html(city_str)}",
-        f"<b>Цена:</b> {escape_html(price)}",
-        f"<b>Площадка:</b> {escape_html(venue)}",
-        f"<b>Описание:</b> {escape_html(descr)}",
-        f"<b>Фото:</b> {photo_str}",
+        await get_text("af_draft_title", "ru") or "🧾 <b>Черновик объявления</b>",
+        (await get_text("af_draft_name_line", "ru") or "<b>Название:</b> {value}").format(value=escape_html(title)),
+        (await get_text("af_draft_date_line", "ru") or "<b>Дата:</b> {value}").format(value=escape_html(date_local)),
+        (await get_text("af_draft_time_line", "ru") or "<b>Время:</b> {value}").format(value=escape_html(time_str)),
+        (await get_text("af_draft_city_line", "ru") or "<b>Город:</b> {value}").format(value=escape_html(city_str)),
+        (await get_text("af_draft_price_line", "ru") or "<b>Цена:</b> {value}").format(value=escape_html(price)),
+        (await get_text("af_draft_venue_line", "ru") or "<b>Площадка:</b> {value}").format(value=escape_html(venue)),
+        (await get_text("af_draft_descr_line", "ru") or "<b>Описание:</b> {value}").format(value=escape_html(descr)),
+        (await get_text("af_draft_photo_line", "ru") or "<b>Фото:</b> {value}").format(value=photo_str),
     ]
     return "\n".join(parts)
 
@@ -114,7 +114,7 @@ async def _update_draft(bot, chat_id: int, state: FSMContext, reply_markup: Inli
     except Exception:
         city_name = None
 
-    text = _draft_text_from_data(data, city_name=city_name)
+    text = await _draft_text_from_data(data, city_name=city_name)
 
     # Если черновик ещё не создан — создаём текстовое сообщение
     if not draft_id:
@@ -182,7 +182,7 @@ async def _send_nav(chat_id: int, bot, state: FSMContext, back_cb: str | None):
 
     buttons = []
     if back_cb:
-        buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb))
+        buttons.append(InlineKeyboardButton(text=(await get_text("btn_back", "ru") or "◀️ Назад"), callback_data=back_cb))
     try:
         main_btn = await get_common_menu_button('main_menu')
         if main_btn:
@@ -334,13 +334,14 @@ def _parse_time_hhmm(s: str) -> tuple[int, int] | None:
         return (hh, mm)
     return None
 
-def _is_past_or_too_far(date_local: datetime) -> str | None:
+async def _is_past_or_too_far(date_local: datetime) -> str | None:
     now_local = datetime.now(_TZ).date()
     if date_local.date() < now_local:
-        return "Дата в прошлом. Укажите будущую дату."
+        return await get_text("af_date_in_past", "ru") or "Дата в прошлом. Укажите будущую дату."
     limit = (now_local.replace(day=1) + timedelta(days=31*_MAX_MONTHS_AHEAD))
     if date_local.date() > limit:
-        return f"Слишком далеко. Не позже, чем через {_MAX_MONTHS_AHEAD} месяцев."
+        too_far_tmpl = await get_text("af_date_too_far_tmpl", "ru") or "Слишком далеко. Не позже, чем через {months} месяцев."
+        return too_far_tmpl.format(months=_MAX_MONTHS_AHEAD)
     return None
 
 def _to_start_utc(date_local_str: str, hh: int, mm: int) -> int:
@@ -429,7 +430,7 @@ async def _kb_city_from_db() -> InlineKeyboardMarkup:
             btn_rows.append(row); row = []
     if row:
         btn_rows.append(row)
-    btn_rows.append([InlineKeyboardButton(text="Другой", callback_data="af:add:city:other")])
+    btn_rows.append([InlineKeyboardButton(text=(await get_text("af_btn_other_city", "ru") or "Другой"), callback_data="af:add:city:other")])
     return InlineKeyboardMarkup(inline_keyboard=btn_rows)
 
 async def _kb_city_from_db_edit() -> InlineKeyboardMarkup:
@@ -451,26 +452,26 @@ async def _kb_city_from_db_edit() -> InlineKeyboardMarkup:
     if row:
         btn_rows.append(row)
 
-    btn_rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="af:editf:cancel")])
+    btn_rows.append([InlineKeyboardButton(text=(await get_text("btn_back", "ru") or "◀️ Назад"), callback_data="af:editf:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=btn_rows)
 
-def _kb_skip(cbdata: str) -> InlineKeyboardMarkup:
+async def _kb_skip(cbdata: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить", callback_data=cbdata)]
+        [InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data=cbdata)]
     ])
 
-def _kb_price() -> InlineKeyboardMarkup:
+async def _kb_price() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Бесплатно", callback_data="af:add:price:free")],
-        [InlineKeyboardButton(text="На донатах", callback_data="af:add:price:donate")],
-        [InlineKeyboardButton(text="Ввести цену", callback_data="af:add:price:custom")],
+        [InlineKeyboardButton(text=(await get_text("btn_free", "ru") or "Бесплатно"), callback_data="af:add:price:free")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_donate", "ru") or "На донатах"), callback_data="af:add:price:donate")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_enter_price", "ru") or "Ввести цену"), callback_data="af:add:price:custom")],
     ])
 
-def _kb_preview() -> InlineKeyboardMarkup:
+async def _kb_preview() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Опубликовать ✅", callback_data="af:add:publish")],
-        [InlineKeyboardButton(text="Исправить ✏️", callback_data="af:add:edit")],
-        [InlineKeyboardButton(text="Отмена", callback_data="af:add:cancel")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_publish", "ru") or "Опубликовать ✅"), callback_data="af:add:publish")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_fix", "ru") or "Исправить ✏️"), callback_data="af:add:edit")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_cancel", "ru") or "Отмена"), callback_data="af:add:cancel")],
     ])
 
 # --- Afisha "edit after publish" (overview) ---
@@ -496,18 +497,18 @@ def _extract_back_cb_from_markup(msg: Message) -> str:
     return "af:my"
 
 
-def _kb_afisha_edit_overview(listing_id: int, back_cb: str) -> InlineKeyboardMarkup:
+async def _kb_afisha_edit_overview(listing_id: int, back_cb: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Название", callback_data=f"af:editf:title:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Дата", callback_data=f"af:editf:date:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Время", callback_data=f"af:editf:time:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Город", callback_data=f"af:editf:city:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Место", callback_data=f"af:editf:venue:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Цена", callback_data=f"af:editf:price:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Описание", callback_data=f"af:editf:descr:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Фото", callback_data=f"af:editf:photo:{listing_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb)],
-        [InlineKeyboardButton(text="≡ Главное меню", callback_data="main_menu")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_title", "ru") or "✏️ Название"), callback_data=f"af:editf:title:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_date", "ru") or "✏️ Дата"), callback_data=f"af:editf:date:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_time", "ru") or "✏️ Время"), callback_data=f"af:editf:time:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_city", "ru") or "✏️ Город"), callback_data=f"af:editf:city:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_venue", "ru") or "✏️ Место"), callback_data=f"af:editf:venue:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_price", "ru") or "✏️ Цена"), callback_data=f"af:editf:price:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_descr", "ru") or "✏️ Описание"), callback_data=f"af:editf:descr:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("af_btn_edit_photo", "ru") or "✏️ Фото"), callback_data=f"af:editf:photo:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("btn_back", "ru") or "◀️ Назад"), callback_data=back_cb)],
+        [InlineKeyboardButton(text=(await get_text("btn_main_menu", "ru") or "≡ Главное меню"), callback_data="main_menu")],
     ])
 
 
@@ -553,25 +554,26 @@ async def _render_afisha_edit_overview(chat_id: int, bot, state: FSMContext) -> 
 
     back_cb = data.get("edit_back_cb") or "af:my"
 
+    present_marker = await get_text("af_present_marker", "ru") or "есть"
+    absent_marker = await get_text("af_absent_marker", "ru") or "нет"
     text = (
-        "✏️ <b>Редактирование объявления</b>\n"
-        f"ID: <code>{listing_id}</code>\n\n"
-        f"<b>Название:</b> {escape_html(title)}\n"
-        f"<b>Дата:</b> {escape_html(date_card)}\n"
-        f"<b>Время:</b> {escape_html(time_card)}\n"
-        f"<b>Город:</b> {escape_html(city_text)}\n"
-        f"<b>Место:</b> {escape_html(venue_text)}\n"
-        f"<b>Цена:</b> {escape_html(price_text)}\n"
-        f"<b>Описание:</b> {escape_html(descr_short)}\n"
-        f"<b>Фото:</b> {'есть' if photo_id else 'нет'}\n\n"
-        "Выберите поле для редактирования:"
+        (await get_text("af_edit_overview_title_tmpl", "ru") or "✏️ <b>Редактирование объявления</b>\nID: <code>{id}</code>\n\n").format(id=listing_id)
+        + (await get_text("af_edit_field_title_line", "ru") or "<b>Название:</b> {value}").format(value=escape_html(title)) + "\n"
+        + (await get_text("af_edit_field_date_line", "ru") or "<b>Дата:</b> {value}").format(value=escape_html(date_card)) + "\n"
+        + (await get_text("af_edit_field_time_line", "ru") or "<b>Время:</b> {value}").format(value=escape_html(time_card)) + "\n"
+        + (await get_text("af_edit_field_city_line", "ru") or "<b>Город:</b> {value}").format(value=escape_html(city_text)) + "\n"
+        + (await get_text("af_edit_field_venue_line", "ru") or "<b>Место:</b> {value}").format(value=escape_html(venue_text)) + "\n"
+        + (await get_text("af_edit_field_price_line", "ru") or "<b>Цена:</b> {value}").format(value=escape_html(price_text)) + "\n"
+        + (await get_text("af_edit_field_descr_line", "ru") or "<b>Описание:</b> {value}").format(value=escape_html(descr_short)) + "\n"
+        + (await get_text("af_edit_field_photo_line", "ru") or "<b>Фото:</b> {value}").format(value=present_marker if photo_id else absent_marker) + "\n\n"
+        + (await get_text("af_edit_choose_field_prompt", "ru") or "Выберите поле для редактирования:")
     )
 
     msg = await bot.send_message(
         chat_id=chat_id,
         text=text,
         parse_mode="HTML",
-        reply_markup=_kb_afisha_edit_overview(int(listing_id), back_cb),
+        reply_markup=await _kb_afisha_edit_overview(int(listing_id), back_cb),
     )
     await state.update_data(edit_overview_msg_id=msg.message_id)
     return msg.message_id
@@ -595,7 +597,7 @@ async def afisha_add_entry(cb: CallbackQuery, state: FSMContext):
     await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:entry")
     await state.set_state(AfishaAddStates.wait_title)
     msg = await cb.message.answer(
-        "📝 Введите <b>название</b> события (до 100 символов):",
+        await get_text("af_ask_name_full", "ru") or "📝 Введите <b>название</b> события (до 100 символов):",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -616,7 +618,7 @@ async def afisha_edit_entry(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[-1])
     except Exception:
-        await cb.answer("Не удалось открыть редактирование.")
+        await cb.answer(await get_text("af_err_edit_open", "ru") or "Не удалось открыть редактирование.")
         _af_dbg(func, "parse_failed", f"chat_id={chat_id} data={cb.data!r}")
         return
 
@@ -665,7 +667,7 @@ async def afisha_edit_entry(cb: CallbackQuery, state: FSMContext):
         return
 
     if int(row[1]) != int(owner_id):
-        await cb.answer("Это не ваше объявление.")
+        await cb.answer(await get_text("af_err_not_owner", "ru") or "Это не ваше объявление.")
         _af_dbg(func, "deny", f"id={listing_id} chat_id={chat_id} owner_id={owner_id} db_owner={row[1]}")
         return
 
@@ -704,36 +706,36 @@ async def afisha_edit_entry(cb: CallbackQuery, state: FSMContext):
     _af_dbg(func, "done", f"overview_msg_id={mid}")
 
 
-def _kb_edit_cancel() -> InlineKeyboardMarkup:
+async def _kb_edit_cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="af:editf:cancel")],
+        [InlineKeyboardButton(text=(await get_text("btn_back", "ru") or "◀️ Назад"), callback_data="af:editf:cancel")],
     ])
 
-def _kb_edit_photo(has_photo: bool) -> InlineKeyboardMarkup:
+async def _kb_edit_photo(has_photo: bool) -> InlineKeyboardMarkup:
     rows = []
-    rows.append([InlineKeyboardButton(text="📷 Загрузить фото", callback_data="af:editph:upload")])
+    rows.append([InlineKeyboardButton(text=(await get_text("af_btn_upload_photo", "ru") or "📷 Загрузить фото"), callback_data="af:editph:upload")])
     if has_photo:
-        rows.append([InlineKeyboardButton(text="🗑 Удалить фото", callback_data="af:editph:del")])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="af:editf:cancel")])
+        rows.append([InlineKeyboardButton(text=(await get_text("af_btn_delete_photo", "ru") or "🗑 Удалить фото"), callback_data="af:editph:del")])
+    rows.append([InlineKeyboardButton(text=(await get_text("btn_back", "ru") or "◀️ Назад"), callback_data="af:editf:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def _kb_confirm_photo_delete() -> InlineKeyboardMarkup:
+async def _kb_confirm_photo_delete() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Да, удалить", callback_data="af:editph:del:yes"),
-            InlineKeyboardButton(text="❌ Нет", callback_data="af:editph:del:no"),
+            InlineKeyboardButton(text=(await get_text("btn_yes_delete", "ru") or "✅ Да, удалить"), callback_data="af:editph:del:yes"),
+            InlineKeyboardButton(text=(await get_text("admin_panel_btn_no", "ru") or "❌ Нет"), callback_data="af:editph:del:no"),
         ],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="af:editf:cancel")],
+        [InlineKeyboardButton(text=(await get_text("btn_back", "ru") or "◀️ Назад"), callback_data="af:editf:cancel")],
     ])
 
 
-def _kb_edit_price() -> InlineKeyboardMarkup:
+async def _kb_edit_price() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🆓 Бесплатно", callback_data="af:editp:free"),
-            InlineKeyboardButton(text="💛 На донатах", callback_data="af:editp:donate"),
+            InlineKeyboardButton(text=(await get_text("af_btn_free_short", "ru") or "🆓 Бесплатно"), callback_data="af:editp:free"),
+            InlineKeyboardButton(text=(await get_text("af_btn_donate_short", "ru") or "💛 На донатах"), callback_data="af:editp:donate"),
         ],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="af:editf:cancel")],
+        [InlineKeyboardButton(text=(await get_text("btn_back", "ru") or "◀️ Назад"), callback_data="af:editf:cancel")],
     ])
 
 
@@ -748,7 +750,7 @@ async def afisha_edit_title_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.answer("Контекст редактирования потерян.")
+        await cb.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян.")
         return
 
     # удаляем экран overview
@@ -758,17 +760,15 @@ async def afisha_edit_title_start(cb: CallbackQuery, state: FSMContext):
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
     # строка с текущим названием
-    cur_line = f"Текущее: <code>{escape_html(cur_title)}</code>\n\n" if cur_title else ""
+    current_line_tmpl = await get_text("af_edit_current_line_tmpl", "ru") or "Текущее: <code>{value}</code>\n\n"
+    cur_line = current_line_tmpl.format(value=escape_html(cur_title)) if cur_title else ""
 
+    title_prompt_tmpl = await get_text("af_edit_title_prompt_tmpl", "ru") or "✏️ <b>Редактирование названия</b>\n\n{current}Введите новое название (до 80 символов):"
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "✏️ <b>Редактирование названия</b>\n\n"
-            f"{cur_line}"
-            "Введите новое название (до 80 символов):"
-        ),
+        text=title_prompt_tmpl.format(current=cur_line),
         parse_mode="HTML",
-        reply_markup=_kb_edit_cancel(),
+        reply_markup=await _kb_edit_cancel(),
     )
 
     await state.update_data(edit_prompt_msg_id=prompt.message_id)
@@ -799,7 +799,7 @@ async def af_add_title(message: Message, state: FSMContext):
     chat_id = message.chat.id
     title = _strip(message.text)
     if not _valid_title(title):
-        msg = await message.answer("Название некорректно. До 100 символов. Введите заново:")
+        msg = await message.answer(await get_text("af_name_invalid", "ru") or "Название некорректно. До 100 символов. Введите заново:")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[AFISHA][ERR] wait_title invalid | chat_id={chat_id}")
@@ -813,10 +813,13 @@ async def af_add_title(message: Message, state: FSMContext):
     await state.set_state(AfishaAddStates.wait_date)
 
     kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Сегодня"), KeyboardButton(text="Завтра")]],
+        keyboard=[[
+            KeyboardButton(text=(await get_text("btn_today", "ru") or "Сегодня")),
+            KeyboardButton(text=(await get_text("btn_tomorrow", "ru") or "Завтра")),
+        ]],
         resize_keyboard=True, one_time_keyboard=True
     )
-    msg = await message.answer("📅 Введите дату в формате DD-MM-YY (или выберите «Сегодня/Завтра»):", reply_markup=kb)
+    msg = await message.answer(await get_text("af_ask_date", "ru") or "📅 Введите дату в формате DD-MM-YY (или выберите «Сегодня/Завтра»):", reply_markup=kb)
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -837,17 +840,18 @@ async def af_add_date(message: Message, state: FSMContext):
         dt = _parse_date_ddmmyy(raw)
         if not dt:
             await _delete_user_msg(message.bot, chat_id, message.message_id)
-            msg = await message.answer("Неверный формат. Пример: 07-10-25. Попробуйте ещё раз:")
+            msg = await message.answer(await get_text("af_date_invalid", "ru") or "Неверный формат. Пример: 07-10-25. Попробуйте ещё раз:")
             last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
             await register_bot_messages(chat_id, [msg.message_id])
             print(f"[AFISHA][ERR] wait_date format | chat_id={chat_id} | raw={raw}")
             return
         date_local = dt
 
-    err = _is_past_or_too_far(date_local)
+    err = await _is_past_or_too_far(date_local)
     if err:
         await _delete_user_msg(message.bot, chat_id, message.message_id)
-        msg = await message.answer(err + "\nВведите дату ещё раз:")
+        ask_date_again_tmpl = await get_text("af_ask_date_again", "ru") or "{error}\nВведите дату ещё раз:"
+        msg = await message.answer(ask_date_again_tmpl.format(error=err))
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[AFISHA][ERR] wait_date window | chat_id={chat_id} | raw={raw}")
@@ -865,7 +869,7 @@ async def af_add_date(message: Message, state: FSMContext):
         keyboard=[[KeyboardButton(text="18:00"), KeyboardButton(text="19:00"), KeyboardButton(text="20:00")]],
         resize_keyboard=True, one_time_keyboard=True
     )
-    msg = await message.answer("⏰ Укажите время (HH:MM), например 19:00:", reply_markup=kb)
+    msg = await message.answer(await get_text("af_ask_time", "ru") or "⏰ Укажите время (HH:MM), например 19:00:", reply_markup=kb)
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -879,7 +883,7 @@ async def af_add_time(message: Message, state: FSMContext):
     hhmm = _parse_time_hhmm(raw)
     if not hhmm:
         await _delete_user_msg(message.bot, chat_id, message.message_id)
-        msg = await message.answer("Неверный формат. Пример: 19:00. Введите ещё раз:")
+        msg = await message.answer(await get_text("af_time_invalid", "ru") or "Неверный формат. Пример: 19:00. Введите ещё раз:")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[AFISHA][ERR] wait_time format | chat_id={chat_id} | raw={raw}")
@@ -893,7 +897,7 @@ async def af_add_time(message: Message, state: FSMContext):
         start_at_utc = 0
     if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
         await _delete_user_msg(message.bot, chat_id, message.message_id)
-        msg = await message.answer("Это время уже прошло. Укажите будущее время:")
+        msg = await message.answer(await get_text("af_time_already_past", "ru") or "Это время уже прошло. Укажите будущее время:")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         return
@@ -907,7 +911,7 @@ async def af_add_time(message: Message, state: FSMContext):
     await state.set_state(AfishaAddStates.wait_city_choice)
 
     kb = await _kb_city_from_db()
-    msg = await message.answer("👇 Выберите город из списка ниже:", reply_markup=kb)
+    msg = await message.answer(await get_text("af_ask_city", "ru") or "👇 Выберите город из списка ниже:", reply_markup=kb)
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -928,7 +932,7 @@ async def af_add_city_choice(cb: CallbackQuery, state: FSMContext):
         await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:time")
         await state.set_state(AfishaAddStates.wait_city_text)
         await _update_draft(cb.bot, chat_id, state)
-        msg = await cb.message.answer("Укажите город (текстом):")
+        msg = await cb.message.answer(await get_text("af_ask_city_text", "ru") or "Укажите город (текстом):")
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
@@ -945,7 +949,7 @@ async def af_add_city_choice(cb: CallbackQuery, state: FSMContext):
     await _reset_step_ui(state, chat_id, cb.bot)
     await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:time")
     await state.set_state(AfishaAddStates.wait_price_choice)
-    msg = await cb.message.answer("💲 Укажите цену:", reply_markup=_kb_price())
+    msg = await cb.message.answer(await get_text("af_ask_price", "ru") or "💲 Укажите цену:", reply_markup=await _kb_price())
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -959,7 +963,7 @@ async def af_add_city_text(message: Message, state: FSMContext):
     chat_id = message.chat.id
     city_text = _strip(message.text)
     if not city_text:
-        msg = await message.answer("Введите название города строкой:")
+        msg = await message.answer(await get_text("af_ask_city_text_line", "ru") or "Введите название города строкой:")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[AFISHA][ERR] wait_city_text empty | chat_id={chat_id}")
@@ -967,7 +971,7 @@ async def af_add_city_text(message: Message, state: FSMContext):
 
     other_city_id = await _other_city_id()
     if other_city_id is None:
-        msg = await message.answer("Не найден служебный город «Другой». Обратитесь к администратору.")
+        msg = await message.answer(await get_text("af_city_other_missing", "ru") or "Не найден служебный город «Другой». Обратитесь к администратору.")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         return
@@ -979,7 +983,7 @@ async def af_add_city_text(message: Message, state: FSMContext):
     await _reset_step_ui(state, chat_id, message.bot)
     await _send_nav(chat_id, message.bot, state, back_cb="af:add:back:time")
     await state.set_state(AfishaAddStates.wait_price_choice)
-    msg = await message.answer("💲 Укажите цену:", reply_markup=_kb_price())
+    msg = await message.answer(await get_text("af_ask_price", "ru") or "💲 Укажите цену:", reply_markup=await _kb_price())
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -996,16 +1000,16 @@ async def af_add_price_choice(cb: CallbackQuery, state: FSMContext):
         pass
 
     if val == "free":
-        await state.update_data(price_text="Бесплатно")
+        await state.update_data(price_text=(await get_text("btn_free", "ru") or "Бесплатно"))
         await _update_draft(cb.bot, chat_id, state)
     elif val == "donate":
-        await state.update_data(price_text="На донатах")
+        await state.update_data(price_text=(await get_text("af_btn_donate", "ru") or "На донатах"))
         await _update_draft(cb.bot, chat_id, state)
     else:
         await _reset_step_ui(state, chat_id, cb.bot)
         await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:price")
         await state.set_state(AfishaAddStates.wait_price_text)
-        msg = await cb.message.answer("Введите цену (любым текстом):")
+        msg = await cb.message.answer(await get_text("af_ask_price_text", "ru") or "Введите цену (любым текстом):")
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
@@ -1014,7 +1018,7 @@ async def af_add_price_choice(cb: CallbackQuery, state: FSMContext):
     await _reset_step_ui(state, chat_id, cb.bot)
     await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:price")
     await state.set_state(AfishaAddStates.wait_venue)
-    msg = await cb.message.answer("Площадка (можно пропустить):", reply_markup=_kb_skip("af:add:skip:venue"))
+    msg = await cb.message.answer(await get_text("af_ask_venue", "ru") or "Площадка (можно пропустить):", reply_markup=await _kb_skip("af:add:skip:venue"))
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -1031,7 +1035,7 @@ async def af_add_price_direct(message: Message, state: FSMContext):
     price_text = _strip(message.text)
 
     if not price_text:
-        msg = await message.answer("Пусто. Введите цену или используйте кнопки ниже.")
+        msg = await message.answer(await get_text("af_price_empty", "ru") or "Пусто. Введите цену или используйте кнопки ниже.")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[AFISHA][ERR] wait_price_choice direct empty | chat_id={chat_id}")
@@ -1046,8 +1050,8 @@ async def af_add_price_direct(message: Message, state: FSMContext):
     await state.set_state(AfishaAddStates.wait_venue)
 
     msg = await message.answer(
-        "Площадка (можно пропустить):",
-        reply_markup=_kb_skip("af:add:skip:venue")
+        await get_text("af_ask_venue", "ru") or "Площадка (можно пропустить):",
+        reply_markup=await _kb_skip("af:add:skip:venue")
     )
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
@@ -1065,7 +1069,7 @@ async def af_add_price_text(message: Message, state: FSMContext):
     chat_id = message.chat.id
     price_text = _strip(message.text)
     if not price_text:
-        msg = await message.answer("Пусто. Введите цену или /skip чтобы пропустить:")
+        msg = await message.answer(await get_text("af_price_empty_skip", "ru") or "Пусто. Введите цену или /skip чтобы пропустить:")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[AFISHA][ERR] wait_price_text empty | chat_id={chat_id}")
@@ -1078,7 +1082,7 @@ async def af_add_price_text(message: Message, state: FSMContext):
     await _reset_step_ui(state, chat_id, message.bot)
     await _send_nav(chat_id, message.bot, state, back_cb="af:add:back:price_text")
     await state.set_state(AfishaAddStates.wait_venue)
-    msg = await message.answer("Площадка (можно пропустить):", reply_markup=_kb_skip("af:add:skip:venue"))
+    msg = await message.answer(await get_text("af_ask_venue", "ru") or "Площадка (можно пропустить):", reply_markup=await _kb_skip("af:add:skip:venue"))
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -1097,7 +1101,7 @@ async def af_add_venue(message: Message, state: FSMContext):
     await _send_nav(chat_id, message.bot, state, back_cb="af:add:back:venue")
     await state.set_state(AfishaAddStates.wait_descr)
 
-    msg = await message.answer("Описание (до 500 символов, можно пропустить):", reply_markup=_kb_skip("af:add:skip:descr"))
+    msg = await message.answer(await get_text("af_ask_descr", "ru") or "Описание (до 500 символов, можно пропустить):", reply_markup=await _kb_skip("af:add:skip:descr"))
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -1113,7 +1117,7 @@ async def afisha_edit_title_apply(message: Message, state: FSMContext):
     _af_dbg(func, "in", f"len={len(new_title)} title={new_title!r}")
 
     if not (1 <= len(new_title) <= 80):
-        await message.answer("Название должно быть от 1 до 80 символов.")
+        await message.answer(await get_text("af_name_too_long", "ru") or "Название должно быть от 1 до 80 символов.")
         return
 
     data = await state.get_data()
@@ -1122,7 +1126,7 @@ async def afisha_edit_title_apply(message: Message, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     # обновляем БД
@@ -1138,7 +1142,7 @@ async def afisha_edit_title_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_save", "ru") or "Не удалось сохранить. Попробуйте ещё раз.")
         return
 
     # чистим пользовательское сообщение и промпт
@@ -1188,7 +1192,7 @@ async def afisha_edit_date_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.answer("Контекст редактирования потерян.")
+        await cb.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян.")
         return
 
     try:
@@ -1196,16 +1200,16 @@ async def afisha_edit_date_start(cb: CallbackQuery, state: FSMContext):
     except Exception as e:
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
+    date_prompt_tmpl = await get_text("af_edit_date_prompt_tmpl", "ru") or (
+        "✏️ <b>Редактирование даты</b>\n\nТекущая дата: <code>{date}</code>\n\n"
+        "Введите дату (как при создании):\n"
+        "<code>200226</code> или <code>20.02.26</code> или <code>2026-02-20</code>"
+    )
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "✏️ <b>Редактирование даты</b>\n\n"
-            f"Текущая дата: <code>{date_local}</code>\n\n"
-            "Введите дату (как при создании):\n"
-            "<code>200226</code> или <code>20.02.26</code> или <code>2026-02-20</code>"
-        ),
+        text=date_prompt_tmpl.format(date=date_local),
         parse_mode="HTML",
-        reply_markup=_kb_edit_cancel(),
+        reply_markup=await _kb_edit_cancel(),
     )
 
     await state.update_data(edit_prompt_msg_id=prompt.message_id)
@@ -1226,13 +1230,15 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
 
     if not dt:
         await message.answer(
-            "Не понял дату.\n"
-            "Примеры: <code>200226</code> / <code>20.02.26</code> / <code>2026-02-20</code>",
+            await get_text("af_date_not_understood", "ru") or (
+                "Не понял дату.\n"
+                "Примеры: <code>200226</code> / <code>20.02.26</code> / <code>2026-02-20</code>"
+            ),
             parse_mode="HTML",
         )
         return
 
-    date_err = _is_past_or_too_far(dt)
+    date_err = await _is_past_or_too_far(dt)
     if date_err:
         await message.answer(date_err)
         return
@@ -1243,7 +1249,7 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "no edit_listing_id")
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     # время оставляем текущее из FSM
@@ -1258,10 +1264,10 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
         start_at_utc = _to_start_utc(date_local_str, int(hh), int(mm))
     except Exception as e:
         _af_dbg(func, "to_utc_fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось обработать дату. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_date_parse", "ru") or "Не удалось обработать дату. Попробуйте ещё раз.")
         return
     if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
-        await message.answer("Выбранные дата и время уже прошли. Укажите будущую дату.")
+        await message.answer(await get_text("af_date_time_already_past", "ru") or "Выбранные дата и время уже прошли. Укажите будущую дату.")
         return
 
     try:
@@ -1283,7 +1289,7 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} ts={start_at_utc}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить дату. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_save_date", "ru") or "Не удалось сохранить дату. Попробуйте ещё раз.")
         return
 
     # чистим сообщения
@@ -1329,7 +1335,7 @@ async def afisha_edit_time_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     # удаляем экран overview
@@ -1338,17 +1344,16 @@ async def afisha_edit_time_start(cb: CallbackQuery, state: FSMContext):
     except Exception as e:
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
+    time_prompt_tmpl = await get_text("af_edit_time_prompt_tmpl", "ru") or (
+        "✏️ <b>Редактирование времени</b>\n\nДата: <code>{date}</code>\nТекущее время: <code>{time}</code>\n\n"
+        "Введите время (как при создании):\n"
+        "<code>2000</code> / <code>20-00</code> / <code>20:00</code> / <code>20_00</code>"
+    )
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "✏️ <b>Редактирование времени</b>\n\n"
-            f"Дата: <code>{date_local}</code>\n"
-            f"Текущее время: <code>{cur_time}</code>\n\n"
-            "Введите время (как при создании):\n"
-            "<code>2000</code> / <code>20-00</code> / <code>20:00</code> / <code>20_00</code>"
-        ),
+        text=time_prompt_tmpl.format(date=date_local, time=cur_time),
         parse_mode="HTML",
-        reply_markup=_kb_edit_cancel(),
+        reply_markup=await _kb_edit_cancel(),
     )
 
     await state.update_data(edit_prompt_msg_id=prompt.message_id)
@@ -1369,8 +1374,10 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
 
     if not t:
         await message.answer(
-            "Не понял время.\n"
-            "Примеры: <code>2000</code> / <code>20-00</code> / <code>20:00</code> / <code>20_00</code>",
+            await get_text("af_time_not_understood", "ru") or (
+                "Не понял время.\n"
+                "Примеры: <code>2000</code> / <code>20-00</code> / <code>20:00</code> / <code>20_00</code>"
+            ),
             parse_mode="HTML",
         )
         return
@@ -1385,7 +1392,7 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
     _af_dbg(func, "ctx", f"listing_id={listing_id} date_local={date_local_str}")
 
     if not listing_id or not date_local_str:
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         _af_dbg(func, "no_ctx", "missing listing_id or date_local")
         return
 
@@ -1393,10 +1400,10 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
         start_at_utc = _to_start_utc(date_local_str, int(hh), int(mm))
     except Exception as e:
         _af_dbg(func, "to_utc_fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось обработать время. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_time_parse", "ru") or "Не удалось обработать время. Попробуйте ещё раз.")
         return
     if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
-        await message.answer("Выбранные дата и время уже прошли. Укажите будущее время.")
+        await message.answer(await get_text("af_date_time_already_past_time", "ru") or "Выбранные дата и время уже прошли. Укажите будущее время.")
         return
 
     try:
@@ -1418,7 +1425,7 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} ts={start_at_utc}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить время. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_save_time", "ru") or "Не удалось сохранить время. Попробуйте ещё раз.")
         return
 
     # чистим сообщение пользователя и промпт
@@ -1451,7 +1458,7 @@ async def afisha_edit_price_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -1459,16 +1466,16 @@ async def afisha_edit_price_start(cb: CallbackQuery, state: FSMContext):
     except Exception as e:
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
+    price_prompt_tmpl = await get_text("af_edit_price_prompt_tmpl", "ru") or (
+        "✏️ <b>Редактирование цены</b>\n\nТекущая цена: <code>{price}</code>\n\n"
+        "Введите новую цену (можно как текст):\n"
+        "Например: <code>0</code>, <code>500</code>, <code>500 rsd</code>, <code>бесплатно</code>"
+    )
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "✏️ <b>Редактирование цены</b>\n\n"
-            f"Текущая цена: <code>{escape_html(cur_price)}</code>\n\n"
-            "Введите новую цену (можно как текст):\n"
-            "Например: <code>0</code>, <code>500</code>, <code>500 rsd</code>, <code>бесплатно</code>"
-        ),
+        text=price_prompt_tmpl.format(price=escape_html(cur_price)),
         parse_mode="HTML",
-        reply_markup=_kb_edit_price(),
+        reply_markup=await _kb_edit_price(),
     )
     await state.update_data(edit_prompt_msg_id=prompt.message_id)
     await state.set_state(AfishaEditStates.price)
@@ -1482,7 +1489,7 @@ async def afisha_edit_price_btn_free(cb: CallbackQuery, state: FSMContext):
         chat_id=cb.message.chat.id,
         owner_id=cb.from_user.id,
         state=state,
-        new_price_text="Бесплатно",
+        new_price_text=(await get_text("btn_free", "ru") or "Бесплатно"),
         func="afisha_edit_price_btn_free",
         prompt_message_id=cb.message.message_id,
     )
@@ -1496,7 +1503,7 @@ async def afisha_edit_price_btn_donate(cb: CallbackQuery, state: FSMContext):
         chat_id=cb.message.chat.id,
         owner_id=cb.from_user.id,
         state=state,
-        new_price_text="На донатах",
+        new_price_text=(await get_text("af_btn_donate", "ru") or "На донатах"),
         func="afisha_edit_price_btn_donate",
         prompt_message_id=cb.message.message_id,
     )
@@ -1520,7 +1527,7 @@ async def _afisha_edit_price_apply_value(
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "missing listing_id")
-        await bot.send_message(chat_id, "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await bot.send_message(chat_id, await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     # listing.price -> число или NULL
@@ -1562,7 +1569,7 @@ async def _afisha_edit_price_apply_value(
         _af_dbg(func, "db.ok", f"id={listing_id} price_num={price_num}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await bot.send_message(chat_id, "Не удалось сохранить цену. Попробуйте ещё раз.")
+        await bot.send_message(chat_id, await get_text("af_err_save_price", "ru") or "Не удалось сохранить цену. Попробуйте ещё раз.")
         return
 
     # удалим prompt (сообщение с кнопками)
@@ -1589,15 +1596,15 @@ async def afisha_edit_price_apply(message: Message, state: FSMContext):
 
     # быстрые варианты как при публикации
     if val in {"free", "бесплатно", "free.", "бесплатно."}:
-        new_price_text = "Бесплатно"
+        new_price_text = await get_text("btn_free", "ru") or "Бесплатно"
     elif val in {"donate", "донат", "на донатах", "донаты"}:
-        new_price_text = "На донатах"
+        new_price_text = await get_text("af_btn_donate", "ru") or "На донатах"
     else:
         new_price_text = raw
     _af_dbg(func, "in", f"raw={raw!r}")
 
     if not new_price_text:
-        await message.answer("Цена не может быть пустой.")
+        await message.answer(await get_text("af_price_required", "ru") or "Цена не может быть пустой.")
         return
 
     data = await state.get_data()
@@ -1606,7 +1613,7 @@ async def afisha_edit_price_apply(message: Message, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "missing listing_id")
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     # Попробуем извлечь число для listing.price (если возможно), иначе оставим NULL
@@ -1651,7 +1658,7 @@ async def afisha_edit_price_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} price_num={price_num} price_text={new_price_text!r}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить цену. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_save_price", "ru") or "Не удалось сохранить цену. Попробуйте ещё раз.")
         return
 
     # чистим сообщения
@@ -1683,7 +1690,7 @@ async def afisha_edit_city_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -1692,13 +1699,13 @@ async def afisha_edit_city_start(cb: CallbackQuery, state: FSMContext):
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
     kb = await _kb_city_from_db_edit()
+    city_prompt_tmpl = await get_text("af_edit_city_prompt_tmpl", "ru") or (
+        "✏️ <b>Редактирование города</b>\n\nТекущий город: <code>{city}</code>\n\n"
+        "Выберите город из списка или нажмите «Другой»:"
+    )
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "✏️ <b>Редактирование города</b>\n\n"
-            f"Текущий город: <code>{escape_html(cur_city)}</code>\n\n"
-            "Выберите город из списка или нажмите «Другой»:"
-        ),
+        text=city_prompt_tmpl.format(city=escape_html(cur_city)),
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1720,7 +1727,7 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "missing listing_id")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     tail = cb.data.split(":")[-1]
@@ -1757,7 +1764,7 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
 
     if not city_name:
         _af_dbg(func, "city_name_empty", f"city_id={city_id}")
-        await cb.message.answer("Не удалось определить название города.")
+        await cb.message.answer(await get_text("af_err_no_city", "ru") or "Не удалось определить название города.")
         return
 
     # 3) Если выбран "Другой город" из БД — переходим к вводу текста
@@ -1765,9 +1772,9 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
     if "друг" in city_name.lower():
         try:
             await cb.message.edit_text(
-                "✏️ <b>Другой город</b>\n\nВведите город текстом (например: <code>Зренянин</code>):",
+                (await get_text("af_ask_other_city_text", "ru") or "✏️ <b>Другой город</b>\n\nВведите город текстом (например: <code>Зренянин</code>):"),
                 parse_mode="HTML",
-                reply_markup=_kb_edit_cancel(),
+                reply_markup=await _kb_edit_cancel(),
             )
         except Exception as e:
             _af_dbg(func, "edit_text_fail", f"{type(e).__name__}: {e}")
@@ -1777,9 +1784,9 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
                 pass
             msg = await cb.bot.send_message(
                 chat_id=chat_id,
-                text="✏️ <b>Другой город</b>\n\nВведите город текстом (например: <code>Зренянин</code>):",
+                text=(await get_text("af_ask_other_city_text", "ru") or "✏️ <b>Другой город</b>\n\nВведите город текстом (например: <code>Зренянин</code>):"),
                 parse_mode="HTML",
-                reply_markup=_kb_edit_cancel(),
+                reply_markup=await _kb_edit_cancel(),
             )
             await state.update_data(edit_prompt_msg_id=msg.message_id)
 
@@ -1814,7 +1821,7 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} city_id={city_id} city_name={city_name!r}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await cb.message.answer("Не удалось сохранить город. Попробуйте ещё раз.")
+        await cb.message.answer(await get_text("af_err_save_city", "ru") or "Не удалось сохранить город. Попробуйте ещё раз.")
         return
 
     # удаляем prompt (экран выбора города)
@@ -1842,7 +1849,7 @@ async def afisha_edit_city_text_apply(message: Message, state: FSMContext):
     _af_dbg(func, "in", f"raw={raw!r}")
 
     if not raw:
-        await message.answer("Город не может быть пустым.")
+        await message.answer(await get_text("af_city_empty", "ru") or "Город не может быть пустым.")
         return
 
     data = await state.get_data()
@@ -1852,7 +1859,7 @@ async def afisha_edit_city_text_apply(message: Message, state: FSMContext):
 
     if not listing_id or not other_city_id:
         _af_dbg(func, "no_ctx", f"listing_id={listing_id} other_city_id={other_city_id}")
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -1878,7 +1885,7 @@ async def afisha_edit_city_text_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} city_id={other_city_id} city_text={raw!r}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить город. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_save_city", "ru") or "Не удалось сохранить город. Попробуйте ещё раз.")
         return
     
 
@@ -1910,7 +1917,7 @@ async def afisha_edit_venue_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -1918,16 +1925,16 @@ async def afisha_edit_venue_start(cb: CallbackQuery, state: FSMContext):
     except Exception as e:
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
+    venue_prompt_tmpl = await get_text("af_edit_venue_prompt_tmpl", "ru") or (
+        "✏️ <b>Редактирование места</b>\n\nТекущее место: <code>{venue}</code>\n\n"
+        "Введите новое место/площадку.\n"
+        "Пример: <code>Zappa Barka</code> или <code>KC Grad</code>"
+    )
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "✏️ <b>Редактирование места</b>\n\n"
-            f"Текущее место: <code>{escape_html(cur_venue)}</code>\n\n"
-            "Введите новое место/площадку.\n"
-            "Пример: <code>Zappa Barka</code> или <code>KC Grad</code>"
-        ),
+        text=venue_prompt_tmpl.format(venue=escape_html(cur_venue)),
         parse_mode="HTML",
-        reply_markup=_kb_edit_cancel(),
+        reply_markup=await _kb_edit_cancel(),
     )
 
     await state.update_data(edit_prompt_msg_id=prompt.message_id)
@@ -1944,7 +1951,7 @@ async def afisha_edit_venue_apply(message: Message, state: FSMContext):
     _af_dbg(func, "in", f"raw={raw!r}")
 
     if not raw:
-        await message.answer("Место не может быть пустым.")
+        await message.answer(await get_text("af_venue_empty", "ru") or "Место не может быть пустым.")
         return
 
     data = await state.get_data()
@@ -1953,7 +1960,7 @@ async def afisha_edit_venue_apply(message: Message, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "missing listing_id")
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -1976,7 +1983,7 @@ async def afisha_edit_venue_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} venue_text={raw!r}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить место. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_save_venue", "ru") or "Не удалось сохранить место. Попробуйте ещё раз.")
         return
 
     try:
@@ -2009,7 +2016,7 @@ async def afisha_edit_descr_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -2017,16 +2024,16 @@ async def afisha_edit_descr_start(cb: CallbackQuery, state: FSMContext):
     except Exception as e:
         _af_dbg(func, "delete_overview_fail", f"{type(e).__name__}: {e}")
 
+    descr_prompt_tmpl = await get_text("af_edit_descr_prompt_tmpl", "ru") or (
+        "✏️ <b>Редактирование описания</b>\n\nТекущее:\n<code>{descr}</code>\n\n"
+        "Введите новое описание одним сообщением.\n"
+        "Чтобы убрать описание — отправьте <code>-</code>"
+    )
     prompt = await cb.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "✏️ <b>Редактирование описания</b>\n\n"
-            f"Текущее:\n<code>{escape_html(cur_short)}</code>\n\n"
-            "Введите новое описание одним сообщением.\n"
-            "Чтобы убрать описание — отправьте <code>-</code>"
-        ),
+        text=descr_prompt_tmpl.format(descr=escape_html(cur_short)),
         parse_mode="HTML",
-        reply_markup=_kb_edit_cancel(),
+        reply_markup=await _kb_edit_cancel(),
     )
 
     await state.update_data(edit_prompt_msg_id=prompt.message_id)
@@ -2051,7 +2058,7 @@ async def afisha_edit_descr_apply(message: Message, state: FSMContext):
 
     # ограничим длину, чтобы Telegram caption не ломать (и вообще здравый предел)
     if len(new_descr) > 2000:
-        await message.answer("Слишком длинно. Давайте до 2000 символов.")
+        await message.answer(await get_text("af_descr_too_long2", "ru") or "Слишком длинно. Давайте до 2000 символов.")
         return
 
     data = await state.get_data()
@@ -2060,7 +2067,7 @@ async def afisha_edit_descr_apply(message: Message, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "missing listing_id")
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     # сохраняем в listing.descr (так у вас и читается в карточках)
@@ -2080,7 +2087,7 @@ async def afisha_edit_descr_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} descr_len={len(new_descr)}")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить описание. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_save_descr", "ru") or "Не удалось сохранить описание. Попробуйте ещё раз.")
         return
 
     # чистим сообщения
@@ -2113,7 +2120,7 @@ async def afisha_edit_photo_start(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", f"chat_id={chat_id}")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -2121,21 +2128,21 @@ async def afisha_edit_photo_start(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    kb = _kb_edit_photo(bool(cur_photo))
+    kb = await _kb_edit_photo(bool(cur_photo))
 
     if cur_photo:
         # показываем текущее фото
         msg = await cb.bot.send_photo(
             chat_id=chat_id,
             photo=cur_photo,
-            caption="✏️ <b>Редактирование фото</b>\n\nНиже текущее фото.\nВы можете загрузить новое или удалить его.",
+            caption=(await get_text("af_edit_photo_with_current", "ru") or "✏️ <b>Редактирование фото</b>\n\nНиже текущее фото.\nВы можете загрузить новое или удалить его."),
             parse_mode="HTML",
             reply_markup=kb,
         )
     else:
         msg = await cb.bot.send_message(
             chat_id=chat_id,
-            text="✏️ <b>Редактирование фото</b>\n\nФото сейчас отсутствует.\nВы можете загрузить новое.",
+            text=(await get_text("af_edit_photo_no_current", "ru") or "✏️ <b>Редактирование фото</b>\n\nФото сейчас отсутствует.\nВы можете загрузить новое."),
             parse_mode="HTML",
             reply_markup=kb,
         )
@@ -2154,10 +2161,12 @@ async def afisha_edit_photo_upload(cb: CallbackQuery, state: FSMContext):
 
     try:
         await cb.message.edit_text(
-            "📷 <b>Отправьте фото</b> одним сообщением.\n\n"
-            "Если передумали — нажмите «Отмена».",
+            await get_text("af_edit_photo_send_prompt", "ru") or (
+                "📷 <b>Отправьте фото</b> одним сообщением.\n\n"
+                "Если передумали — нажмите «Отмена»."
+            ),
             parse_mode="HTML",
-            reply_markup=_kb_edit_cancel(),
+            reply_markup=await _kb_edit_cancel(),
         )
     except Exception as e:
         _af_dbg(func, "edit_text_fail", f"{type(e).__name__}: {e}")
@@ -2171,17 +2180,17 @@ async def afisha_edit_photo_delete_ask(cb: CallbackQuery, state: FSMContext):
 
     try:
         await cb.message.edit_caption(
-            "🗑 <b>Удалить фото?</b>\n\nЭто действие нельзя отменить.",
+            (await get_text("af_edit_photo_delete_confirm", "ru") or "🗑 <b>Удалить фото?</b>\n\nЭто действие нельзя отменить."),
             parse_mode="HTML",
-            reply_markup=_kb_confirm_photo_delete(),
+            reply_markup=await _kb_confirm_photo_delete(),
         )
     except Exception:
         # если prompt был текстовым (без caption) — редактируем текст
         try:
             await cb.message.edit_text(
-                "🗑 <b>Удалить фото?</b>\n\nЭто действие нельзя отменить.",
+                (await get_text("af_edit_photo_delete_confirm", "ru") or "🗑 <b>Удалить фото?</b>\n\nЭто действие нельзя отменить."),
                 parse_mode="HTML",
-                reply_markup=_kb_confirm_photo_delete(),
+                reply_markup=await _kb_confirm_photo_delete(),
             )
         except Exception as e:
             _af_dbg(func, "edit_fail", f"{type(e).__name__}: {e}")
@@ -2195,18 +2204,18 @@ async def afisha_edit_photo_delete_no(cb: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     cur_photo = data.get("photo_id")
-    kb = _kb_edit_photo(bool(cur_photo))
+    kb = await _kb_edit_photo(bool(cur_photo))
 
     try:
         if cur_photo:
             await cb.message.edit_caption(
-                "✏️ <b>Редактирование фото</b>\n\nНиже текущее фото.\nВы можете загрузить новое или удалить его.",
+                (await get_text("af_edit_photo_with_current", "ru") or "✏️ <b>Редактирование фото</b>\n\nНиже текущее фото.\nВы можете загрузить новое или удалить его."),
                 parse_mode="HTML",
                 reply_markup=kb,
             )
         else:
             await cb.message.edit_text(
-                "✏️ <b>Редактирование фото</b>\n\nФото сейчас отсутствует.\nВы можете загрузить новое.",
+                (await get_text("af_edit_photo_no_current", "ru") or "✏️ <b>Редактирование фото</b>\n\nФото сейчас отсутствует.\nВы можете загрузить новое."),
                 parse_mode="HTML",
                 reply_markup=kb,
             )
@@ -2228,7 +2237,7 @@ async def afisha_edit_photo_delete_yes(cb: CallbackQuery, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "missing listing_id")
-        await cb.message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await cb.message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -2246,7 +2255,7 @@ async def afisha_edit_photo_delete_yes(cb: CallbackQuery, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} photo=NULL")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await cb.message.answer("Не удалось удалить фото. Попробуйте ещё раз.")
+        await cb.message.answer(await get_text("af_err_photo_del", "ru") or "Не удалось удалить фото. Попробуйте ещё раз.")
         return
 
     # удаляем prompt и возвращаем overview
@@ -2270,7 +2279,7 @@ async def afisha_edit_photo_apply(message: Message, state: FSMContext):
     owner_id = message.from_user.id
 
     if not message.photo:
-        await message.answer("Нужно прислать именно фото (не файл).")
+        await message.answer(await get_text("af_err_photo_type", "ru") or "Нужно прислать именно фото (не файл).")
         _af_dbg(func, "not_photo", "no message.photo")
         return
 
@@ -2283,7 +2292,7 @@ async def afisha_edit_photo_apply(message: Message, state: FSMContext):
 
     if not listing_id:
         _af_dbg(func, "no_ctx", "missing listing_id")
-        await message.answer("Контекст редактирования потерян. Вернитесь в «Мои объявления».")
+        await message.answer(await get_text("af_err_context", "ru") or "Контекст редактирования потерян. Вернитесь в «Мои объявления».")
         return
 
     try:
@@ -2301,7 +2310,7 @@ async def afisha_edit_photo_apply(message: Message, state: FSMContext):
         _af_dbg(func, "db.ok", f"id={listing_id} photo=set")
     except Exception as e:
         _af_dbg(func, "db.fail", f"{type(e).__name__}: {e}")
-        await message.answer("Не удалось сохранить фото. Попробуйте ещё раз.")
+        await message.answer(await get_text("af_err_photo_save", "ru") or "Не удалось сохранить фото. Попробуйте ещё раз.")
         return
 
     # чистим
@@ -2339,7 +2348,7 @@ async def af_add_venue_skip(cb: CallbackQuery, state: FSMContext):
     await _reset_step_ui(state, chat_id, cb.bot)
     await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:venue")
     await state.set_state(AfishaAddStates.wait_descr)
-    msg = await cb.message.answer("Описание (до 500 символов, можно пропустить):", reply_markup=_kb_skip("af:add:skip:descr"))
+    msg = await cb.message.answer(await get_text("af_ask_descr", "ru") or "Описание (до 500 символов, можно пропустить):", reply_markup=await _kb_skip("af:add:skip:descr"))
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -2352,7 +2361,7 @@ async def af_add_descr(message: Message, state: FSMContext):
     chat_id = message.chat.id
     descr = _strip(message.text)
     if descr and len(descr) > 500:
-        msg = await message.answer("Слишком длинно (макс. 500). Сократите или /skip:")
+        msg = await message.answer(await get_text("af_descr_too_long", "ru") or "Слишком длинно (макс. 500). Сократите или /skip:")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[AFISHA][ERR] wait_descr too long | chat_id={chat_id}")
@@ -2365,7 +2374,7 @@ async def af_add_descr(message: Message, state: FSMContext):
     await _reset_step_ui(state, chat_id, message.bot)
     await _send_nav(chat_id, message.bot, state, back_cb="af:add:back:descr")
     await state.set_state(AfishaAddStates.wait_photo)
-    msg = await message.answer("Фото (одно, можно пропустить):", reply_markup=_kb_skip("af:add:skip:photo"))
+    msg = await message.answer(await get_text("af_ask_photo_optional", "ru") or "Фото (одно, можно пропустить):", reply_markup=await _kb_skip("af:add:skip:photo"))
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -2385,7 +2394,7 @@ async def af_add_descr_skip(cb: CallbackQuery, state: FSMContext):
     await _reset_step_ui(state, chat_id, cb.bot)
     await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:descr")
     await state.set_state(AfishaAddStates.wait_photo)
-    msg = await cb.message.answer("Фото (одно, можно пропустить):", reply_markup=_kb_skip("af:add:skip:photo"))
+    msg = await cb.message.answer(await get_text("af_ask_photo_optional", "ru") or "Фото (одно, можно пропустить):", reply_markup=await _kb_skip("af:add:skip:photo"))
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -2422,7 +2431,7 @@ async def af_add_photo_not_photo(message: Message, state: FSMContext):
 
     await _delete_user_msg(message.bot, chat_id, message.message_id)
 
-    msg = await message.answer("Пришлите фото или нажмите «Пропустить».")
+    msg = await message.answer(await get_text("af_ask_photo", "ru") or "Пришлите фото или нажмите «Пропустить».")
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
     print(f"[AFISHA][ERR] wait_photo not a photo | chat_id={chat_id}")
@@ -2448,7 +2457,7 @@ async def _go_preview(message: Message, state: FSMContext):
     chat_id = message.chat.id
     data = await state.get_data()
 
-    title = data.get("title") or "Без названия"
+    title = data.get("title") or (await get_text("af_no_title_fallback", "ru") or "Без названия")
     date_local = data.get("date_local")          # YYYY-MM-DD
     hh = data.get("time_hh"); mm = data.get("time_mm")
     city_id = data.get("city_id"); city_text = data.get("city_text")
@@ -2462,10 +2471,10 @@ async def _go_preview(message: Message, state: FSMContext):
         dt_local = datetime.strptime(date_local, "%Y-%m-%d").replace(hour=int(hh), minute=int(mm))
         when_line = f"{dt_local.strftime('%d-%m-%y')} • {dt_local.strftime('%H:%M')}"
     except Exception:
-        when_line = "Дата/время"
+        when_line = await get_text("af_no_datetime_fallback", "ru") or "Дата/время"
 
     city_name = await _city_name_by_id(city_id)
-    city_line = city_name or (city_text or "Город")
+    city_line = city_name or (city_text or (await get_text("af_no_city_fallback", "ru") or "Город"))
     place_line = city_line if not venue else f"{city_line}, {venue}"
     price_line = f"💲 {price}" if price else ""
 
@@ -2501,7 +2510,7 @@ async def _go_preview(message: Message, state: FSMContext):
                 await message.bot.delete_message(chat_id, int(draft_id))
             except Exception:
                 pass
-        sent = await message.answer_photo(photo=photo_id, caption=card_text, parse_mode="HTML", reply_markup=_kb_preview())
+        sent = await message.answer_photo(photo=photo_id, caption=card_text, parse_mode="HTML", reply_markup=await _kb_preview())
         await state.update_data(draft_msg_id=sent.message_id, draft_is_photo=1)
         print(f"[AFISHA][STEP] preview(photo) | chat_id={chat_id} msg_id={sent.message_id}")
         return
@@ -2513,7 +2522,7 @@ async def _go_preview(message: Message, state: FSMContext):
                 await message.bot.delete_message(chat_id, int(draft_id))
             except Exception:
                 pass
-        sent = await message.answer(card_text, parse_mode="HTML", reply_markup=_kb_preview())
+        sent = await message.answer(card_text, parse_mode="HTML", reply_markup=await _kb_preview())
         await state.update_data(draft_msg_id=sent.message_id, draft_is_photo=0)
         print(f"[AFISHA][STEP] preview(text-created) | chat_id={chat_id} msg_id={sent.message_id}")
         return
@@ -2524,12 +2533,12 @@ async def _go_preview(message: Message, state: FSMContext):
             chat_id=chat_id,
             message_id=int(draft_id),
             parse_mode="HTML",
-            reply_markup=_kb_preview()
+            reply_markup=await _kb_preview()
         )
         print(f"[AFISHA][STEP] preview(text-updated) | chat_id={chat_id} msg_id={draft_id}")
     except Exception as e:
         print(f"[AFISHA][STEP] preview edit failed -> recreate | chat_id={chat_id} msg_id={draft_id} err={e}")
-        sent = await message.answer(card_text, parse_mode="HTML", reply_markup=_kb_preview())
+        sent = await message.answer(card_text, parse_mode="HTML", reply_markup=await _kb_preview())
         await state.update_data(draft_msg_id=sent.message_id, draft_is_photo=0)
 
 
@@ -2545,7 +2554,7 @@ async def af_add_edit(cb: CallbackQuery, state: FSMContext):
 
     await state.set_state(AfishaAddStates.wait_title)
     await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:entry")
-    msg = await cb.message.answer("Измените название (или отправьте новое):")
+    msg = await cb.message.answer(await get_text("af_edit_change_title_prompt", "ru") or "Измените название (или отправьте новое):")
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -2571,7 +2580,7 @@ async def af_add_cancel(cb: CallbackQuery, state: FSMContext):
     except Exception:
         kb = None
 
-    msg = await cb.message.answer("Отменено.", reply_markup=kb)
+    msg = await cb.message.answer(await get_text("af_add_cancelled", "ru") or "Отменено.", reply_markup=kb)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
@@ -2588,12 +2597,12 @@ async def af_add_publish(cb: CallbackQuery, state: FSMContext):
     """Не допускаем параллельную публикацию двойным нажатием кнопки."""
     lock = _event_publish_locks[cb.from_user.id]
     if lock.locked():
-        await cb.answer("Публикуем, пожалуйста, подождите.")
+        await cb.answer(await get_text("services_add_publishing_wait", "ru") or "Публикуем, пожалуйста, подождите.")
         return
     async with lock:
         # Второй update мог попасть в диспетчер до очистки FSM первым update.
         if await state.get_state() != AfishaAddStates.preview.state:
-            await cb.answer("Событие уже опубликовано.")
+            await cb.answer(await get_text("af_already_published", "ru") or "Событие уже опубликовано.")
             return
         await _af_add_publish_locked(cb, state)
 
@@ -2623,7 +2632,7 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
     if not isinstance(city_id, int) and city_text:
         city_id = await _other_city_id()
     if not isinstance(city_id, int):
-        sent = await cb.message.answer("Не удалось определить город. Создайте объявление заново.")
+        sent = await cb.message.answer(await get_text("af_publish_err_no_city", "ru") or "Не удалось определить город. Создайте объявление заново.")
         last_bot_messages.setdefault(chat_id, []).append(sent.message_id)
         await register_bot_messages(chat_id, [sent.message_id])
         await state.clear()
@@ -2634,7 +2643,7 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
         start_at_utc = _to_start_utc(date_local, int(hh), int(mm))
     except Exception as e:
         print(f"[AFISHA] start_at_utc error: {e}")
-        sent = await cb.message.answer("Не удалось преобразовать дату/время. Попробуйте заново.")
+        sent = await cb.message.answer(await get_text("af_publish_err_datetime", "ru") or "Не удалось преобразовать дату/время. Попробуйте заново.")
         last_bot_messages.setdefault(chat_id, []).append(sent.message_id)
         await register_bot_messages(chat_id, [sent.message_id])
         await state.clear()
@@ -2642,7 +2651,7 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
         return
 
     if start_at_utc <= int(datetime.now(timezone.utc).timestamp()):
-        sent = await cb.message.answer("Дата и время события уже прошли. Создайте объявление заново.")
+        sent = await cb.message.answer(await get_text("af_publish_err_past", "ru") or "Дата и время события уже прошли. Создайте объявление заново.")
         last_bot_messages.setdefault(chat_id, []).append(sent.message_id)
         await register_bot_messages(chat_id, [sent.message_id])
         await state.clear()
@@ -2695,7 +2704,7 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
         await state.clear()
     except Exception as e:
         print(f"[AFISHA] publish DB error: {e}")
-        sent = await cb.message.answer("Не удалось сохранить объявление. Попробуйте позже.")
+        sent = await cb.message.answer(await get_text("af_publish_err_save", "ru") or "Не удалось сохранить объявление. Попробуйте позже.")
         last_bot_messages.setdefault(chat_id, []).append(sent.message_id)
         await register_bot_messages(chat_id, [sent.message_id])
         await state.clear()
@@ -2710,7 +2719,7 @@ async def _af_add_publish_locked(cb: CallbackQuery, state: FSMContext):
     except Exception as e:
         print(f"[AFISHA] publish analytics error listing_id={listing_id}: {e}")
 
-    txt = "✅ Отправлено на модерацию. После проверки событие появится в Афише."
+    txt = await get_text("af_sent_to_moderation", "ru") or "✅ Отправлено на модерацию. После проверки событие появится в Афише."
 
     rows = []
     try:
@@ -2791,7 +2800,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
     if back_to == "title":
         await state.set_state(AfishaAddStates.wait_title)
         nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:entry")
-        msg = await cb.message.answer("Измените название (или отправьте новое):")
+        msg = await cb.message.answer(await get_text("af_edit_change_title_prompt", "ru") or "Измените название (или отправьте новое):")
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
         await register_bot_messages(chat_id, [nav_id, msg.message_id])
@@ -2803,7 +2812,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
     if back_to == "date":
         await state.set_state(AfishaAddStates.wait_date)
         nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:title")
-        msg = await cb.message.answer("📅 Введите дату в формате DD-MM-YY (или «Сегодня/Завтра»):")
+        msg = await cb.message.answer(await get_text("af_ask_title_short", "ru") or "📅 Введите дату в формате DD-MM-YY (или «Сегодня/Завтра»):")
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
         await register_bot_messages(chat_id, [nav_id, msg.message_id])
@@ -2815,7 +2824,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
     if back_to == "time":
         await state.set_state(AfishaAddStates.wait_time)
         nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:date")
-        msg = await cb.message.answer("⏰ Укажите время (HH:MM), например 19:00:")
+        msg = await cb.message.answer(await get_text("af_ask_time_short", "ru") or "⏰ Укажите время (HH:MM), например 19:00:")
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
         await register_bot_messages(chat_id, [nav_id, msg.message_id])
@@ -2828,7 +2837,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
         await state.set_state(AfishaAddStates.wait_city_choice)
         nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:time")
         kb = await _kb_city_from_db()
-        msg = await cb.message.answer("👇 Выберите город из списка ниже:", reply_markup=kb)
+        msg = await cb.message.answer(await get_text("af_ask_city", "ru") or "👇 Выберите город из списка ниже:", reply_markup=kb)
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
         await register_bot_messages(chat_id, [nav_id, msg.message_id])
@@ -2840,7 +2849,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
     if back_to == "price_text":
         await state.set_state(AfishaAddStates.wait_price_choice)
         nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:price")
-        msg = await cb.message.answer("💲 Укажите цену:", reply_markup=_kb_price())
+        msg = await cb.message.answer(await get_text("af_ask_price", "ru") or "💲 Укажите цену:", reply_markup=await _kb_price())
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
         await register_bot_messages(chat_id, [nav_id, msg.message_id])
@@ -2852,7 +2861,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
     if back_to == "venue":
         await state.set_state(AfishaAddStates.wait_price_choice)
         nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:price")
-        msg = await cb.message.answer("💲 Укажите цену:", reply_markup=_kb_price())
+        msg = await cb.message.answer(await get_text("af_ask_price", "ru") or "💲 Укажите цену:", reply_markup=await _kb_price())
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
         await register_bot_messages(chat_id, [nav_id, msg.message_id])
@@ -2864,7 +2873,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
     if back_to == "descr":
         await state.set_state(AfishaAddStates.wait_venue)
         nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:price")
-        msg = await cb.message.answer("Площадка (можно пропустить):", reply_markup=_kb_skip("af:add:skip:venue"))
+        msg = await cb.message.answer(await get_text("af_ask_venue", "ru") or "Площадка (можно пропустить):", reply_markup=await _kb_skip("af:add:skip:venue"))
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
         await register_bot_messages(chat_id, [nav_id, msg.message_id])
@@ -2875,7 +2884,7 @@ async def af_add_back(cb: CallbackQuery, state: FSMContext):
     # fallback — только если что-то вообще неизвестное
     await state.set_state(AfishaAddStates.wait_title)
     nav_id = await _send_nav(chat_id, cb.bot, state, back_cb="af:add:back:entry")
-    msg = await cb.message.answer("📝 Введите <b>название</b> события (до 100 символов):", parse_mode="HTML")
+    msg = await cb.message.answer(await get_text("af_ask_name_full", "ru") or "📝 Введите <b>название</b> события (до 100 символов):", parse_mode="HTML")
     await state.update_data(prompt_id=msg.message_id)
     last_bot_messages.setdefault(chat_id, []).extend([nav_id, msg.message_id])
     await register_bot_messages(chat_id, [nav_id, msg.message_id])
