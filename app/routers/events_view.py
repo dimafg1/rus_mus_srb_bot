@@ -56,18 +56,18 @@ af_search_ctx_by_chat: dict[int, dict] = {}
 
 
 
-def _fmt_dt(utc_ts: int) -> tuple[str, str]:
+async def _fmt_dt(utc_ts: int) -> tuple[str, str]:
     """
     Форматирование даты события для отображения в карточке.
     """
 
     dt = datetime.fromtimestamp(utc_ts, tz=timezone.utc).astimezone(_TZ)
 
-    months = [
-        "января", "февраля", "марта", "апреля",
-        "мая", "июня", "июля", "августа",
-        "сентября", "октября", "ноября", "декабря"
-    ]
+    months_text = (
+        await get_text("events_view_calendar_months_genitive", "ru")
+        or "января,февраля,марта,апреля,мая,июня,июля,августа,сентября,октября,ноября,декабря"
+    )
+    months = months_text.split(",")
 
     day = dt.day
     month = months[dt.month - 1]
@@ -358,7 +358,7 @@ async def af_my(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:my:open:{it['listing_id']}:0"
@@ -403,7 +403,7 @@ async def af_my_more(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:my:open:{it['listing_id']}:{offset}"
@@ -477,7 +477,7 @@ async def af_my_open(cb: CallbackQuery):
     )
 
 
-    d, t = _fmt_dt(it["start_at_utc"])
+    d, t = await _fmt_dt(it["start_at_utc"])
 
     city_name = (it.get("city_name") or "").strip()
     city_text = (it.get("city_text") or "").strip()
@@ -639,7 +639,7 @@ async def show_event_card(message: Message, listing_id: int) -> bool:
         print(f"[events_view.py][show_event_card][done] chat_id={chat_id} listing_id={listing_id} found=0 msg_id={msg.message_id}")
         return False
 
-    d, t = _fmt_dt(it["start_at_utc"])
+    d, t = await _fmt_dt(it["start_at_utc"])
 
     city_name = (it.get("city_name") or "").strip()
     city_text = (it.get("city_text") or "").strip()
@@ -988,7 +988,7 @@ async def events_near(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:open:{it['listing_id']}:near:0"
@@ -1045,7 +1045,7 @@ async def events_near_more(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:open:{it['listing_id']}:near:{offset}"
@@ -1135,7 +1135,7 @@ async def af_open_event(cb: CallbackQuery):
     )
 
 
-    d, t = _fmt_dt(it["start_at_utc"])
+    d, t = await _fmt_dt(it["start_at_utc"])
 
     city_name = (it.get("city_name") or "").strip()
     city_text = (it.get("city_text") or "").strip()
@@ -1261,7 +1261,7 @@ async def af_city_list(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:open:{it['listing_id']}:city:{city_id}"
@@ -1311,7 +1311,7 @@ async def af_city_more(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:open:{it['listing_id']}:city:{city_id}"
@@ -1395,7 +1395,7 @@ async def ecity_city_list(cb: CallbackQuery):
     )])
 
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:open:{it['listing_id']}:city:{city_id}"
@@ -1577,7 +1577,7 @@ async def af_search_query(m: Message, state: FSMContext):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:search:open:{it['listing_id']}:0"
@@ -1694,7 +1694,7 @@ async def af_search_results_first(cb: CallbackQuery, state: FSMContext):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:search:open:{it['listing_id']}:0"
@@ -1800,7 +1800,7 @@ async def af_search_more(cb: CallbackQuery, state: FSMContext):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d, t = _fmt_dt(it["start_at_utc"])
+        d, t = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{d} {t} — {it['title']}",
             callback_data=f"af:search:open:{it['listing_id']}:{offset}"
@@ -1888,7 +1888,7 @@ async def af_search_open(cb: CallbackQuery, state: FSMContext):
     )
 
 
-    d, t = _fmt_dt(it["start_at_utc"])
+    d, t = await _fmt_dt(it["start_at_utc"])
     city = it.get("city_name") or ""
     price = it.get("price_text") or ""
     descr = it.get("descr") or ""
@@ -2043,7 +2043,7 @@ async def af_cal_day_all(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        d_str, t_str = _fmt_dt(it["start_at_utc"])
+        d_str, t_str = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{t_str} — {it['title']}",
             callback_data=f"af:open:{it['listing_id']}:cal:{year}:{month}:{day}:{offset}"
@@ -2180,7 +2180,7 @@ async def af_cal_day_city(cb: CallbackQuery):
 
     rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        _, t_str = _fmt_dt(it["start_at_utc"])
+        _, t_str = await _fmt_dt(it["start_at_utc"])
         rows.append([InlineKeyboardButton(
             text=f"{t_str} — {it['title']}",
             callback_data=f"af:open:{it['listing_id']}:calcity:{slug}:{year}:{month}:{day}:{offset}"

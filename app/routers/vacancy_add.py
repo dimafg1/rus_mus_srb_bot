@@ -1020,7 +1020,10 @@ async def vacancy_price_choice(cb: CallbackQuery, state: FSMContext):
 
     # 3) определить текст цены из выбора
     choice = cb.data.split(":", 1)[1]
-    price_text = "бесплатно" if choice == "free" else "по договоренности"
+    price_text = (
+        (await get_text("vac_add_price_free_value", "ru") or "бесплатно") if choice == "free"
+        else (await get_text("vac_add_price_deal_value", "ru") or "по договоренности")
+    )
 
     # 4) сохранить цену в FSM и выставить состояние, как при вводе цены
     await state.update_data(price=price_text)

@@ -121,19 +121,21 @@ async def _photo_editor_kb(listing_id: int, draft: list[str]) -> InlineKeyboardM
     if len(draft) < 3:
         rows.append([
             InlineKeyboardButton(
-                text="➕ Добавить фото",
+                text=await get_text("photo_edit_btn_add", "ru") or "➕ Добавить фото",
                 callback_data=f"sphoto:add:{listing_id}"
             )
         ])
 
+    swap_tmpl = await get_text("photo_edit_btn_swap_tmpl", "ru") or "🔁 Заменить фото {idx}"
+    delete_tmpl = await get_text("photo_edit_btn_delete_tmpl", "ru") or "❌ Удалить фото {idx}"
     for idx, _ in enumerate(draft, start=1):
         rows.append([
             InlineKeyboardButton(
-                text=f"🔁 Заменить фото {idx}",
+                text=swap_tmpl.format(idx=idx),
                 callback_data=f"sphoto:swap:{listing_id}:{idx}"
             ),
             InlineKeyboardButton(
-                text=f"❌ Удалить фото {idx}",
+                text=delete_tmpl.format(idx=idx),
                 callback_data=f"sphoto:del:{listing_id}:{idx}"
             ),
         ])
@@ -146,20 +148,21 @@ async def _photo_editor_kb(listing_id: int, draft: list[str]) -> InlineKeyboardM
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _cancel_kb(listing_id: int) -> InlineKeyboardMarkup:
+async def _cancel_kb(listing_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"sphoto:cancel:{listing_id}")]
+            [InlineKeyboardButton(text=await get_text("photo_edit_btn_cancel", "ru") or "⬅️ Отмена", callback_data=f"sphoto:cancel:{listing_id}")]
         ]
     )
 
 
-def _confirm_kb(listing_id: int) -> InlineKeyboardMarkup:
+async def _confirm_kb(listing_id: int) -> InlineKeyboardMarkup:
+    cancel_text = await get_text("photo_edit_btn_cancel", "ru") or "⬅️ Отмена"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"sphoto:apply:{listing_id}"),
-                InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"sphoto:cancel:{listing_id}")
+                InlineKeyboardButton(text=await get_text("photo_edit_btn_confirm", "ru") or "✅ Подтвердить", callback_data=f"sphoto:apply:{listing_id}"),
+                InlineKeyboardButton(text=cancel_text, callback_data=f"sphoto:cancel:{listing_id}")
             ]
         ]
     )
@@ -193,11 +196,11 @@ async def _render_photo_editor(chat_id: int, bot, send, listing_id: int, state: 
             sphoto_draft_ids=draft,
         )
 
-    text = (
-        "🖼 <b>Редактирование фото услуги</b>\n\n"
-        f"Сейчас фото: <b>{len(draft)} / 3</b>\n\n"
-        "Можно удалить отдельное фото, добавить новое или заменить конкретное фото."
+    header_tmpl = (
+        await get_text("photo_edit_header_services_tmpl", "ru")
+        or "🖼 <b>Редактирование фото услуги</b>\n\nСейчас фото: <b>{count} / 3</b>\n\nМожно удалить отдельное фото, добавить новое или заменить конкретное фото."
     )
+    text = header_tmpl.format(count=len(draft))
 
     message_ids = []
 
@@ -254,7 +257,7 @@ async def _show_confirmation(
         except Exception:
             pass
 
-    msg = await send(text, reply_markup=_confirm_kb(listing_id))
+    msg = await send(text, reply_markup=await _confirm_kb(listing_id))
     message_ids.append(msg.message_id)
 
     last_bot_messages[chat_id] = message_ids
@@ -399,12 +402,13 @@ async def sphoto_delete_request(cb: CallbackQuery, state: FSMContext):
     )
     await state.set_state(None)
 
+    delete_confirm_tmpl = await get_text("photo_edit_confirm_delete_tmpl", "ru") or "Удалить фото {idx}?"
     await _show_confirmation(
         chat_id,
         cb.bot,
         cb.message.answer,
         listing_id,
-        f"Удалить фото {idx_1based}?"
+        delete_confirm_tmpl.format(idx=idx_1based)
     )
     await cb.answer()
 
@@ -445,7 +449,7 @@ async def sphoto_add(cb: CallbackQuery, state: FSMContext):
     tmpl = await get_text("photo_edit_add_prompt", "ru") or "Отправьте одно новое фото для добавления.\n\nСейчас загружено: {count} / 3"
     msg = await cb.message.answer(
         tmpl.format(count=len(draft)),
-        reply_markup=_cancel_kb(listing_id)
+        reply_markup=await _cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -486,7 +490,7 @@ async def sphoto_add_receive(message: Message, state: FSMContext):
         message.bot,
         message.answer,
         listing_id,
-        "Добавить это фото к объявлению?",
+        await get_text("photo_edit_confirm_add", "ru") or "Добавить это фото к объявлению?",
         preview_photo_ids=[message.photo[-1].file_id]
     )
 
@@ -514,7 +518,7 @@ async def sphoto_add_not_photo(message: Message, state: FSMContext):
 
     msg = await message.answer(
         (await get_text("photo_edit_need_one_photo", "ru") or "Пожалуйста, отправьте именно одно фото."),
-        reply_markup=_cancel_kb(listing_id)
+        reply_markup=await _cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -557,7 +561,7 @@ async def sphoto_swap(cb: CallbackQuery, state: FSMContext):
     tmpl = await get_text("photo_edit_swap_prompt", "ru") or "Отправьте новое фото для замены фото {idx}."
     msg = await cb.message.answer(
         tmpl.format(idx=idx + 1),
-        reply_markup=_cancel_kb(listing_id)
+        reply_markup=await _cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -594,12 +598,13 @@ async def sphoto_receive_replace_one(message: Message, state: FSMContext):
     )
     await state.set_state(None)
 
+    swap_confirm_tmpl = await get_text("photo_edit_confirm_swap_tmpl", "ru") or "Заменить фото {idx} новым фото?"
     await _show_confirmation(
         chat_id,
         message.bot,
         message.answer,
         listing_id,
-        f"Заменить фото {idx + 1} новым фото?",
+        swap_confirm_tmpl.format(idx=idx + 1),
         preview_photo_ids=[message.photo[-1].file_id]
     )
 
@@ -627,7 +632,7 @@ async def sphoto_replace_one_not_photo(message: Message, state: FSMContext):
 
     msg = await message.answer(
         (await get_text("photo_edit_need_photo", "ru") or "Пожалуйста, отправьте именно фото."),
-        reply_markup=_cancel_kb(listing_id)
+        reply_markup=await _cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
