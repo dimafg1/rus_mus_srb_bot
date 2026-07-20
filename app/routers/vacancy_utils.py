@@ -217,10 +217,12 @@ async def vacancy_listings_inline(city_slug: str, cat_id: int, listings, offset:
         rows.append(pager)
 
     # Назад на один уровень вверх
+    back_btn = await get_common_menu_button('back')
     if parent_id:
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{parent_id}")])
+        back_btn.callback_data = f"vlist:{city_slug}:{parent_id}"
     else:
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vcity:{city_slug}")])
+        back_btn.callback_data = f"vcity:{city_slug}"
+    rows.append([back_btn])
 
     # Главное меню
     main_btn = await get_common_menu_button('main_menu')
