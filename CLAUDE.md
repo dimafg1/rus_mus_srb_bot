@@ -258,8 +258,9 @@ path = await render_category_path(session, category_id)
      добавлен `if back_btn:`; там, где «Назад» обязательна по правилу
      навигации (мастера редактирования, `artists.py`), добавлен
      хардкод-фолбэк `or InlineKeyboardButton(...)`.
-     **Осталось** (файл: число мест с `text="⬅️ Назад"`):
-     `services_add.py`(4), `vacancy_view.py`(6), `admin_panel.py`(8),
+     `app/routers/services_add.py` (4 места). **Осталось** (файл: число
+     мест с `text="⬅️ Назад"`):
+     `vacancy_view.py`(6), `admin_panel.py`(8),
      `admin_fields.py`(8), `releases.py`(9), `vacancy_add.py`(10),
      `market_edit_overview.py`(13), `services_edit_overview.py`(13),
      `services_view.py`(13). (Отдельный вариант «◀️ Назад» в

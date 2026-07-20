@@ -204,7 +204,10 @@ async def service_start(cb: CallbackQuery, state: FSMContext):
         if len(buf) == 2:
             rows.append(buf); buf = []
     if buf: rows.append(buf)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")])
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = "go_services"
+        rows.append([back_btn])
 
     main_btn = await get_common_menu_button("main_menu", "ru")
     if main_btn:
@@ -250,7 +253,10 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
         title = await format_category_title(cat.id, (cat.name or "").strip(), SessionLocal)
         rows.append([InlineKeyboardButton(text=title, callback_data=f"services:add:cat:{cat.id}:{city.id}")])
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="service_start")])
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = "service_start"
+        rows.append([back_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     tmpl = await get_text('sell_choose_category', 'ru') or "Город: <b>{city_name}</b>\nВыберите категорию:"
@@ -289,7 +295,10 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
     await state.update_data(city_id=city.id, city_name=city.name, city_slug=city.slug)
     if cats:
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"services:add:cat:{c.id}:{city_id}")] for c in cats]
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"services:add:city:{city_id}")])
+        back_btn = await get_common_menu_button('back')
+        if back_btn:
+            back_btn.callback_data = f"services:add:city:{city_id}"
+            rows.append([back_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         tmpl = await get_text('sell_choose_subcategory', 'ru') or "Категория: <b>{cat_name}</b>\nВыберите подкатегорию:"
         text = tmpl.format(cat_name=cat.name)
@@ -971,7 +980,10 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
         title = await format_category_title(c.id, (c.name or "").strip(), SessionLocal)
         rows.append([InlineKeyboardButton(text=title, callback_data=f"services:add:cat:{c.id}:{city_id}")])
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"services:add:city:{city_id}")])
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = f"services:add:city:{city_id}"
+        rows.append([back_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await safe_edit_or_send(cb, "Выберите категорию", reply_markup=kb)
     await cb.answer()
