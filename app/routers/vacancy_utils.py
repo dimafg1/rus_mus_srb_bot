@@ -166,13 +166,15 @@ async def vacancy_categories_inline(
     kb.adjust(1)
     return kb.as_markup()
 
-async def vacancy_listings_inline(city_slug: str, cat_id: int, listings) -> InlineKeyboardMarkup:
-    """
-    Список вакансий в выбранной категории и городе.
-    Кнопки ведут на: vac_view:<id>:<city_slug>:<cat_id>
-    """
-    kb = InlineKeyboardBuilder()
+VAC_LIST_PAGE_SIZE = 10
 
+
+async def vacancy_listings_inline(city_slug: str, cat_id: int, listings, offset: int = 0) -> InlineKeyboardMarkup:
+    """
+    Список вакансий в выбранной категории и городе (с пагинацией).
+    Кнопки ведут на: vac_view:<id>:<city_slug>:<cat_id>
+    Страницы: vlist:<city_slug>:<cat_id>:<offset>
+    """
     # Узнаём родителя текущей категории для корректной кнопки "Назад"
     parent_id = None
     async with SessionLocal() as s:
@@ -182,33 +184,50 @@ async def vacancy_listings_inline(city_slug: str, cat_id: int, listings) -> Inli
         if cat:
             parent_id = cat.parent_id
 
-    # Кнопки вакансий
-    for l in listings:
-        title = (l.title or "(без заголовка)").strip()
-        price = f" — {l.price}" if getattr(l, "price", None) else ""
-        kb.button(
-            text=f"{title}{price}",
-            callback_data=f"vac_view:{l.id}:{city_slug}:{cat_id}"
-        )
+    rows: list[list[InlineKeyboardButton]] = []
 
-    if not listings:
-        # Пустая категория — просто покажем заглушку, без реального перехода
-        kb.button(text="Пока нет вакансий", callback_data="go_isk")
+    total = len(listings)
+    pages = max(1, (total + VAC_LIST_PAGE_SIZE - 1) // VAC_LIST_PAGE_SIZE)
+    if offset >= total:
+        offset = (pages - 1) * VAC_LIST_PAGE_SIZE
+    if offset < 0:
+        offset = 0
+    page = offset // VAC_LIST_PAGE_SIZE + 1
+
+    if total:
+        for l in listings[offset:offset + VAC_LIST_PAGE_SIZE]:
+            title = (l.title or "(без заголовка)").strip()
+            price = f" — {l.price}" if getattr(l, "price", None) else ""
+            rows.append([InlineKeyboardButton(
+                text=f"{title}{price}",
+                callback_data=f"vac_view:{l.id}:{city_slug}:{cat_id}"
+            )])
+    else:
+        rows.append([InlineKeyboardButton(text="Пока нет вакансий", callback_data="go_isk")])
+
+    if pages > 1:
+        pager: list[InlineKeyboardButton] = []
+        if offset > 0:
+            pager.append(InlineKeyboardButton(
+                text="«", callback_data=f"vlist:{city_slug}:{cat_id}:{offset - VAC_LIST_PAGE_SIZE}"))
+        pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if offset + VAC_LIST_PAGE_SIZE < total:
+            pager.append(InlineKeyboardButton(
+                text="»", callback_data=f"vlist:{city_slug}:{cat_id}:{offset + VAC_LIST_PAGE_SIZE}"))
+        rows.append(pager)
 
     # Назад на один уровень вверх
     if parent_id:
-        kb.button(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{parent_id}")
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{parent_id}")])
     else:
-        # fallback для верхнего уровня
-        kb.button(text="⬅️ Назад", callback_data=f"vcity:{city_slug}")
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vcity:{city_slug}")])
 
     # Главное меню
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
-        kb.row(main_btn)
+        rows.append([main_btn])
 
-    kb.adjust(1)
-    return kb.as_markup()
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 

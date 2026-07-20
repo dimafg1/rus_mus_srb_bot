@@ -229,12 +229,35 @@ async def _services_categories_kb(cats, city_id: int, parent_id: int) -> InlineK
     return kb
 
 
-async def _services_listings_kb(items, city_id: int, cat_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура списка услуг в листовой категории."""
+SERVICES_LIST_PAGE_SIZE = 10
+
+
+async def _services_listings_kb(items, city_id: int, cat_id: int, offset: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура списка услуг в листовой категории (с пагинацией).
+    Страницы: sv:cat:<city_id>:<cat_id>:<offset>"""
+    total = len(items)
+    pages = max(1, (total + SERVICES_LIST_PAGE_SIZE - 1) // SERVICES_LIST_PAGE_SIZE)
+    if offset >= total:
+        offset = (pages - 1) * SERVICES_LIST_PAGE_SIZE
+    if offset < 0:
+        offset = 0
+    page = offset // SERVICES_LIST_PAGE_SIZE + 1
+
     rows = [[InlineKeyboardButton(
         text=(i.title or f"#{i.id}")[:64],
         callback_data=f"sv:item:{i.id}:{city_id}:{cat_id}"
-    )] for i in items]
+    )] for i in items[offset:offset + SERVICES_LIST_PAGE_SIZE]]
+
+    if pages > 1:
+        pager: list[InlineKeyboardButton] = []
+        if offset > 0:
+            pager.append(InlineKeyboardButton(
+                text="«", callback_data=f"sv:cat:{city_id}:{cat_id}:{offset - SERVICES_LIST_PAGE_SIZE}"))
+        pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if offset + SERVICES_LIST_PAGE_SIZE < total:
+            pager.append(InlineKeyboardButton(
+                text="»", callback_data=f"sv:cat:{city_id}:{cat_id}:{offset + SERVICES_LIST_PAGE_SIZE}"))
+        rows.append(pager)
 
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sv:cat:{city_id}:{cat_id}:back")])
 
@@ -243,7 +266,7 @@ async def _services_listings_kb(items, city_id: int, cat_id: int) -> InlineKeybo
         rows.append([main_menu_btn])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    print(f"[services_view.py] _services_listings_kb | city_id={city_id} cat_id={cat_id} items={len(items)} rows={len(rows)}")
+    print(f"[services_view.py] _services_listings_kb | city_id={city_id} cat_id={cat_id} items={total} offset={offset} rows={len(rows)}")
     return kb
 
 
@@ -349,6 +372,8 @@ async def sv_cat(cb: CallbackQuery):
     city_id = int(parts[2])
     cat_id  = int(parts[3])
     going_back = len(parts) >= 5 and parts[4] == "back"
+    # 4-й сегмent — offset страницы списка услуг (когда это не «back»)
+    offset = int(parts[4]) if (len(parts) >= 5 and parts[4] != "back" and parts[4].lstrip("-").isdigit()) else 0
 
     await clear_bot_messages(chat_id, cb.bot)
     try:
@@ -455,7 +480,7 @@ async def sv_cat(cb: CallbackQuery):
         print(f"[services_view.py] sv_cat → empty | chat_id={chat_id} city_id={city_id} cat_id={cat_id}")
         return
 
-    kb = await _services_listings_kb(items, city_id=city_id, cat_id=cat_id)
+    kb = await _services_listings_kb(items, city_id=city_id, cat_id=cat_id, offset=offset)
     text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nКатегория: <b>{escape_html(cat.name)}</b>\nВыберите услугу:"
     msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
@@ -962,15 +987,17 @@ async def service_close_listing(cb: CallbackQuery):
 
 # ───────────────────────────── «МОИ УСЛУГИ» ─────────────────────────────────
 
-@router.callback_query(F.data == "my_services")
-async def my_services(cb: CallbackQuery):
-    """Список услуг текущего пользователя (type='service')."""
+MY_SERVICES_PAGE_SIZE = 10
+
+
+async def _render_my_services(cb: CallbackQuery, offset: int = 0):
+    """Список услуг текущего пользователя (type='service') с пагинацией.
+    Архивные помечены 📦; всегда есть «Назад» и «Главное меню»."""
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
     try: await cb.message.delete()
     except Exception: pass
 
-    # Загрузка услуг текущего пользователя
     async with SessionLocal() as s:
         items = (await s.execute(
             select(Listing)
@@ -981,10 +1008,10 @@ async def my_services(cb: CallbackQuery):
             .order_by(Listing.created_at.desc())
         )).scalars().all()
 
+    main_btn = await get_common_menu_button("main_menu", "ru")
 
     if not items:
         rows = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")]]
-        main_btn = await get_common_menu_button("main_menu", "ru")
         if main_btn:
             rows.append([main_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -995,20 +1022,58 @@ async def my_services(cb: CallbackQuery):
         print(f"[services_view.py] my_services ✓ empty | chat_id={chat_id} user_id={cb.from_user.id}")
         return
 
+    total = len(items)
+    pages = max(1, (total + MY_SERVICES_PAGE_SIZE - 1) // MY_SERVICES_PAGE_SIZE)
+    if offset >= total:
+        offset = (pages - 1) * MY_SERVICES_PAGE_SIZE
+    if offset < 0:
+        offset = 0
+    page = offset // MY_SERVICES_PAGE_SIZE + 1
+
     rows = []
-    for it in items[:100]:
+    for it in items[offset:offset + MY_SERVICES_PAGE_SIZE]:
+        marker = "📦 " if it.status == "archived" else ""
         rows.append([InlineKeyboardButton(
-            text=(it.title or f'#{it.id}')[:64],
+            text=(marker + (it.title or f'#{it.id}'))[:64],
             callback_data=f"sv:item:{it.id}:{it.city_id}:{it.category_id}:m"
         )])
+
+    if pages > 1:
+        pager = []
+        if offset > 0:
+            pager.append(InlineKeyboardButton(
+                text="«", callback_data=f"my_services_page:{offset - MY_SERVICES_PAGE_SIZE}"))
+        pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if offset + MY_SERVICES_PAGE_SIZE < total:
+            pager.append(InlineKeyboardButton(
+                text="»", callback_data=f"my_services_page:{offset + MY_SERVICES_PAGE_SIZE}"))
+        rows.append(pager)
+
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")])
+    if main_btn:
+        rows.append([main_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-    msg = await cb.bot.send_message(chat_id, "Мои услуги:", reply_markup=kb)
+    suffix = f" ({total})" if pages > 1 else ""
+    msg = await cb.bot.send_message(chat_id, f"<b>Мои услуги{suffix}:</b>", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
-    print(f"[services_view.py] my_services ✓ | chat_id={chat_id} user_id={cb.from_user.id} count={len(items)}")
+    print(f"[services_view.py] my_services ✓ | chat_id={chat_id} user_id={cb.from_user.id} count={total} offset={offset}")
+
+
+@router.callback_query(F.data == "my_services")
+async def my_services(cb: CallbackQuery):
+    await _render_my_services(cb, offset=0)
+
+
+@router.callback_query(F.data.startswith("my_services_page:"))
+async def my_services_page(cb: CallbackQuery):
+    try:
+        offset = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        offset = 0
+    await _render_my_services(cb, offset=offset)
 
 
 # ───────────────────────────── «ПОИСК УСЛУГ» ────────────────────────────────
@@ -1199,7 +1264,8 @@ async def services_search_start(cb: CallbackQuery, state: FSMContext):
     query_text  = await get_text('services_search_query', 'ru') or "Введите запрос для поиска услуг:"
 
     nav_msg   = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
-    query_msg = await cb.bot.send_message(chat_id, query_text)
+    query_msg = await cb.bot.send_message(
+        chat_id, f"🔎 <b>Поиск услуг</b>\n\n{query_text}", parse_mode="HTML")
 
     services_last_search_menu_message[chat_id]  = nav_msg.message_id
     services_last_search_query_message[chat_id] = query_msg.message_id

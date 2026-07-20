@@ -1252,7 +1252,9 @@ async def af_city_list(cb: CallbackQuery):
     nav = _kb_list_nav(back_cb="go_events", more_cb=more_cb)
     kb = InlineKeyboardMarkup(inline_keyboard=rows + nav.inline_keyboard)
 
-    msg = await cb.message.answer("🗓 <b>События по городу</b>", parse_mode="HTML", reply_markup=kb)
+    city_name = await _city_name_by_id(city_id)
+    header = f"🗓 <b>Афиша — {city_name}</b>" if city_name else "🗓 <b>События по городу</b>"
+    msg = await cb.message.answer(header, parse_mode="HTML", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     log(f"[events_view.py] af_city_list | city_id={city_id} | count={len(items)}")
@@ -1298,7 +1300,9 @@ async def af_city_more(cb: CallbackQuery):
     nav = _kb_list_nav(back_cb=f"af:ecity:{city_id}", more_cb=more_cb)
     kb = InlineKeyboardMarkup(inline_keyboard=rows + nav.inline_keyboard)
 
-    msg = await cb.message.answer("🗓 <b>События по городу</b>", parse_mode="HTML", reply_markup=kb)
+    city_name = await _city_name_by_id(city_id)
+    header = f"🗓 <b>Афиша — {city_name}</b>" if city_name else "🗓 <b>События по городу</b>"
+    msg = await cb.message.answer(header, parse_mode="HTML", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     log(f"[events_view.py] af_city_more | city_id={city_id} | offset={offset} | count={len(items)}")
@@ -2059,8 +2063,11 @@ async def af_cal_city(cb: CallbackQuery):
     marks = await _fetch_month_marks_city(slug, year, month)
     kb = _kb_calendar_month_city(slug, year, month, marks)
 
+    city_name = await _city_name_by_slug(slug)
+    header = (f"🗓 <b>Афиша — {city_name}</b>\nВыберите дату, чтобы посмотреть события."
+              if city_name else "🗓 Выберите дату, чтобы посмотреть события.")
     msg = await cb.message.answer(
-        "🗓 Выберите дату, чтобы посмотреть события.",
+        header,
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -2152,8 +2159,10 @@ async def af_cal_day_city(cb: CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows + nav.inline_keyboard)
 
+    city_name = await _city_name_by_id(city_id)
+    where = city_name or "город"
     msg = await cb.message.answer(
-        f"🗓 <b>События на {day:02d}.{month:02d}.{str(year)[-2:]} (город)</b>",
+        f"🗓 <b>События на {day:02d}.{month:02d}.{str(year)[-2:]} — {where}</b>",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -2178,8 +2187,29 @@ async def _city_id_by_slug(slug: str) -> int | None:
             return int(row[0]) if row else None
     except Exception as e:
         print(f"[events_view.py][_city_id_by_slug][err] slug={slug!r} {type(e).__name__}: {e}")
-        return None    
-    
+        return None
+
+
+async def _city_name_by_id(city_id: int | None) -> str:
+    if not city_id:
+        return ""
+    try:
+        async with SessionLocal() as s:
+            res = await s.execute(
+                sql("SELECT name FROM city WHERE id = :cid LIMIT 1"),
+                {"cid": int(city_id)},
+            )
+            row = res.first()
+            return str(row[0]) if row and row[0] else ""
+    except Exception as e:
+        print(f"[events_view.py][_city_name_by_id][err] cid={city_id!r} {type(e).__name__}: {e}")
+        return ""
+
+
+async def _city_name_by_slug(slug: str) -> str:
+    return await _city_name_by_id(await _city_id_by_slug(slug))
+
+
 async def _fetch_month_marks_city(slug: str, year: int, month: int) -> set[int]:
     city_id = await _city_id_by_slug(slug)
     if not city_id:

@@ -197,9 +197,11 @@ async def vacancy_list(cb: CallbackQuery):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.bot)
 
-    # vlist:<slug>:<cat_id>
-    _, city_slug, cat_id_s = cb.data.split(":", 2)
-    cat_id = int(cat_id_s)
+    # vlist:<slug>:<cat_id>[:<offset>]
+    parts = cb.data.split(":")
+    city_slug = parts[1]
+    cat_id = int(parts[2])
+    offset = int(parts[3]) if len(parts) > 3 and parts[3].lstrip("-").isdigit() else 0
 
     # Хлебные крошки: Вакансии → Город → Категория → …
     city_name = city_slug or ""
@@ -244,7 +246,7 @@ async def vacancy_list(cb: CallbackQuery):
         )
         listings = (await s.execute(q)).scalars().all()
 
-    kb = await vacancy_listings_inline(city_slug, cat_id, listings)
+    kb = await vacancy_listings_inline(city_slug, cat_id, listings, offset=offset)
     tail = "Выберите объявление:" if listings else "Пока пусто в этой категории."
     await safe_edit_or_send(cb, f"{crumbs}\n{tail}", reply_markup=kb, parse_mode="HTML")
     await cb.answer()
@@ -269,9 +271,11 @@ async def _compat_vac_cat_redirect(cb: CallbackQuery):
 # «Мои вакансии»
 # ─────────────────────────────────────────────────────────────────────────────
 
-# RU: список вакансий текущего пользователя
-@router.callback_query(F.data == "vac:my")
-async def vac_my_listings(cb: CallbackQuery):
+MY_VACANCIES_PAGE_SIZE = 10
+
+
+# RU: список вакансий текущего пользователя (с пагинацией и маркером архива)
+async def _render_my_vacancies(cb: CallbackQuery, offset: int = 0):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.bot)
 
@@ -287,9 +291,10 @@ async def vac_my_listings(cb: CallbackQuery):
         )
         listings = (await s.execute(q)).scalars().all()
 
+    main_btn = await get_common_menu_button("main_menu")
+
     if not listings:
         rows = [[InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")]]
-        main_btn = await get_common_menu_button("main_menu")
         if main_btn:
             rows.append([main_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -298,10 +303,58 @@ async def vac_my_listings(cb: CallbackQuery):
         _dbg("vac_my_listings.empty", user_id=cb.from_user.id, count=0)
         return
 
-    kb = await my_vacancies_inline(listings)
-    await safe_edit_or_send(cb, "Ваши вакансии:", reply_markup=kb, parse_mode="HTML")
+    total = len(listings)
+    pages = max(1, (total + MY_VACANCIES_PAGE_SIZE - 1) // MY_VACANCIES_PAGE_SIZE)
+    if offset >= total:
+        offset = (pages - 1) * MY_VACANCIES_PAGE_SIZE
+    if offset < 0:
+        offset = 0
+    page = offset // MY_VACANCIES_PAGE_SIZE + 1
+
+    rows = []
+    for l in listings[offset:offset + MY_VACANCIES_PAGE_SIZE]:
+        title = (l.title or "(без заголовка)").strip()
+        price = f" — {l.price}" if getattr(l, "price", None) else ""
+        marker = "📦 " if l.status == "archived" else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{marker}{title}{price}",
+            callback_data=f"vac_view:{l.id}:::my"
+        )])
+
+    if pages > 1:
+        pager = []
+        if offset > 0:
+            pager.append(InlineKeyboardButton(
+                text="«", callback_data=f"vac_my_page:{offset - MY_VACANCIES_PAGE_SIZE}"))
+        pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if offset + MY_VACANCIES_PAGE_SIZE < total:
+            pager.append(InlineKeyboardButton(
+                text="»", callback_data=f"vac_my_page:{offset + MY_VACANCIES_PAGE_SIZE}"))
+        rows.append(pager)
+
+    rows.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+    if main_btn:
+        rows.append([main_btn])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    suffix = f" ({total})" if pages > 1 else ""
+    await safe_edit_or_send(cb, f"<b>Ваши вакансии{suffix}:</b>", reply_markup=kb, parse_mode="HTML")
     await cb.answer()
-    _dbg("vac_my_listings", user_id=cb.from_user.id, count=len(listings))
+    _dbg("vac_my_listings", user_id=cb.from_user.id, count=total, offset=offset)
+
+
+@router.callback_query(F.data == "vac:my")
+async def vac_my_listings(cb: CallbackQuery):
+    await _render_my_vacancies(cb, offset=0)
+
+
+@router.callback_query(F.data.startswith("vac_my_page:"))
+async def vac_my_page(cb: CallbackQuery):
+    try:
+        offset = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        offset = 0
+    await _render_my_vacancies(cb, offset=offset)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -791,7 +844,9 @@ async def vac_search_start(cb: CallbackQuery, state: FSMContext):
 
     # Промпт «Введите запрос…»
     msg = await cb.message.answer(
-        "🔎 Введите запрос для поиска (например: «курьер», «дизайнер»). Ищем по заголовку и описанию.",
+        "🔎 <b>Поиск вакансий</b>\n\n"
+        "Введите запрос (например: «барабанщик», «вокалист», «звукорежиссёр»). "
+        "Ищем по заголовку и описанию.",
         parse_mode="HTML",
     )
     ids_to_register = [msg.message_id]

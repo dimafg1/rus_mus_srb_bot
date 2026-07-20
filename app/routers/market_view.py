@@ -373,11 +373,12 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
     nav_markup = InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
     query_text = await get_text('market_search_query', 'ru') or \
-        "Enter your search query for listings (e.g., microphone, Yamaha, amp):"
-    nav_text = await get_text('return_to_menu', 'ru') or "Return"
+        "Введите запрос (например: «микрофон», «Yamaha», «комбик»). Ищем по заголовку и описанию."
+    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
 
     nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
-    query_msg = await cb.bot.send_message(chat_id, query_text)
+    query_msg = await cb.bot.send_message(
+        chat_id, f"🔎 <b>Поиск в Барахолке</b>\n\n{query_text}", parse_mode="HTML")
 
     last_search_query_message[chat_id] = query_msg.message_id
     last_search_menu_message[chat_id] = nav_msg.message_id

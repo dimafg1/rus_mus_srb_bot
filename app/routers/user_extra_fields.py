@@ -319,6 +319,19 @@ async def _ask_current_field(ev, state: FSMContext):
     if ftype == "video":
         rows = _controls_row()
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
+        # Показываем текущее видео (если это загруженный file_id, а не ссылка),
+        # чтобы пользователь видел, что уже есть, пока не заменил.
+        preview_ids: list[int] = []
+        if cur_val:
+            sval = str(cur_val).strip()
+            if sval and not sval.lower().startswith("http"):
+                try:
+                    pv = await bot.send_video(
+                        chat_id, sval,
+                        caption="🎬 Текущее видео (останется, если ничего не пришлёте):")
+                    preview_ids.append(pv.message_id)
+                except Exception as e:
+                    print(f"[user_extra_fields] cannot preview current video chat={chat_id}: {e}")
         msg = await send(
             f"{title}\n\n{cur_line}\n\n"
             "Отправьте <b>видео одним сообщением</b>:\n"
@@ -328,10 +341,11 @@ async def _ask_current_field(ev, state: FSMContext):
             "<i>Будет сохранён</i> <code>file_id</code> <i>для встраивания в карточку.</i>",
             reply_markup=kb, parse_mode="HTML"
         )
-        last_bot_messages[chat_id] = [msg.message_id]
-        await register_bot_messages(chat_id, [msg.message_id])
+        ids = preview_ids + [msg.message_id]
+        last_bot_messages[chat_id] = ids
+        await register_bot_messages(chat_id, ids)
         await state.set_state(UserExtraFieldStates.waiting_video)
-        print(f"[user_extra_fields] ask video chat={chat_id}, idx={idx}, key={key}, required={required}")
+        print(f"[user_extra_fields] ask video chat={chat_id}, idx={idx}, key={key}, required={required} preview={len(preview_ids)}")
         return
 
     # неизвестный тип — просто перескочим дальше

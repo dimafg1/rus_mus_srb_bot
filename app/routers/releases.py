@@ -428,6 +428,9 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
         rows.append([InlineKeyboardButton(
             text="▶️ Смотреть клип в Telegram",
             callback_data=f"rel:video:{listing.id}:{source}")])
+    # Видео-плеер (YouTube TWA) — сразу под медиа, ближе к карточке
+    if yt_btn is not None and playable:
+        rows.append([yt_btn])
     if artist is not None:
         rows.append([InlineKeyboardButton(
             text="🎤 Об исполнителе",
@@ -456,11 +459,10 @@ def _release_kb(listing, meta, tracks, *, viewer_id: int, is_admin_user: bool,
         ctl.append(InlineKeyboardButton(text="✅ Показать", callback_data=f"rel:admshow:{listing.id}"))
     if ctl:
         rows.append(ctl)
+    # «Пожаловаться» — почти в самом низу: ниже только «Назад» и «Меню»
     if playable:
         rows.append([InlineKeyboardButton(
             text="⚠️ Пожаловаться", callback_data=f"rel:report:{listing.id}")])
-    if yt_btn is not None and playable:
-        rows.append([yt_btn])
     rows.append([InlineKeyboardButton(text=back_label, callback_data=back_cb), _menu_btn()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
