@@ -67,12 +67,14 @@ async def _load_category_fields(session, cat_id: int) -> list[dict]:
 async def _get_listing(session, listing_id: int) -> Listing | None:
     return await session.get(Listing, listing_id)
 
-def _fmt_value_for_display(val):
+async def _fmt_value_for_display(val):
     """Человекочитаемый вывод значения."""
     if val is None:
         return "—"
     if isinstance(val, bool):
-        return "Да" if val else "Нет"
+        bool_yes = await get_text("admin_fields_yes", "ru") or "Да"
+        bool_no = await get_text("admin_fields_no", "ru") or "Нет"
+        return bool_yes if val else bool_no
     if isinstance(val, list):
         return html_escape(", ".join(map(str, val)))
     # Видео (file_id/ссылка) не «озвучиваем» — плеер покажем отдельно
@@ -126,8 +128,8 @@ async def _controls_row():
     back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data="edit:back")
     back_btn.callback_data = "edit:back"
     return [
-        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="edit:skip")],
-        [InlineKeyboardButton(text="✅ Завершить", callback_data="edit:finish")],
+        [InlineKeyboardButton(text=await get_text("releases_btn_skip", "ru") or "⏭ Пропустить", callback_data="edit:skip")],
+        [InlineKeyboardButton(text=await get_text("extra_field_btn_finish", "ru") or "✅ Завершить", callback_data="edit:finish")],
         [back_btn],
     ]
 async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, resume_data: str | None):
@@ -157,7 +159,7 @@ async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, re
             ))).scalar_one_or_none()
             if listing is None:
                 await state.clear()
-                msg = await send("Можно редактировать только своё объявление.")
+                msg = await send(await get_text("extra_field_err_not_owner", "ru") or "Можно редактировать только своё объявление.")
                 last_bot_messages[chat_id] = [msg.message_id]
                 await register_bot_messages(chat_id, [msg.message_id])
                 return
@@ -171,9 +173,9 @@ async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, re
     if not defs:
         await state.clear()
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад к объявлению", callback_data=resume_data or "noop")]
+            [InlineKeyboardButton(text=await get_text("market_edit_btn_back_to_listing", "ru") or "⬅️ Назад к объявлению", callback_data=resume_data or "noop")]
         ])
-        msg = await send("Для этой категории нет дополнительных полей.", reply_markup=kb)
+        msg = await send(await get_text("extra_field_no_fields", "ru") or "Для этой категории нет дополнительных полей.", reply_markup=kb)
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         print(f"[user_extra_fields] no_fields chat={chat_id}, cat_id={cat_id}")
@@ -230,27 +232,27 @@ async def _ask_current_field(ev, state: FSMContext):
                         print(f"[user_extra_fields] saved flex for listing_id={listing_id}: {json_str}")
                     else:
                         await state.clear()
-                        msg = await send("Сеанс редактирования устарел. Откройте объявление ещё раз.")
+                        msg = await send(await get_text("extra_field_session_stale", "ru") or "Сеанс редактирования устарел. Откройте объявление ещё раз.")
                         last_bot_messages[chat_id] = [msg.message_id]
                         await register_bot_messages(chat_id, [msg.message_id])
                         return
             except Exception as e:
                 print(f"[user_extra_fields] ERROR saving flex listing_id={listing_id}: {e}")
-                msg = await send("Не удалось сохранить дополнительные поля. Попробуйте ещё раз.")
+                msg = await send(await get_text("extra_field_save_failed", "ru") or "Не удалось сохранить дополнительные поля. Попробуйте ещё раз.")
                 last_bot_messages[chat_id] = [msg.message_id]
                 await register_bot_messages(chat_id, [msg.message_id])
                 return
 
         # итоговый экран
-        lines = ["<b>Дополнительные поля сохранены.</b>"]
+        lines = [await get_text("extra_field_saved_header", "ru") or "<b>Дополнительные поля сохранены.</b>"]
         for f in defs:
             key   = (str(f.get("key","")).strip().lower() or "field")
             label = f.get("label") or f.get("name") or key
             val   = vals.get(key, None)
-            lines.append(f"<b>{html_escape(str(label))}:</b> {_fmt_value_for_display(val)}")
+            lines.append(f"<b>{html_escape(str(label))}:</b> {await _fmt_value_for_display(val)}")
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад к объявлению", callback_data=resume or "noop")]
+            [InlineKeyboardButton(text=await get_text("market_edit_btn_back_to_listing", "ru") or "⬅️ Назад к объявлению", callback_data=resume or "noop")]
         ])
         msg = await send("\n\n".join(lines), reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
@@ -262,7 +264,7 @@ async def _ask_current_field(ev, state: FSMContext):
     # Готовим поле
     f = defs[idx] if isinstance(defs[idx], dict) else {}
     ftype    = str(f.get("type", "text"))
-    label    = f.get("label") or f.get("name") or "Поле"
+    label    = f.get("label") or f.get("name") or (await get_text("vac_add_flex_default_label", "ru") or "Поле")
     key      = (str(f.get("key","")).strip().lower() or "field")
     required = bool(f.get("required", False))
     options  = f.get("options") if isinstance(f.get("options"), list) else []
@@ -272,15 +274,19 @@ async def _ask_current_field(ev, state: FSMContext):
 
     # Текущее значение — вытянем из listing.flex (если есть)
     cur_val = await _current_value_from_listing(state, key)
-    cur_line = f"Текущее значение: <code>{_fmt_value_for_display(cur_val)}</code>"
+    cur_val_display = await _fmt_value_for_display(cur_val)
+    cur_line_tmpl = await get_text("extra_field_current_value_tmpl", "ru") or "Текущее значение: <code>{value}</code>"
+    cur_line = cur_line_tmpl.format(value=cur_val_display)
 
     controls = await _controls_row()
 
     # text / number
     if ftype in ("text", "number"):
         kb = InlineKeyboardMarkup(inline_keyboard=controls)
+        suffix = (await get_text("extra_field_ask_value_suffix_number", "ru") or " (число)") if ftype == "number" else ""
+        ask_tmpl = await get_text("extra_field_ask_value_tmpl", "ru") or "{title}\n\n{cur_line}\n\nВведите значение{suffix}:"
         msg = await send(
-            f"{title}\n\n{cur_line}\n\nВведите значение" + (" (число)" if ftype == "number" else "") + ":",
+            ask_tmpl.format(title=title, cur_line=cur_line, suffix=suffix),
             reply_markup=kb, parse_mode="HTML"
         )
         last_bot_messages[chat_id] = [msg.message_id]
@@ -292,12 +298,13 @@ async def _ask_current_field(ev, state: FSMContext):
     # checkbox
     if ftype == "checkbox":
         rows = [[
-            InlineKeyboardButton(text="✅ Да",  callback_data="extra:checkbox:1"),
-            InlineKeyboardButton(text="❌ Нет", callback_data="extra:checkbox:0"),
+            InlineKeyboardButton(text=await get_text("vac_add_checkbox_yes", "ru") or "✅ Да", callback_data="extra:checkbox:1"),
+            InlineKeyboardButton(text=await get_text("admin_panel_btn_no", "ru") or "❌ Нет", callback_data="extra:checkbox:0"),
         ]]
         rows += controls
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
-        msg = await send(f"{title}\n\n{cur_line}\n\nВыберите вариант:", reply_markup=kb, parse_mode="HTML")
+        checkbox_tmpl = await get_text("extra_field_checkbox_prompt", "ru") or "{title}\n\n{cur_line}\n\nВыберите вариант:"
+        msg = await send(checkbox_tmpl.format(title=title, cur_line=cur_line), reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         await state.set_state(UserExtraFieldStates.waiting_choice)
@@ -311,13 +318,14 @@ async def _ask_current_field(ev, state: FSMContext):
         rows = [buttons[i:i+row_len] for i in range(0, len(buttons), row_len)] if buttons else []
         rows += controls
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
-        msg = await send(f"{title}\n\n{cur_line}\n\nВыберите один из вариантов:", reply_markup=kb, parse_mode="HTML")
+        select_tmpl = await get_text("extra_field_select_prompt", "ru") or "{title}\n\n{cur_line}\n\nВыберите один из вариантов:"
+        msg = await send(select_tmpl.format(title=title, cur_line=cur_line), reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         await state.set_state(UserExtraFieldStates.waiting_choice)
         print(f"[user_extra_fields] ask select chat={chat_id}, idx={idx}, key={key}, options={len(options)}")
         return
-    
+
     # video
     if ftype == "video":
         rows = await _controls_row()
@@ -331,17 +339,16 @@ async def _ask_current_field(ev, state: FSMContext):
                 try:
                     pv = await bot.send_video(
                         chat_id, sval,
-                        caption="🎬 Текущее видео (останется, если ничего не пришлёте):")
+                        caption=await get_text("extra_field_video_current_caption", "ru") or "🎬 Текущее видео (останется, если ничего не пришлёте):")
                     preview_ids.append(pv.message_id)
                 except Exception as e:
                     print(f"[user_extra_fields] cannot preview current video chat={chat_id}: {e}")
+        video_tmpl = (
+            await get_text("extra_field_video_instructions_tmpl", "ru")
+            or "{title}\n\n{cur_line}\n\nОтправьте <b>видео одним сообщением</b>:\n• как «Видео» (желательно), или\n• как «Файл» с видео-типом, или\n• <b>ссылку на YouTube</b> — мы подготовим и встроим в карточку.\n\n<i>Будет сохранён</i> <code>file_id</code> <i>для встраивания в карточку.</i>"
+        )
         msg = await send(
-            f"{title}\n\n{cur_line}\n\n"
-            "Отправьте <b>видео одним сообщением</b>:\n"
-            "• как «Видео» (желательно), или\n"
-            "• как «Файл» с видео-типом, или\n"
-            "• <b>ссылку на YouTube</b> — мы подготовим и встроим в карточку.\n\n"
-            "<i>Будет сохранён</i> <code>file_id</code> <i>для встраивания в карточку.</i>",
+            video_tmpl.format(title=title, cur_line=cur_line),
             reply_markup=kb, parse_mode="HTML"
         )
         ids = preview_ids + [msg.message_id]

@@ -510,9 +510,24 @@ path = await render_category_path(session, category_id)
      по возрастанию — актуален на 2026-07-20, `for f in app/routers/*.py;
      do echo "$(grep -cE ...) $f"; done | sort -n`):
      `partner_view.py`(3) — **готово**, код `partner_card_unavailable`.
-     `user_extra_fields.py`(4) — **готово**, 4 новых кода
+     `user_extra_fields.py`(4) — **готово (счётчик 4 занижен: regex не
+     ловил вызовы через переменную `send()`)**. Изначально — 4 кода
      `extra_field_need_number`/`extra_field_not_video_file`/
      `extra_field_not_video_link`/`extra_field_need_video`.
+     **Добито (2026-07-20, найдено при аудите пропусков после «финиша»
+     плана):** ещё 13 новых кодов `extra_field_*` (`_btn_finish`,
+     `_err_not_owner`, `_no_fields`, `_session_stale`, `_save_failed`,
+     `_saved_header`, `_current_value_tmpl`, `_ask_value_suffix_number`,
+     `_ask_value_tmpl`, `_checkbox_prompt`, `_select_prompt`,
+     `_video_current_caption`, `_video_instructions_tmpl`), плюс
+     переиспользованы `admin_fields_yes`/`_no` (Да/Нет для bool-полей и
+     чекбоксов), `releases_btn_skip`, `market_edit_btn_back_to_listing`,
+     `vac_add_flex_default_label`, `vac_add_checkbox_yes`/
+     `admin_panel_btn_no`. `_fmt_value_for_display()` стала `async`
+     (была `def`) — оба вызова обёрнуты в `await`. Фолбэк `⬅️ Назад` в
+     `_controls_row()` НЕ трогали — это тот же установленный паттерн
+     фолбэка для `get_common_menu_button('back')`, что и в остальных
+     файлах (кнопка обязательна по правилу навигации).
      `events_admin.py`(16) — **готово**, плюс попутно найден и закрыт
      ещё один крупный кросс-файловый дубль, упущенный в шаге 2: «Нет
      доступа» (БЕЗ точки — не путать с «Нет доступа.» из шага 2) —
