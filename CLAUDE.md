@@ -267,7 +267,7 @@ path = await render_category_path(session, category_id)
      риск рассинхронизации не оправдан для owner-only экрана).
      `app/routers/admin_fields.py` (8 мест). **Осталось** (файл: число
      мест с `text="⬅️ Назад"`):
-     `admin_fields.py`(8), `releases.py`(9), `vacancy_add.py`(10),
+     `releases.py`(9), `vacancy_add.py`(10),
      `market_edit_overview.py`(13), `services_edit_overview.py`(13),
      `services_view.py`(13). (Отдельный вариант «◀️ Назад» в
      `admin_panel.py`/`admin_analytics.py`/`events_view.py`/`events_add.py` —
