@@ -566,11 +566,25 @@ path = await render_category_path(session, category_id)
      `market_edit_saved`, `market_edit_return_to_listing`,
      `market_edit_title_empty` (тоже задело 2-е место в
      `market_edit_overview.py`).
-     `vacancy_edit_overview.py`(27) — **готово**: переиспользованы
-     `err_no_rights`/`err_field_404` (готовые из старого набора),
-     `services_edit_invalid_id`/`market_edit_title_empty` (уже заведены
-     на этом проходе), плюс 3 новых: `err_session_lost_vacancy`,
+     `vacancy_edit_overview.py`(27) — **готово (toast/алерты)**:
+     переиспользованы `err_no_rights`/`err_field_404` (готовые из
+     старого набора), `services_edit_invalid_id`/`market_edit_title_empty`
+     (уже заведены на этом проходе), плюс 3 новых: `err_session_lost_vacancy`,
      `vacancy_edit_price_empty`, `vacancy_edit_field_unavailable`.
+     **Добито (2026-07-20, найдено при аудите пропусков после «финиша»
+     плана):** обзор, кнопки и промпты полей — 9 новых кодов
+     `vacancy_edit_*` (`_section_label`, `_field_title_line_tmpl`/
+     `_descr_line_tmpl`/`_price_line_tmpl`, `_btn_price`, `_title_prompt`/
+     `_descr_prompt`/`_price_prompt`, `_flex_prompt_tmpl`), плюс широкое
+     переиспользование из `services_edit_overview.py`/`market_edit_overview.py`
+     (структурно зеркальные файлы): `services_edit_overview_title`,
+     `services_edit_overview_city_line_tmpl`/`_category_line_tmpl`,
+     `services_edit_btn_title`/`_descr`/`_field_tmpl`/`_cancel_return`,
+     `market_edit_btn_cancel`/`_back_to_listing`. `_build_overview_text()`
+     стала `async` (была `def`) — вызов в `_render_overview()` и в тестах
+     обёрнут в `await` (`tests/test_listing_form_regressions.py` —
+     `ListingFormHelperTests` переведён на `IsolatedAsyncioTestCase`;
+     `tests/test_audit_package_fixes.py` — mock заменён на `AsyncMock`).
      `artists.py`(29) — **готово**, 10 новых кодов (`music_*` — общие
      для музыкального слоя, т.к. 5 из 10 фраз дублировались и в
      `releases.py`, подключены сразу в обоих: `music_section_unavailable`,

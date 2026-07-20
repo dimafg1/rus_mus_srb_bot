@@ -99,7 +99,7 @@ class FakeQueuedSession:
         return False
 
 
-class ListingFormHelperTests(unittest.TestCase):
+class ListingFormHelperTests(unittest.IsolatedAsyncioTestCase):
     def test_extra_flex_parser_accepts_only_objects(self):
         self.assertEqual(user_extra_fields._flex_dict('{"skill": "Python"}'), {"skill": "Python"})
         self.assertEqual(user_extra_fields._flex_dict('["not", "an", "object"]'), {})
@@ -120,8 +120,8 @@ class ListingFormHelperTests(unittest.TestCase):
         )
         self.assertTrue(services_edit_overview._allow_extra_for_category(category))
 
-    def test_vacancy_edit_overview_escapes_user_and_category_text(self):
-        text = vacancy_edit_overview._build_overview_text(
+    async def test_vacancy_edit_overview_escapes_user_and_category_text(self):
+        text = await vacancy_edit_overview._build_overview_text(
             SimpleNamespace(title="<b>title</b>", descr="A&B", price="<100>"),
             SimpleNamespace(name="Novi <Sad>"),
             SimpleNamespace(name="<Category>"),

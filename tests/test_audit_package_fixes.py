@@ -178,7 +178,7 @@ class ClosedVacancyBackRouteTests(unittest.IsolatedAsyncioTestCase):
             patch.object(vacancy_edit_overview, "_load_listing_bundle",
                          AsyncMock(return_value=bundle)),
             patch.object(vacancy_edit_overview, "_build_overview_text",
-                         return_value="text"),
+                         AsyncMock(return_value="text")),
             patch.object(vacancy_edit_overview, "_build_overview_kb",
                          AsyncMock(return_value=None)) as kb,
             patch.object(vacancy_edit_overview, "register_bot_messages", AsyncMock()),

@@ -150,7 +150,7 @@ def _cat_chain(cat: Category | None) -> str:
     names.reverse()
     return " › ".join(n for n in names if n)
 
-def _build_overview_text(
+async def _build_overview_text(
     l: Listing,
     city: City | None,
     cat: Category | None,
@@ -160,20 +160,25 @@ def _build_overview_text(
 ) -> str:
     """RU: Сформировать текст обзора с отступами между секциями."""
     lines = []
-    lines.append("🛠️ <b>Редактирование объявления</b>")
-    lines.append("Раздел: Вакансии")
+    lines.append(await get_text("services_edit_overview_title", "ru") or "🛠️ <b>Редактирование объявления</b>")
+    lines.append(await get_text("vacancy_edit_section_label", "ru") or "Раздел: Вакансии")
     if city:
-        lines.append(f"Город: {html_escape(city.name or '')}")
+        city_tmpl = await get_text("services_edit_overview_city_line_tmpl", "ru") or "Город: {name}"
+        lines.append(city_tmpl.format(name=html_escape(city.name or '')))
     lines.append("")  # пустая строка между городом и категорией
     if cat:
-        lines.append(f"Категория: {html_escape(cat_path or cat.name or '')}")
+        cat_tmpl = await get_text("services_edit_overview_category_line_tmpl", "ru") or "Категория: {name}"
+        lines.append(cat_tmpl.format(name=html_escape(cat_path or cat.name or '')))
     lines.append("")
 
-    lines.append(f"<b>Заголовок:</b> {_fmt(l.title)}")
+    title_tmpl = await get_text("vacancy_edit_field_title_line_tmpl", "ru") or "<b>Заголовок:</b> {value}"
+    lines.append(title_tmpl.format(value=_fmt(l.title)))
     lines.append("")
-    lines.append(f"<b>Описание:</b> {_fmt(getattr(l, 'descr', None))}")
+    descr_tmpl = await get_text("vacancy_edit_field_descr_line_tmpl", "ru") or "<b>Описание:</b> {value}"
+    lines.append(descr_tmpl.format(value=_fmt(getattr(l, 'descr', None))))
     lines.append("")
-    lines.append(f"<b>Оплата:</b> {_fmt(l.price)}")
+    price_tmpl = await get_text("vacancy_edit_field_price_line_tmpl", "ru") or "<b>Оплата:</b> {value}"
+    lines.append(price_tmpl.format(value=_fmt(l.price)))
     lines.append("")
 
     # Дополнительные поля
@@ -211,20 +216,21 @@ def _back_cb_from_ctx(listing_id: int, data: dict) -> str:
 async def _build_overview_kb(listing_id: int, defs: list[dict], back_cb: str | None = None) -> InlineKeyboardMarkup:
     """RU: Клавиатура обзора: правка основных и flex-полей, «Назад к объявлению»."""
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="✏️ Править заголовок", callback_data=f"vef:main:title:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Править описание",  callback_data=f"vef:main:descr:{listing_id}")],
-        [InlineKeyboardButton(text="✏️ Править оплату",  callback_data=f"vef:main:price:{listing_id}")],
+        [InlineKeyboardButton(text=await get_text("services_edit_btn_title", "ru") or "✏️ Править заголовок", callback_data=f"vef:main:title:{listing_id}")],
+        [InlineKeyboardButton(text=await get_text("services_edit_btn_descr", "ru") or "✏️ Править описание", callback_data=f"vef:main:descr:{listing_id}")],
+        [InlineKeyboardButton(text=await get_text("vacancy_edit_btn_price", "ru") or "✏️ Править оплату", callback_data=f"vef:main:price:{listing_id}")],
     ]
+    field_btn_tmpl = await get_text("services_edit_btn_field_tmpl", "ru") or "✏️ Править: {label}"
     for fdef in (defs or []):
         ftype = str(fdef.get("type", "text")).strip().lower()
         if ftype.startswith("__"):
             continue
         key   = (str(fdef.get("key", "")).strip().lower() or "field")
         label = fdef.get("label") or fdef.get("name") or key
-        rows.append([InlineKeyboardButton(text=f"✏️ Править: {label}", callback_data=f"vef:extra:{key}:{listing_id}")])
+        rows.append([InlineKeyboardButton(text=field_btn_tmpl.format(label=label), callback_data=f"vef:extra:{key}:{listing_id}")])
 
     rows.append([InlineKeyboardButton(
-        text="⬅️ Назад к объявлению",
+        text=await get_text("market_edit_btn_back_to_listing", "ru") or "⬅️ Назад к объявлению",
         callback_data=back_cb or f"vac_view:{listing_id}:::my",
     )])
     main_btn = await get_common_menu_button('main_menu')
@@ -247,7 +253,7 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int, back_cb: st
         back_cb = f"vac_view:{l.id}:::my"
 
     cat_path = await _category_chain_by_db(cat) if cat else None
-    text = _build_overview_text(l, city, cat, defs, flex_vals, cat_path)
+    text = await _build_overview_text(l, city, cat, defs, flex_vals, cat_path)
 
     kb = await _build_overview_kb(l.id, defs, back_cb=back_cb)
     msg = await send(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
@@ -342,13 +348,13 @@ async def vef_main_title_start(cb: CallbackQuery, state: FSMContext):
     current = html_escape((l.title or "—") if l else "—")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❎ Отменить", callback_data=f"vacancy_edit_overview:{listing_id}")]
+        [InlineKeyboardButton(text=await get_text("market_edit_btn_cancel", "ru") or "❎ Отменить", callback_data=f"vacancy_edit_overview:{listing_id}")]
     ])
-    txt = (
-        "🖊 <b>Заголовок</b>\n"
-        f"Текущее значение:\n<code>{current}</code>\n\n"
-        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
+    txt_tmpl = (
+        await get_text("vacancy_edit_title_prompt", "ru")
+        or "🖊 <b>Заголовок</b>\nТекущее значение:\n<code>{current}</code>\n\nОтправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     )
+    txt = txt_tmpl.format(current=current)
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -412,13 +418,13 @@ async def vef_main_descr_start(cb: CallbackQuery, state: FSMContext):
     current = html_escape((getattr(l, "descr", None) or "—") if l else "—")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❎ Отменить", callback_data=f"vacancy_edit_overview:{listing_id}")]
+        [InlineKeyboardButton(text=await get_text("market_edit_btn_cancel", "ru") or "❎ Отменить", callback_data=f"vacancy_edit_overview:{listing_id}")]
     ])
-    txt = (
-        "📄 <b>Описание</b>\n"
-        f"Текущее значение:\n<code>{current}</code>\n\n"
-        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
+    txt_tmpl = (
+        await get_text("vacancy_edit_descr_prompt", "ru")
+        or "📄 <b>Описание</b>\nТекущее значение:\n<code>{current}</code>\n\nОтправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     )
+    txt = txt_tmpl.format(current=current)
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -479,13 +485,13 @@ async def vef_main_price_start(cb: CallbackQuery, state: FSMContext):
     current = html_escape((l.price or "—") if l else "—")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❎ Отменить", callback_data=f"vacancy_edit_overview:{listing_id}")]
+        [InlineKeyboardButton(text=await get_text("market_edit_btn_cancel", "ru") or "❎ Отменить", callback_data=f"vacancy_edit_overview:{listing_id}")]
     ])
-    txt = (
-        "💰 <b>Оплата</b>\n"
-        f"Текущее значение:\n<code>{current}</code>\n\n"
-        "Отправьте новый текст (или скопируйте текущее ↑ и отредактируйте):"
+    txt_tmpl = (
+        await get_text("vacancy_edit_price_prompt", "ru")
+        or "💰 <b>Оплата</b>\nТекущее значение:\n<code>{current}</code>\n\nОтправьте новый текст (или скопируйте текущее ↑ и отредактируйте):"
     )
+    txt = txt_tmpl.format(current=current)
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -569,12 +575,15 @@ async def vef_extra_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(_FlexState.waiting)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Отменить и вернуться", callback_data=f"vacancy_edit_overview:{listing_id}")],
+        [InlineKeyboardButton(text=await get_text("services_edit_btn_cancel_return", "ru") or "⬅️ Отменить и вернуться", callback_data=f"vacancy_edit_overview:{listing_id}")],
     ])
-    txt = (
-        f"Поле: <b>{html_escape(str(label))}</b>\n"
-        f"Текущее: {html_escape(str(json.dumps(current, ensure_ascii=False) if isinstance(current, (list,dict)) else (current or '—')))}\n\n"
-        f"Отправьте новое значение одним сообщением."
+    flex_prompt_tmpl = (
+        await get_text("vacancy_edit_flex_prompt_tmpl", "ru")
+        or "Поле: <b>{label}</b>\nТекущее: {current}\n\nОтправьте новое значение одним сообщением."
+    )
+    txt = flex_prompt_tmpl.format(
+        label=html_escape(str(label)),
+        current=html_escape(str(json.dumps(current, ensure_ascii=False) if isinstance(current, (list, dict)) else (current or '—'))),
     )
     msg = await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     last_bot_messages[chat_id] = [msg.message_id]
