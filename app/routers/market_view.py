@@ -191,9 +191,10 @@ async def market_city(cb: CallbackQuery):
     except Exception:
         pass
 
+    city_header_tmpl = await get_text("market_view_city_header_tmpl", "ru") or "<b>Барахолка → {city}</b>"
     msg = await cb.bot.send_message(
         chat_id,
-        f"<b>Барахолка → {escape_html(city.name)}</b>",
+        city_header_tmpl.format(city=escape_html(city.name)),
         reply_markup=markup,
         parse_mode="HTML"
     )
@@ -260,7 +261,7 @@ async def market_list(cb: CallbackQuery):
                 .order_by(Listing.created_at.desc())
             )).scalars().all()
         if listings:
-            keyboard.append([InlineKeyboardButton(text="— Объявления —", callback_data="stub")])
+            keyboard.append([InlineKeyboardButton(text=(await get_text("market_view_listings_divider", "ru") or "— Объявления —"), callback_data="stub")])
     else:
         # RU: Подтянуть объявления по базовой И доп. категориям (слоты 1/2)
         async with SessionLocal() as s:
@@ -313,11 +314,15 @@ async def market_list(cb: CallbackQuery):
         keyboard.append([main_menu_btn])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    city_cat_header_tmpl = await get_text("market_view_city_cat_header_tmpl", "ru") or "<b>Барахолка → {city} → {category}</b>"
+    choose_subcat_or_listing = await get_text("market_view_choose_subcat_or_listing", "ru") or "Выберите подкатегорию или объявление:"
+    choose_subcat = await get_text("market_view_choose_subcat", "ru") or "Выберите подкатегорию:"
+    choose_listing = await get_text("market_view_choose_listing", "ru") or "Выберите объявление:"
     msg = await cb.bot.send_message(
         chat_id,
-        f"<b>Барахолка → {escape_html(city.name)} → {escape_html(cat.name)}</b>\n\n" +
-        ("Выберите подкатегорию или объявление:" if children and listings else
-         "Выберите подкатегорию:" if children else "Выберите объявление:"),
+        city_cat_header_tmpl.format(city=escape_html(city.name), category=escape_html(cat.name)) + "\n\n" +
+        (choose_subcat_or_listing if children and listings else
+         choose_subcat if children else choose_listing),
         reply_markup=markup,
         parse_mode="HTML"
     )
@@ -369,9 +374,10 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
         "Введите запрос (например: «микрофон», «Yamaha», «комбик»). Ищем по заголовку и описанию."
     nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
 
+    search_header_tmpl = await get_text("market_view_search_header_tmpl", "ru") or "🔎 <b>Поиск в Барахолке</b>\n\n{query_text}"
     nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
     query_msg = await cb.bot.send_message(
-        chat_id, f"🔎 <b>Поиск в Барахолке</b>\n\n{query_text}", parse_mode="HTML")
+        chat_id, search_header_tmpl.format(query_text=query_text), parse_mode="HTML")
 
     last_search_query_message[chat_id] = query_msg.message_id
     last_search_menu_message[chat_id] = nav_msg.message_id
@@ -393,7 +399,7 @@ async def market_search_start(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "back_to_market_search")
 async def back_to_market_search(cb: CallbackQuery, state: FSMContext):
-    msg = await cb.message.answer("Введите новый поисковый запрос по объявлениям Барахолки:")
+    msg = await cb.message.answer(await get_text("market_view_ask_new_query_market", "ru") or "Введите новый поисковый запрос по объявлениям Барахолки:")
     last_search_query_message[cb.message.chat.id] = msg.message_id
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await state.set_state(MarketSearch.waiting_for_query)
@@ -414,7 +420,7 @@ async def market_search_back(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     last_result_ids = data.get("last_search_results", [])
     if not last_result_ids:
-        await cb.message.answer("Результаты поиска не найдены. Начните новый поиск.")
+        await cb.message.answer(await get_text("market_view_no_results_return", "ru") or "Результаты поиска не найдены. Начните новый поиск.")
         await state.clear()
         return
 
@@ -435,7 +441,7 @@ async def market_search_back(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "market_search_new")
 async def market_search_new(cb: CallbackQuery, state: FSMContext):
-    msg = await safe_edit_or_send(cb, "Введите новый поисковый запрос:")
+    msg = await safe_edit_or_send(cb, await get_text("market_view_ask_new_query_short", "ru") or "Введите новый поисковый запрос:")
     last_search_query_message[cb.message.chat.id] = msg.message_id
     await state.set_state(MarketSearch.waiting_for_query)
     await cb.answer()
@@ -489,8 +495,7 @@ async def back_to_search_results(cb: CallbackQuery, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
         msg = await cb.message.answer(
-            "В результатах поиска не осталось активных объявлений. "
-            "Начните новый поиск или вернитесь в меню Барахолки.",
+            await get_text("market_view_no_active_left_tmpl", "ru") or "В результатах поиска не осталось активных объявлений. Начните новый поиск или вернитесь в меню Барахолки.",
             reply_markup=kb
         )
         last_search_menu_message[chat_id] = msg.message_id
@@ -613,8 +618,7 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
         msg = await cb.message.answer(
-            "Результаты предыдущего поиска недоступны. "
-            "Начните новый поиск или вернитесь в меню Барахолки.",
+            await get_text("market_view_prev_results_unavailable", "ru") or "Результаты предыдущего поиска недоступны. Начните новый поиск или вернитесь в меню Барахолки.",
             reply_markup=kb
         )
         last_search_menu_message[chat_id] = msg.message_id
@@ -653,8 +657,7 @@ async def back_to_search_results_any(cb: CallbackQuery, state: FSMContext):
             buttons.append([to_market_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         msg = await cb.message.answer(
-            "Похоже, объявления из предыдущего поиска были удалены. "
-            "Начните новый поиск или вернитесь в меню Барахолки.",
+            await get_text("market_view_prev_results_deleted", "ru") or "Похоже, объявления из предыдущего поиска были удалены. Начните новый поиск или вернитесь в меню Барахолки.",
             reply_markup=kb
         )
         last_search_menu_message[chat_id] = msg.message_id
@@ -759,7 +762,7 @@ async def market_menu_back(cb: CallbackQuery, state: FSMContext):
         print(f"[market_view.py] {inspect.currentframe().f_code.co_name} | state.clear() skipped: {e}")
 
     # Возврат в меню Барахолки
-    msg = await cb.message.answer("💸 Барахолка – выберите действие:", reply_markup=await market_inline())
+    msg = await cb.message.answer(await get_text("market_view_menu_title", "ru") or "💸 Барахолка – выберите действие:", reply_markup=await market_inline())
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
 
@@ -819,7 +822,7 @@ async def _render_my_listings(cb: CallbackQuery, offset: int = 0):
 
         markup = InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
 
-        await safe_edit_or_send(cb, "У вас пока нет опубликованных объявлений.", markup)
+        await safe_edit_or_send(cb, await get_text("market_view_my_listings_empty", "ru") or "У вас пока нет опубликованных объявлений.", markup)
         await cb.answer()
         return
 
@@ -860,7 +863,8 @@ async def _render_my_listings(cb: CallbackQuery, offset: int = 0):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     suffix = f" ({total})" if pages > 1 else ""
-    await safe_edit_or_send(cb, f"<b>{header}{suffix}:</b>\nВыберите для просмотра или управления.", markup)
+    my_listings_choose_tmpl = await get_text("market_view_my_listings_choose_tmpl", "ru") or "<b>{header}{suffix}:</b>\nВыберите для просмотра или управления."
+    await safe_edit_or_send(cb, my_listings_choose_tmpl.format(header=header, suffix=suffix), markup)
     await cb.answer()
     print(f"FUNC: _render_my_listings | chat_id={chat_id} user_id={user_id} offset={offset} total={total}")
 
@@ -956,7 +960,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         listing = (await s.execute(stmt)).scalar_one_or_none()
 
     if not listing or (from_my and listing.owner_id != user_id):
-        await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+        await cb.answer(await get_text("market_view_listing_gone", "ru") or "Объявление недоступно или перенесено в архив.", show_alert=True)
         return
 
     # Определяем категорию, из которой открыта карточка, для заголовка.
@@ -974,7 +978,8 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
 
     async with SessionLocal() as s:
         category_path = await render_category_path(s, current_category_id, root_id=30)
-    category_line = f"Категория: <b>Барахолка → {category_path}</b>" if category_path else "Категория: <b>Барахолка</b>"
+    category_path_tmpl = await get_text("market_view_card_category_path_tmpl", "ru") or "Категория: <b>Барахолка → {path}</b>"
+    category_line = category_path_tmpl.format(path=category_path) if category_path else (await get_text("market_view_card_category_root", "ru") or "Категория: <b>Барахолка</b>")
 
     # Для callback listing:... источник берём только из самого маршрута:
     # либо "my", либо "catalog". Поиск сюда не должен подмешиваться.
@@ -1064,7 +1069,8 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         caption_parts.append(flex_block)
 
     if video_url:
-        caption_parts.append(f"Видео: {escape_html(video_url)}")
+        video_line_tmpl = await get_text("market_view_video_line_tmpl", "ru") or "Видео: {url}"
+        caption_parts.append(video_line_tmpl.format(url=escape_html(video_url)))
 
     # Контакты
     contact_block = await render_contact(listing, lang="ru")
@@ -1074,7 +1080,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
     caption = "\n\n".join(caption_parts)
 
     is_owner = listing.owner_id == cb.from_user.id
-    management_text = "Контакты/Управление:"
+    management_text = await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:"
     if is_owner:
         left_line = days_left_text(listing)
         if left_line:
@@ -1086,7 +1092,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
     if is_owner:
         edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
         edit_btn = InlineKeyboardButton(
-            text=edit_btn.text if edit_btn else "✏️ Редактировать все поля",
+            text=edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля"),
             callback_data=f"edit_listing_overview:{listing.id}:{city_slug}:{cat_slug}:{'my' if from_my else 'catalog'}"
         )
         buttons.append([edit_btn])
@@ -1095,7 +1101,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         if is_active(listing):
             buttons.append([
                 InlineKeyboardButton(
-                    text="📦 Закрыть (в архив)",
+                    text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
                     callback_data=f"market_close:{listing.id}:{city_slug}:{cat_slug}:{owner_source}"
                 )
             ])
@@ -1108,7 +1114,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         if should_show_extend_button(listing):
             buttons.append([
                 InlineKeyboardButton(
-                    text="🔄 Продлить на 30 дней",
+                    text=(await get_text("vacancy_btn_extend", "ru") or "🔄 Продлить на 30 дней"),
                     callback_data=f"market_extend:{listing.id}:{city_slug}:{cat_slug}:{owner_source}"
                 )
             ])
@@ -1130,7 +1136,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
     elif came_from_search:
         back_btn = await get_common_menu_button('btn_back_search', lang='ru')
         back_btn = InlineKeyboardButton(text=back_btn.text, callback_data="market_search_results") if back_btn \
-            else InlineKeyboardButton(text="⬅️ Назад к поиску", callback_data="market_search_results")
+            else InlineKeyboardButton(text=(await get_text("market_view_btn_back_to_search", "ru") or "⬅️ Назад к поиску"), callback_data="market_search_results")
         buttons.append([back_btn])
     else:
         back_btn = await get_common_menu_button('btn_back_listings', lang='ru')
@@ -1152,7 +1158,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
         try:
             twa_url = f"{WEBAPP_BASE}/media/video_yt.html?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing.id}"
             video_only_markup = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="▶️ Смотреть видео", web_app=WebAppInfo(url=twa_url))]]
+                inline_keyboard=[[InlineKeyboardButton(text=(await get_text("btn_watch_video", "ru") or "▶️ Смотреть видео"), web_app=WebAppInfo(url=twa_url))]]
             )
         except Exception as e:
             print(f"[market_view.py] show_listing_details | WATCH_BTN_ERROR {e}")
@@ -1308,7 +1314,7 @@ async def show_listing_details(cb: CallbackQuery, state: FSMContext):
 async def market_extend_listing(cb: CallbackQuery):
     parts = cb.data.split(":", 4)
     if len(parts) < 5:
-        await cb.answer("Ошибка данных продления.", show_alert=True)
+        await cb.answer(await get_text("vacancy_extend_data_error", "ru") or "Ошибка данных продления.", show_alert=True)
         return
 
     _, listing_id_raw, city_slug, cat_slug, source = parts
@@ -1316,7 +1322,7 @@ async def market_extend_listing(cb: CallbackQuery):
     try:
         listing_id = int(listing_id_raw)
     except ValueError:
-        await cb.answer("Неверный идентификатор объявления.", show_alert=True)
+        await cb.answer(await get_text("market_view_invalid_listing_id", "ru") or "Неверный идентификатор объявления.", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -1328,14 +1334,14 @@ async def market_extend_listing(cb: CallbackQuery):
             return
 
         if listing.owner_id != cb.from_user.id:
-            await cb.answer("Продлить может только автор объявления.", show_alert=True)
+            await cb.answer(await get_text("market_view_extend_owner_only", "ru") or "Продлить может только автор объявления.", show_alert=True)
             return
 
         if not should_show_extend_button(listing):
             # Либо снято с публикации (admin_removed/unpublished), либо до
             # истечения ещё далеко — старый callback не должен накручивать срок.
             await cb.answer(
-                "Продление сейчас недоступно. Кнопка появится за 5 дней до истечения срока.",
+                await get_text("vacancy_extend_unavailable", "ru") or "Продление сейчас недоступно. Кнопка появится за 5 дней до истечения срока.",
                 show_alert=True,
             )
             return
@@ -1348,7 +1354,7 @@ async def market_extend_listing(cb: CallbackQuery):
     await log_event("listing_extended", user_id=cb.from_user.id,
                     section="market", entity_type="listing", entity_id=listing.id)
 
-    management_text = "Контакты/Управление:"
+    management_text = await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:"
     left_line = days_left_text(listing)
     if left_line:
         management_text += f"\n{left_line}"
@@ -1358,7 +1364,7 @@ async def market_extend_listing(cb: CallbackQuery):
     edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
     buttons.append([
         InlineKeyboardButton(
-            text=edit_btn.text if edit_btn else "✏️ Редактировать все поля",
+            text=edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля"),
             callback_data=f"edit_listing_overview:{listing.id}:{city_slug}:{cat_slug}:{source}"
         )
     ])
@@ -1366,7 +1372,7 @@ async def market_extend_listing(cb: CallbackQuery):
     if is_active(listing):
         buttons.append([
             InlineKeyboardButton(
-                text="📦 Закрыть (в архив)",
+                text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
                 callback_data=f"market_close:{listing.id}:{city_slug}:{cat_slug}:{source}"
             )
         ])
@@ -1382,7 +1388,7 @@ async def market_extend_listing(cb: CallbackQuery):
     if should_show_extend_button(listing):
         buttons.append([
             InlineKeyboardButton(
-                text="🔄 Продлить на 30 дней",
+                text=(await get_text("vacancy_btn_extend", "ru") or "🔄 Продлить на 30 дней"),
                 callback_data=f"market_extend:{listing.id}:{city_slug}:{cat_slug}:{source}"
             )
         ])
@@ -1399,7 +1405,7 @@ async def market_extend_listing(cb: CallbackQuery):
         back_btn = await get_common_menu_button('btn_back_search', lang='ru')
         buttons.append([
             InlineKeyboardButton(
-                text=back_btn.text if back_btn else "⬅️ Назад к поиску",
+                text=back_btn.text if back_btn else (await get_text("market_view_btn_back_to_search", "ru") or "⬅️ Назад к поиску"),
                 callback_data="market_search_results"
             )
         ])
@@ -1429,7 +1435,7 @@ async def market_extend_listing(cb: CallbackQuery):
         my_listing_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
         await register_bot_messages(cb.message.chat.id, [msg.message_id])
 
-    await cb.answer("Объявление продлено на 30 дней.")
+    await cb.answer(await get_text("market_view_extended", "ru") or "Объявление продлено на 30 дней.")
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -1444,7 +1450,7 @@ async def market_extend_listing(cb: CallbackQuery):
 async def market_close_listing(cb: CallbackQuery):
     parts = cb.data.split(":", 4)
     if len(parts) < 5:
-        await cb.answer("Ошибка данных закрытия.", show_alert=True)
+        await cb.answer(await get_text("vacancy_close_data_error", "ru") or "Ошибка данных закрытия.", show_alert=True)
         return
 
     _, listing_id_raw, city_slug, cat_slug, source = parts
@@ -1452,7 +1458,7 @@ async def market_close_listing(cb: CallbackQuery):
     try:
         listing_id = int(listing_id_raw)
     except ValueError:
-        await cb.answer("Неверный идентификатор объявления.", show_alert=True)
+        await cb.answer(await get_text("market_view_invalid_listing_id", "ru") or "Неверный идентификатор объявления.", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -1464,11 +1470,11 @@ async def market_close_listing(cb: CallbackQuery):
             return
 
         if listing.owner_id != cb.from_user.id:
-            await cb.answer("Закрыть может только автор объявления.", show_alert=True)
+            await cb.answer(await get_text("market_view_close_owner_only", "ru") or "Закрыть может только автор объявления.", show_alert=True)
             return
 
         if not is_active(listing):
-            await cb.answer("Объявление уже закрыто или в архиве.", show_alert=True)
+            await cb.answer(await get_text("market_view_already_closed", "ru") or "Объявление уже закрыто или в архиве.", show_alert=True)
             return
 
         archive_as_closed(listing, user_id=cb.from_user.id)
@@ -1482,7 +1488,7 @@ async def market_close_listing(cb: CallbackQuery):
     except Exception as e:
         print(f"[market_view.py] market_close analytics error listing_id={listing.id}: {e}")
 
-    management_text = (
+    management_text = await get_text("market_view_closed_management_tmpl", "ru") or (
         "Контакты/Управление:\n"
         "🔴 Объявление закрыто и скрыто из каталога.\n"
         "Вернуть его можно кнопкой ниже — текст и фото сохранены."
@@ -1492,7 +1498,7 @@ async def market_close_listing(cb: CallbackQuery):
 
     buttons.append([
         InlineKeyboardButton(
-            text="↩️ Вернуть в каталог (на 30 дней)",
+            text=(await get_text("vacancy_btn_restore", "ru") or "↩️ Вернуть в каталог (на 30 дней)"),
             callback_data=f"market_extend:{listing.id}:{city_slug}:{cat_slug}:{source}"
         )
     ])
@@ -1500,7 +1506,7 @@ async def market_close_listing(cb: CallbackQuery):
     edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
     buttons.append([
         InlineKeyboardButton(
-            text=edit_btn.text if edit_btn else "✏️ Редактировать все поля",
+            text=edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля"),
             callback_data=f"edit_listing_overview:{listing.id}:{city_slug}:{cat_slug}:{source}"
         )
     ])
@@ -1525,7 +1531,7 @@ async def market_close_listing(cb: CallbackQuery):
         back_btn = await get_common_menu_button('btn_back_search', lang='ru')
         buttons.append([
             InlineKeyboardButton(
-                text=back_btn.text if back_btn else "⬅️ Назад к поиску",
+                text=back_btn.text if back_btn else (await get_text("market_view_btn_back_to_search", "ru") or "⬅️ Назад к поиску"),
                 callback_data="market_search_results"
             )
         ])
@@ -1555,7 +1561,7 @@ async def market_close_listing(cb: CallbackQuery):
         my_listing_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
         await register_bot_messages(cb.message.chat.id, [msg.message_id])
 
-    await cb.answer("Объявление закрыто.")
+    await cb.answer(await get_text("market_view_closed", "ru") or "Объявление закрыто.")
 
     print(
         f"FUNC: {inspect.currentframe().f_code.co_name} | "
@@ -1576,7 +1582,7 @@ async def show_listing_photo(cb: CallbackQuery):
         )).scalar_one_or_none()
 
     if not listing:
-        await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+        await cb.answer(await get_text("market_view_listing_gone", "ru") or "Объявление недоступно или перенесено в архив.", show_alert=True)
         return
 
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
@@ -1622,16 +1628,18 @@ async def show_listing_photo(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("toggle:"))
 async def toggle_listing(cb: CallbackQuery):
     # Data format: toggle:{city_slug}:{cat_slug}:{listing_id}
+    expand_btn_tmpl = await get_text("market_view_expand_btn_tmpl", "ru") or "{title} — Развернуть"
+    collapse_btn_tmpl = await get_text("market_view_collapse_btn_tmpl", "ru") or "{title} — Свернуть"
     parts = cb.data.split(":")
     if len(parts) != 4:
-        await cb.answer("Ошибка данных.")
+        await cb.answer(await get_text("market_view_error_data", "ru") or "Ошибка данных.")
         return
 
     _, city_slug, cat_slug, listing_id_str = parts
     try:
         listing_id = int(listing_id_str)
     except ValueError:
-        await cb.answer("Неверный идентификатор объявления.")
+        await cb.answer(await get_text("market_view_invalid_listing_id", "ru") or "Неверный идентификатор объявления.")
         return
 
     chat_id = cb.message.chat.id
@@ -1651,7 +1659,7 @@ async def toggle_listing(cb: CallbackQuery):
                 header = f"• <b>{escape_html(listing.title)}</b>"
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(
-                        text=f"{listing.title} — Развернуть",
+                        text=expand_btn_tmpl.format(title=listing.title),
                         callback_data=f"toggle:{city_slug}:{cat_slug}:{listing.id}"
                     )
                 ]])
@@ -1664,7 +1672,7 @@ async def toggle_listing(cb: CallbackQuery):
     logging.debug(f"Toggle handler called in chat {chat_id} for listing {listing_id}")
     msg_id_current = listing_message_ids[chat_id].get(listing_id)
     if not msg_id_current:
-        await cb.answer("Сообщение не найдено.")
+        await cb.answer(await get_text("market_view_message_not_found", "ru") or "Сообщение не найдено.")
         return
 
     async with SessionLocal() as s:
@@ -1674,7 +1682,7 @@ async def toggle_listing(cb: CallbackQuery):
             )).scalar_one()
         except NoResultFound:
             await cb.bot.edit_message_text(
-                "Объявление не найдено или было удалено.",
+                await get_text("market_view_not_found_or_removed", "ru") or "Объявление не найдено или было удалено.",
                 chat_id=str(chat_id),
                 message_id=msg_id_current
             )
@@ -1683,7 +1691,7 @@ async def toggle_listing(cb: CallbackQuery):
 
     if expanded_listing_by_chat.get(chat_id) == listing_id:
         header = f"• <b>{escape_html(listing.title)}</b>"
-        button_text = f"{listing.title} — Развернуть"
+        button_text = expand_btn_tmpl.format(title=listing.title)
         new_reply = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=button_text, callback_data=f"toggle:{city_slug}:{cat_slug}:{listing.id}")
         ]])
@@ -1709,7 +1717,7 @@ async def toggle_listing(cb: CallbackQuery):
             details += "\n" + flex_compact
 
         full_text = f"• <b>{escape_html(listing.title)}</b>{details}"
-        button_text = f"{listing.title} — Свернуть"
+        button_text = collapse_btn_tmpl.format(title=listing.title)
         new_reply = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=button_text, callback_data=f"toggle:{city_slug}:{cat_slug}:{listing.id}")
         ]])
@@ -1738,14 +1746,15 @@ async def item_detail_handler(cb: CallbackQuery):
                 select(Listing).where(Listing.id == item_id, *_market_public_predicates())
             )).scalar_one()
         except NoResultFound:
-            await cb.message.answer("Объявление не найдено или было удалено.")
+            await cb.message.answer(await get_text("market_view_not_found_or_removed", "ru") or "Объявление не найдено или было удалено.")
             await cb.answer()
             return
 
+    no_descr_text = await get_text("market_view_no_description", "ru") or "Нет описания"
     text = (
         f"<b>{escape_html(listing.title)}</b>"
         f"{(' — ' + escape_html(listing.price)) if listing.price else ''}\n"
-        f"{escape_html(listing.descr or 'Нет описания')}\n"
+        f"{escape_html(listing.descr or no_descr_text)}\n"
         f"<code>{escape_html(listing.contact)}</code>"
     )
     photo_ids = listing.photo_file_id.split(",") if listing.photo_file_id else []
@@ -1753,7 +1762,7 @@ async def item_detail_handler(cb: CallbackQuery):
     seller_button = None
     if listing.contact and listing.contact.startswith("@"):
         seller_button = InlineKeyboardButton(
-            text="Написать продавцу",
+            text=(await get_text("market_view_btn_write_seller", "ru") or "Написать продавцу"),
             url=build_contact_url(listing.id, listing.contact, cb.from_user.id, "search"),
         )
     detail_kb = InlineKeyboardMarkup(inline_keyboard=[[seller_button]]) if seller_button \
@@ -1768,7 +1777,7 @@ async def item_detail_handler(cb: CallbackQuery):
                 media_group.append(InputMediaPhoto(media=pid))
             await cb.message.answer_media_group(media=media_group)
             if seller_button:
-                await cb.message.answer("Связаться с продавцом:", reply_markup=detail_kb)
+                await cb.message.answer(await get_text("market_view_contact_seller_label", "ru") or "Связаться с продавцом:", reply_markup=detail_kb)
     else:
         await cb.message.answer(text, reply_markup=detail_kb)
 
@@ -1866,9 +1875,12 @@ async def handle_market_search(m: Message, state: FSMContext):
 
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
+        nothing_found_tmpl = await get_text("market_view_nothing_found_by_query_tmpl", "ru") or (
+            "😕 Ничего не найдено по запросу: <b>{query}</b>.\n\n"
+            "Попробуйте другой поисковый запрос или вернитесь в меню поиска."
+        )
         msg = await m.answer(
-            f"😕 Ничего не найдено по запросу: <b>{escape_html(query)}</b>.\n\n"
-            "Попробуйте другой поисковый запрос или вернитесь в меню поиска.",
+            nothing_found_tmpl.format(query=escape_html(query)),
             reply_markup=kb,
             parse_mode="HTML"
         )
@@ -1934,11 +1946,8 @@ async def handle_market_search(m: Message, state: FSMContext):
 
     correction_note = ""
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
-        correction_note = (
-            f"🧠 Показаны результаты по запросу: "
-            f"<b>{escape_html(search_query_effective)}</b> "
-            f"(учтена возможная опечатка).\n\n"
-        )
+        correction_note_tmpl = await get_text("search_typo_correction_note", "ru") or "🧠 Показаны результаты по запросу: <b>{query}</b> (учтена возможная опечатка).\n\n"
+        correction_note = correction_note_tmpl.format(query=escape_html(search_query_effective))
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -1994,7 +2003,7 @@ async def market_search_page(cb: CallbackQuery, state: FSMContext):
 
     if not ids:
         await state.update_data(search_results=ids)
-        msg = await cb.message.answer("Результаты поиска потеряны. Начните новый поиск.")
+        msg = await cb.message.answer(await get_text("market_view_search_results_lost", "ru") or "Результаты поиска потеряны. Начните новый поиск.")
         last_search_menu_message[chat_id] = msg.message_id
         await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()
@@ -2096,7 +2105,7 @@ async def show_search_listing(cb: CallbackQuery):
             select(Listing).where(Listing.id == listing_id, *_market_public_predicates())
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+            await cb.answer(await get_text("market_view_listing_gone", "ru") or "Объявление недоступно или перенесено в архив.", show_alert=True)
             return
         category_path = await render_category_path(s, listing.category_id, root_id=30)
 
@@ -2106,9 +2115,10 @@ async def show_search_listing(cb: CallbackQuery):
     contact_label = (await get_text('listing_contact', 'ru')) or "Contact"
     caption = f"<b>{escape_html(listing.title)}</b>"
     if category_path:
-        caption += f"\n\nКатегория: <b>Барахолка → {category_path}</b>"
+        caption_path_tmpl = await get_text("market_view_card_category_path_caption_tmpl", "ru") or "\n\nКатегория: <b>Барахолка → {path}</b>"
+        caption += caption_path_tmpl.format(path=category_path)
     else:
-        caption += "\n\nКатегория: <b>Барахолка</b>"
+        caption += await get_text("market_view_card_category_root_caption", "ru") or "\n\nКатегория: <b>Барахолка</b>"
     if listing.descr:
         caption += f"\n\n{escape_html(listing.descr)}"
     if listing.price:
@@ -2130,7 +2140,7 @@ async def show_search_listing(cb: CallbackQuery):
         # ✏️ Редактировать все поля
         edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
         edit_btn = InlineKeyboardButton(
-            text=edit_btn.text if edit_btn else "✏️ Редактировать все поля",
+            text=edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля"),
             callback_data=f"edit_listing_overview:{listing.id}:search"
         )
         buttons.append([edit_btn])
@@ -2138,7 +2148,7 @@ async def show_search_listing(cb: CallbackQuery):
         if is_active(listing):
             buttons.append([
                 InlineKeyboardButton(
-                    text="📦 Закрыть (в архив)",
+                    text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
                     callback_data=f"market_close:{listing.id}:-:-:search"
                 )
             ])
@@ -2159,7 +2169,7 @@ async def show_search_listing(cb: CallbackQuery):
     # стало — возвращаемся к прошлым результатам
     back_btn = await get_common_menu_button('btn_back_search', lang='ru')
     back_btn = InlineKeyboardButton(text=back_btn.text, callback_data="market_search_results") if back_btn \
-        else InlineKeyboardButton(text="⬅️ Назад к поиску", callback_data="market_search_results")
+        else InlineKeyboardButton(text=(await get_text("market_view_btn_back_to_search", "ru") or "⬅️ Назад к поиску"), callback_data="market_search_results")
     buttons.append([back_btn])
 
     main_btn = await get_common_menu_button('main_menu', lang='ru')
@@ -2206,7 +2216,7 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[1])
     except Exception:
-        await cb.answer("Не удалось открыть объявление.", show_alert=True)
+        await cb.answer(await get_text("market_view_cannot_open_listing", "ru") or "Не удалось открыть объявление.", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -2214,7 +2224,7 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
             select(Listing).where(Listing.id == listing_id, *_market_public_predicates())
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Объявление недоступно или перенесено в архив.", show_alert=True)
+            await cb.answer(await get_text("market_view_listing_gone", "ru") or "Объявление недоступно или перенесено в архив.", show_alert=True)
             return
         city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one()
         cat = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
@@ -2236,9 +2246,10 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
 
     caption = f"<b>{escape_html(listing.title)}</b>"
     if category_path:
-        caption += f"\n\nКатегория: <b>Барахолка → {category_path}</b>"
+        caption_path_tmpl = await get_text("market_view_card_category_path_caption_tmpl", "ru") or "\n\nКатегория: <b>Барахолка → {path}</b>"
+        caption += caption_path_tmpl.format(path=category_path)
     else:
-        caption += "\n\nКатегория: <b>Барахолка</b>"
+        caption += await get_text("market_view_card_category_root_caption", "ru") or "\n\nКатегория: <b>Барахолка</b>"
     if listing.descr:
         caption += f"\n\n{escape_html(listing.descr)}"
     if listing.price:
@@ -2256,7 +2267,7 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
     if listing.owner_id == user_id:
         edit_btn = await get_common_menu_button('btn_edit_listing', lang='ru')
         edit_btn = InlineKeyboardButton(
-            text=edit_btn.text if edit_btn else "✏️ Редактировать все поля",
+            text=edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля"),
             callback_data=f"edit_listing_overview:{listing.id}:search"
         )
         buttons.append([edit_btn])
@@ -2264,7 +2275,7 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
         if is_active(listing):
             buttons.append([
                 InlineKeyboardButton(
-                    text="📦 Закрыть (в архив)",
+                    text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
                     callback_data=f"market_close:{listing.id}:-:-:search"
                 )
             ])
@@ -2293,7 +2304,7 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
         text=back_btn.text,
         callback_data="market_search_results"
     ) if back_btn else InlineKeyboardButton(
-        text="⬅️ Назад к поиску",
+        text=(await get_text("market_view_btn_back_to_search", "ru") or "⬅️ Назад к поиску"),
         callback_data="market_search_results"
     )
     buttons.append([back_btn])
@@ -2330,7 +2341,7 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
                 msgs = await cb.message.answer_media_group(media=media)
                 sent_ids.extend([m.message_id for m in msgs])
 
-                ctl = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
+                ctl = await cb.message.answer(await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:", reply_markup=markup)
                 sent_ids.append(ctl.message_id)
             except Exception:
                 first = True
@@ -2342,7 +2353,7 @@ async def show_search_detail(cb: CallbackQuery, state: FSMContext):
                         m = await cb.message.answer_photo(pid)
                     sent_ids.append(m.message_id)
 
-                ctl = await cb.message.answer("Контакты/Управление:", reply_markup=markup)
+                ctl = await cb.message.answer(await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:", reply_markup=markup)
                 sent_ids.append(ctl.message_id)
     else:
         msg = await cb.message.answer(caption, reply_markup=markup, parse_mode="HTML")

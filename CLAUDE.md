@@ -398,10 +398,18 @@ path = await render_category_path(session, category_id)
      `_kb_calendar_month_all()`/`_kb_calendar_month_city()`/
      `_moderation_label()` стали async (были `def`) — все вызовы обёрнуты
      в `await`.
+     `market_view.py`(89) — **готово (2026-07-20)**: 41 новый код
+     `market_view_*` (город/категория/список объявлений, поиск Барахолки —
+     заголовки/пустые результаты/устаревшие результаты, «Мои объявления»,
+     карточка объявления — категория/видео/раскрыть-свернуть, продление/
+     закрытие), плюс переиспользованы межфайловые дубли из вакансий/услуг
+     (`vacancy_contacts_mgmt_label`, `vac_edit_all`, `vacancy_btn_archive`/
+     `_extend`/`_restore`, `vacancy_extend_data_error`/`_unavailable`,
+     `vacancy_close_data_error`, `err_photo_404`, `btn_watch_video`) и
+     `search_typo_correction_note`.
      > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
-     > `market_view.py`(89). Дальше по списку —
-     > `releases.py`(110,
-     > частично уже задет — 8 мест кодами `music_*` из шага `artists.py`),
+     > `releases.py`(110, частично уже задет — 8 мест кодами `music_*`
+     > из шага `artists.py`). Дальше по списку —
      > `events_add.py`(154). Порядок действий на каждый файл (наработан,
      > повторять без дополнительных вопросов, если пользователь просто
      > говорит «да»/«продолжаем»):
