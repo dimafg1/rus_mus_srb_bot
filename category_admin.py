@@ -3667,10 +3667,15 @@ async function fbSendReply(id) {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text})
     }).then(x=>x.json());
     if (r.ok) {
-      statusEl.style.color = '#6ef5aa';
-      statusEl.textContent = '✅ Ответ отправлен';
-      openFeedback(id);
-      loadFeedback();
+      // Явное подтверждение вместо перерисовки карточки — чтобы не было
+      // неясности, отправилось или нет; «ОК» закрывает модалку и
+      // возвращает к списку с уже обновлённым статусом.
+      document.getElementById('feedback-modal-content').innerHTML = `
+        <div style="text-align:center;padding:24px 0">
+          <div style="font-size:34px;margin-bottom:10px">✅</div>
+          <div style="font-size:15px;color:#dde;margin-bottom:22px">Ответ отправлен</div>
+          <button class="btn btn-primary" onclick="fbConfirmSentClose()">ОК</button>
+        </div>`;
     } else {
       statusEl.style.color = '#f66';
       statusEl.textContent = '⚠️ ' + (r.detail || 'не удалось доставить');
@@ -3679,6 +3684,11 @@ async function fbSendReply(id) {
     statusEl.style.color = '#f66';
     statusEl.textContent = 'Ошибка: ' + e.message;
   }
+}
+
+function fbConfirmSentClose() {
+  closeFeedbackModal();
+  loadFeedback();
 }
 
 async function fbDelete(id, fromModal) {
