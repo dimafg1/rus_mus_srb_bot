@@ -504,13 +504,13 @@ async def ef_apply_main_or_extra_textnum(m: Message, state: FSMContext):
         l_id = int(data.get("ef_listing_id"))
     except (TypeError, ValueError):
         await state.clear()
-        await m.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.")
+        await m.answer(await get_text("err_session_lost_listing", "ru") or "Сеанс редактирования потерян. Откройте карточку ещё раз.")
         return
     e_type = data.get("ef_type", "text")  # только для extra (text/number)
 
     new_text = (m.text or "").strip()
     if mode == "main" and field == "title" and not new_text:
-        msg = await m.answer("Заголовок не может быть пустым.", reply_markup=_controls_cancel(l_id))
+        msg = await m.answer(await get_text("market_edit_title_empty", "ru") or "Заголовок не может быть пустым.", reply_markup=_controls_cancel(l_id))
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         return

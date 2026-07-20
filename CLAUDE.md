@@ -347,7 +347,12 @@ path = await render_category_path(session, category_id)
      генерируется, только `service_legacy_edit_overview:` (алиас на
      новый флоу) реально достижим. Тексты перенесены на всякий случай
      (дёшево), но само удаление — отдельное решение владельца.
-     `market_edit.py`(25),
+     `market_edit.py`(25) — **готово**, 4 новых кода: `err_session_lost_listing`
+     (кросс-файловый дубль, 7 мест — ещё 1 в `market_edit_overview.py`,
+     не пойман в шаге 2 т.к. там раньше было счёт 6 в одном файле),
+     `market_edit_saved`, `market_edit_return_to_listing`,
+     `market_edit_title_empty` (тоже задело 2-е место в
+     `market_edit_overview.py`).
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

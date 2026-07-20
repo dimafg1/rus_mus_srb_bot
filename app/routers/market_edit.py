@@ -147,7 +147,7 @@ async def edit_skip(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     if not listing_id:
-        await cb.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.", show_alert=True)
+        await cb.answer(await get_text("err_session_lost_listing", "ru") or "Сеанс редактирования потерян. Откройте карточку ещё раз.", show_alert=True)
         await state.clear()
         print(f"[edit.skip] lost session chat={cb.message.chat.id}")
         return
@@ -183,7 +183,7 @@ async def edit_finish(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     if not listing_id:
-        await cb.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.", show_alert=True)
+        await cb.answer(await get_text("err_session_lost_listing", "ru") or "Сеанс редактирования потерян. Откройте карточку ещё раз.", show_alert=True)
         await state.clear()
         print(f"[edit.finish] lost session chat={cb.message.chat.id}")
         return
@@ -211,7 +211,7 @@ async def edit_finish(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⬅️ Вернуться к объявлению",
                               callback_data=f"listing:{listing.id}:{city_slug}:{cat_slug}:my")]
     ])
-    msg = await cb.message.answer("Изменения сохранены ✅", reply_markup=kb)
+    msg = await cb.message.answer(await get_text("market_edit_saved", "ru") or "Изменения сохранены ✅", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     await state.clear()
@@ -223,7 +223,7 @@ async def edit_back(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     if not listing_id:
-        await cb.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.", show_alert=True)
+        await cb.answer(await get_text("err_session_lost_listing", "ru") or "Сеанс редактирования потерян. Откройте карточку ещё раз.", show_alert=True)
         await state.clear()
         print(f"[edit.back] lost session chat={cb.message.chat.id}")
         return
@@ -264,7 +264,7 @@ async def edit_back(cb: CallbackQuery, state: FSMContext):
         ]])
         chat_id = cb.message.chat.id
         await clear_bot_messages(chat_id, cb.bot)
-        msg = await cb.message.answer("Возврат к объявлению.", reply_markup=kb)
+        msg = await cb.message.answer(await get_text("market_edit_return_to_listing", "ru") or "Возврат к объявлению.", reply_markup=kb)
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
@@ -280,12 +280,12 @@ async def edit_title_apply(m: Message, state: FSMContext):
         pass
     new_title = (m.text or "").strip()
     if not new_title:
-        await m.answer("Заголовок не может быть пустым.")
+        await m.answer(await get_text("market_edit_title_empty", "ru") or "Заголовок не может быть пустым.")
         return
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     if not listing_id:
-        await m.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.")
+        await m.answer(await get_text("err_session_lost_listing", "ru") or "Сеанс редактирования потерян. Откройте карточку ещё раз.")
         await state.clear()
         print(f"[edit.title.apply] lost session chat={m.chat.id}")
         return
@@ -314,7 +314,7 @@ async def edit_price_apply(m: Message, state: FSMContext):
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     if not listing_id:
-        await m.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.")
+        await m.answer(await get_text("err_session_lost_listing", "ru") or "Сеанс редактирования потерян. Откройте карточку ещё раз.")
         await state.clear()
         print(f"[edit.price.apply] lost session chat={m.chat.id}")
         return
@@ -343,7 +343,7 @@ async def edit_descr_apply(m: Message, state: FSMContext):
     data = await state.get_data()
     listing_id = data.get("edit_listing_id")
     if not listing_id:
-        await m.answer("Сеанс редактирования потерян. Откройте карточку ещё раз.")
+        await m.answer(await get_text("err_session_lost_listing", "ru") or "Сеанс редактирования потерян. Откройте карточку ещё раз.")
         await state.clear()
         print(f"[edit.descr.apply] lost session chat={m.chat.id}")
         return
