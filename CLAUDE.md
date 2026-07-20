@@ -259,9 +259,14 @@ path = await render_category_path(session, category_id)
      навигации (мастера редактирования, `artists.py`), добавлен
      хардкод-фолбэк `or InlineKeyboardButton(...)`.
      `app/routers/services_add.py` (4 места), `app/routers/vacancy_view.py`
-     (6 мест, 3 идентичных блока `if source=="search"/elif catalog`).
+     (6 мест, 3 идентичных блока `if source=="search"/elif catalog`),
+     `app/routers/admin_panel.py` (7 из 8 — `InlineKeyboardButton`;
+     8-е место, строка ~457, это персистентная Reply-клавиатура
+     `KeyboardButton`, синхронизированная с проверками `message.text ==
+     "⬅️ Назад"` в нескольких хендлерах — сознательно не трогали,
+     риск рассинхронизации не оправдан для owner-only экрана).
      **Осталось** (файл: число мест с `text="⬅️ Назад"`):
-     `admin_panel.py`(8),
+     `admin_fields.py`(8),
      `admin_fields.py`(8), `releases.py`(9), `vacancy_add.py`(10),
      `market_edit_overview.py`(13), `services_edit_overview.py`(13),
      `services_view.py`(13). (Отдельный вариант «◀️ Назад» в
