@@ -807,7 +807,7 @@ async def flex_select_pick(cb: CallbackQuery, state: FSMContext):
     try:
         opt_idx = int(cb.data.split(":")[1])
     except Exception:
-        await cb.answer("Неверные данные", show_alert=True); return
+        await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True); return
 
     options = fields[idx].get("options", [])
     if opt_idx < 0 or opt_idx >= len(options):
