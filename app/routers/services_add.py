@@ -167,17 +167,20 @@ async def _send_with_services_nav(m: Message, text: str, reply_markup=None, pars
 # ─────────────────────────────────────────────────────────────────────────────
 # Вспомогательные клавиатуры для шага «Стоимость»
 
-def _deal_price_kb() -> InlineKeyboardMarkup:
+async def _deal_price_kb() -> InlineKeyboardMarkup:
     """Кнопка «Договорная» на шаге стоимости."""
+    text = await get_text('services_add_btn_deal_price', 'ru') or "Договорная"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Договорная", callback_data="services:price:deal")]
+        [InlineKeyboardButton(text=text, callback_data="services:price:deal")]
     ])
 
-def _photo_skip_kb() -> InlineKeyboardMarkup:
+async def _photo_skip_kb() -> InlineKeyboardMarkup:
     """Кнопка «Пропустить фото» (используем собственную, чтобы не мешать барахолке)."""
+    skip_text = await get_text('services_add_btn_photo_skip', 'ru') or "Пропустить фото"
+    cancel_text = await get_text('services_add_btn_cancel', 'ru') or "Отмена"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить фото", callback_data="services:photo:skip")],
-        [InlineKeyboardButton(text="Отмена", callback_data="services:cancel")]
+        [InlineKeyboardButton(text=skip_text, callback_data="services:photo:skip")],
+        [InlineKeyboardButton(text=cancel_text, callback_data="services:cancel")]
     ])
 
 
@@ -230,7 +233,7 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
     try:
         city_id = int(cb.data.split(":")[3])
     except Exception:
-        await cb.answer("Некорректный город.", show_alert=True)
+        await cb.answer(await get_text("services_add_invalid_city", "ru") or "Некорректный город.", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -240,7 +243,7 @@ async def services_add_select_city(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         city = (await s.execute(select(City).where(City.id == city_id))).scalar_one_or_none()
         if city is None:
-            await cb.answer("Город не найден.", show_alert=True)
+            await cb.answer(await get_text("services_add_city_not_found", "ru") or "Город не найден.", show_alert=True)
             return
         cats = (await s.execute(
             select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(sql_text("order_num"), Category.name)
@@ -275,7 +278,7 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
         _, _, _, cat_id_str, city_id_str = cb.data.split(":")
         cat_id = int(cat_id_str); city_id = int(city_id_str)
     except Exception:
-        await cb.answer("Некорректная категория.", show_alert=True)
+        await cb.answer(await get_text("services_add_invalid_category", "ru") or "Некорректная категория.", show_alert=True)
         return
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
@@ -286,7 +289,7 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
         city = await s.get(City, city_id)
         cat = await s.get(Category, cat_id)
         if city is None or cat is None or not await _is_services_category(s, cat):
-            await cb.answer("Город или категория больше недоступны.", show_alert=True)
+            await cb.answer(await get_text("services_add_city_or_cat_gone", "ru") or "Город или категория больше недоступны.", show_alert=True)
             return
         cats = (await s.execute(
             select(Category).where(Category.parent_id == cat_id).order_by(sql_text("order_num"), Category.name)
@@ -311,7 +314,7 @@ async def services_add_select_category(cb: CallbackQuery, state: FSMContext):
 
     await state.update_data(cat_id=cat.id, cat_name=cat.name)
     await state.set_state(ServiceForm.title)
-    await _send_with_services_nav(cb.message, "Введите заголовок объявления (1 строка):")
+    await _send_with_services_nav(cb.message, await get_text("services_add_ask_title", "ru") or "Введите заголовок объявления (1 строка):")
     await cb.answer()
     print(f"[services_add.py] services_add_select_category → leaf ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id} category_id={cat_id}")
 
@@ -332,15 +335,16 @@ async def service_title_set(m: Message, state: FSMContext):
 
     title = (m.text or "").strip()
     if not title:
-        await _send_with_services_nav(m, "Заголовок не может быть пустым. Введите заголовок объявления:")
+        await _send_with_services_nav(m, await get_text("services_add_title_empty", "ru") or "Заголовок не может быть пустым. Введите заголовок объявления:")
         return
     await state.update_data(title=title)
     await state.set_state(ServiceForm.descr)
 
     # Плашка «Назад / Главное меню»: общая, с services:back — «Назад» возвращает
     # на шаг заголовка, а не в меню с брошенным активным FSM.
+    descr_prompt_tmpl = await get_text("services_add_ask_descr_tmpl", "ru") or "Заголовок — <b>{title}</b>\n\nОпишите услугу:"
     await _send_with_services_nav(
-        m, f"Заголовок — <b>{escape(title)}</b>\n\nОпишите услугу:", parse_mode="HTML"
+        m, descr_prompt_tmpl.format(title=escape(title)), parse_mode="HTML"
     )
 
     print(f"[services_add.py] service_title_set ✓ | chat_id={chat_id} user_id={m.from_user.id} title={title!r}")
@@ -366,13 +370,11 @@ async def service_descr_set(m: Message, state: FSMContext):
 
     # Плашка «Назад / Главное меню»: общая, с services:back — «Назад» возвращает
     # на шаг описания, а не в меню с брошенным активным FSM.
-    price_text = (
-        f"Заголовок — <b>{escape(title)}</b>\n\n"
-        f"{escape(descr)}\n\n"
-        "Введите стоимость (прейскурант) услуг\n"
-        "или нажмите «Договорная»."
+    price_suffix = await get_text("services_add_price_prompt_suffix", "ru") or (
+        "Введите стоимость (прейскурант) услуг\nили нажмите «Договорная»."
     )
-    await _send_with_services_nav(m, price_text, parse_mode="HTML", reply_markup=_deal_price_kb())
+    price_text = f"Заголовок — <b>{escape(title)}</b>\n\n{escape(descr)}\n\n{price_suffix}"
+    await _send_with_services_nav(m, price_text, parse_mode="HTML", reply_markup=(await _deal_price_kb()))
 
     print(f"[services_add.py] service_descr_set ✓ | chat_id={chat_id} user_id={m.from_user.id} title={title!r} descr_len={len(descr)}")
 
@@ -413,8 +415,8 @@ async def service_price_set(m: Message, state: FSMContext):
     if not raw:
         await _send_with_services_nav(
             m,
-            "Введите стоимость услуг или нажмите «Договорная».",
-            reply_markup=_deal_price_kb(),
+            await get_text("services_add_price_prompt_short", "ru") or "Введите стоимость услуг или нажмите «Договорная».",
+            reply_markup=(await _deal_price_kb()),
         )
         return
 
@@ -496,7 +498,7 @@ async def _send_photo_prompt(m: Message, photo_count: int, state: FSMContext, la
         await register_bot_messages(m.chat.id, preview_ids)
 
     # ── Отправка и сохранение message_id для последующего удаления
-    msg = await m.answer(text_main, reply_markup=_photo_skip_kb(), parse_mode="HTML")
+    msg = await m.answer(text_main, reply_markup=(await _photo_skip_kb()), parse_mode="HTML")
     last_bot_messages.setdefault(m.chat.id, []).append(msg.message_id)
     await register_bot_messages(m.chat.id, [msg.message_id])
 
@@ -768,12 +770,12 @@ async def service_ok(cb: CallbackQuery, state: FSMContext):
     """Не допускаем параллельную публикацию двойным нажатием кнопки."""
     lock = _service_publish_locks[cb.from_user.id]
     if lock.locked():
-        await cb.answer("Публикуем, пожалуйста, подождите.")
+        await cb.answer(await get_text("services_add_publishing_wait", "ru") or "Публикуем, пожалуйста, подождите.")
         return
     async with lock:
         # Второй update мог попасть в диспетчер до очистки FSM первым update.
         if await state.get_state() != ServiceForm.confirm.state:
-            await cb.answer("Объявление уже опубликовано.")
+            await cb.answer(await get_text("services_add_already_published", "ru") or "Объявление уже опубликовано.")
             return
         await _service_ok_locked(cb, state)
 
@@ -789,7 +791,8 @@ async def _service_ok_locked(cb: CallbackQuery, state: FSMContext):
     # обязательные поля
     for k in ("city_id", "cat_id", "title", "price"):
         if not data.get(k):
-            await cb.answer(f"Не хватает поля: {k}", show_alert=True)
+            tmpl = await get_text("services_add_missing_field_tmpl", "ru") or "Не хватает поля: {field}"
+            await cb.answer(tmpl.format(field=k), show_alert=True)
             print(f"[services_add.py] service_ok | MISSING {k} | data_keys={list(data.keys())}")
             return
 
@@ -801,7 +804,7 @@ async def _service_ok_locked(cb: CallbackQuery, state: FSMContext):
             city = await s.get(City, int(data["city_id"]))
             category = await s.get(Category, int(data["cat_id"]))
             if city is None or category is None or not await _is_services_category(s, category):
-                await cb.answer("Город или категория больше недоступны.", show_alert=True)
+                await cb.answer(await get_text("services_add_city_or_cat_gone", "ru") or "Город или категория больше недоступны.", show_alert=True)
                 return
             l = Listing(
                 city_id   = city.id,
@@ -830,7 +833,8 @@ async def _service_ok_locked(cb: CallbackQuery, state: FSMContext):
             await s.commit()
 
     except Exception as e:
-        await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
+        tmpl = await get_text("services_add_save_error_tmpl", "ru") or "Ошибка сохранения: {error}"
+        await cb.answer(tmpl.format(error=type(e).__name__), show_alert=True)
         print(f"[services_add.py] service_ok | DB ERROR {e}")
         return
 
@@ -854,9 +858,11 @@ async def _service_ok_locked(cb: CallbackQuery, state: FSMContext):
         text_pub   = (await get_text('sell_published', 'ru')) or "✅ Объявление опубликовано!"
         text_extra = (await get_text('sell_extras_offer', 'ru')) or "При желании укажите дополнительные сведения для этой категории:"
 
+        edit_all_text = await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля"
+        go_listing_text = await get_text("vac_go_listing", "ru") or "📄 К объявлению"
         rows = [
-            [InlineKeyboardButton(text="✏️ Редактировать все поля", callback_data=f"service_edit_overview:{listing_id}")],
-            [InlineKeyboardButton(text="📄 К объявлению", callback_data=f"sv:item:{listing_id}:{l.city_id}:{l.category_id}:m")],
+            [InlineKeyboardButton(text=edit_all_text, callback_data=f"service_edit_overview:{listing_id}")],
+            [InlineKeyboardButton(text=go_listing_text, callback_data=f"sv:item:{listing_id}:{l.city_id}:{l.category_id}:m")],
         ]
         nav = []
         if services_btn:
@@ -876,7 +882,7 @@ async def _service_ok_locked(cb: CallbackQuery, state: FSMContext):
 
     except Exception as e:
         try:
-            await cb.answer("Услуга сохранена, но экран не удалось обновить.", show_alert=True)
+            await cb.answer(await get_text("services_add_ui_update_failed", "ru") or "Услуга сохранена, но экран не удалось обновить.", show_alert=True)
         except Exception:
             pass
         print(f"[services_add.py] service_ok | UI ERROR listing_id={listing_id}: {e}")
@@ -938,13 +944,13 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
 
     if cur == ServiceForm.descr.state:
         await state.set_state(ServiceForm.title)
-        await _send_with_services_nav(cb.message, "Введите заголовок объявления (1 строка):")
+        await _send_with_services_nav(cb.message, await get_text("services_add_ask_title", "ru") or "Введите заголовок объявления (1 строка):")
         await cb.answer()
         print(f"[services_add.py] services_back → title ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
 
     if cur == ServiceForm.price.state:
         await state.set_state(ServiceForm.descr)
-        await _send_with_services_nav(cb.message, "Опишите услугу")
+        await _send_with_services_nav(cb.message, await get_text("services_add_ask_descr_back", "ru") or "Опишите услугу")
         await cb.answer()
         print(f"[services_add.py] services_back → descr ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
 
@@ -952,8 +958,8 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
         await state.set_state(ServiceForm.price)
         await _send_with_services_nav(
             cb.message,
-            "Введите стоимость (прейскурант) услуг\nили нажмите «Договорная».",
-            reply_markup=_deal_price_kb()
+            await get_text("services_add_price_prompt_suffix", "ru") or "Введите стоимость (прейскурант) услуг\nили нажмите «Договорная».",
+            reply_markup=(await _deal_price_kb())
         )
         await cb.answer()
         print(f"[services_add.py] services_back → price ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id}"); return
@@ -985,6 +991,6 @@ async def services_back(cb: CallbackQuery, state: FSMContext):
         back_btn.callback_data = f"services:add:city:{city_id}"
         rows.append([back_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    await safe_edit_or_send(cb, "Выберите категорию", reply_markup=kb)
+    await safe_edit_or_send(cb, await get_text("services_add_choose_category", "ru") or "Выберите категорию", reply_markup=kb)
     await cb.answer()
     print(f"[services_add.py] services_back → categories ✓ | chat_id={cb.message.chat.id} user_id={cb.from_user.id} city_id={city_id}")

@@ -301,8 +301,17 @@ path = await render_category_path(session, category_id)
      (`get_text`) — не хардкодом**, даже если это разовая строка на
      один экран.
   3. **Файл за файлом — уникальные тексты экранов.**
-     > **▶ ПРОДОЛЖИТЬ ОТСЮДА (после паузы 2026-07-20):** следующий файл —
-     > `services_add.py` (40 вызовов). Дальше по списку — `admin_panel.py`(49),
+     `services_add.py`(40) — **готово (2026-07-20)**: 19 новых кодов
+     `services_add_*` (invalid_city/city_not_found/invalid_category/
+     city_or_cat_gone/ask_title/title_empty/ask_descr_tmpl/ask_descr_back/
+     price_prompt_suffix/price_prompt_short/btn_deal_price/btn_photo_skip/
+     btn_cancel/missing_field_tmpl/save_error_tmpl/ui_update_failed/
+     choose_category/publishing_wait/already_published), плюс переиспользованы
+     `vac_edit_all`/`vac_go_listing` (точное совпадение текста кнопок).
+     `_deal_price_kb()`/`_photo_skip_kb()` стали async (текст кнопок теперь
+     из БД) — оба вызова обёрнуты в `await`.
+     > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
+     > `admin_panel.py`(49). Дальше по списку —
      > `admin_fields.py`(57), `vacancy_add.py`(62), `services_view.py`(70),
      > `services_edit_overview.py`(73), `market_edit_overview.py`(78),
      > `events_view.py`(86), `market_view.py`(89), `releases.py`(110,
