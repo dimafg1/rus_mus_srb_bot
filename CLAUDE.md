@@ -378,6 +378,14 @@ path = await render_category_path(session, category_id)
      видны только владельцу/админам, не пользователям. Перенос
      потребует продумать формат плейсхолдеров в BotText — вернуться
      отдельным заходом, не блокирует остальной прогресс.
+     `market_edit_photos.py`(35)+`services_edit_photos.py`(35) —
+     **готово, оба разом**: файлы зеркальны (как и раньше), 12 общих
+     кодов `photo_edit_*` (`_session_stale`/`_session_lost`/`_max_3`/
+     `_add_prompt`/`_need_one_photo`/`_swap_prompt`/`_need_photo`/
+     `_nothing_to_add`/`_nothing_to_replace`/`_no_pending_action`/
+     `_save_failed`/`_applied`). Два шаблона с плейсхолдером —
+     `.format(count=...)`/`.format(idx=...)`, по тому же паттерну, что
+     `services_edit_*_prompt` в `services_edit.py`.
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

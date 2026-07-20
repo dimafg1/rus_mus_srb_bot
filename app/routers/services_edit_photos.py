@@ -104,7 +104,7 @@ async def _require_current_photo_session(cb: CallbackQuery, state: FSMContext, l
     """Не смешивать callback старой карточки с черновиком другого объявления."""
     data = await state.get_data()
     if data.get("sphoto_listing_id") != listing_id:
-        await cb.answer("Сеанс редактирования устарел. Откройте фото ещё раз.", show_alert=True)
+        await cb.answer(await get_text("photo_edit_session_stale", "ru") or "Сеанс редактирования устарел. Откройте фото ещё раз.", show_alert=True)
         return None
     return data
 
@@ -436,15 +436,15 @@ async def sphoto_add(cb: CallbackQuery, state: FSMContext):
     draft = list(data.get("sphoto_draft_ids") or [])
 
     if len(draft) >= 3:
-        await cb.answer("Максимум 3 фото.", show_alert=True)
+        await cb.answer(await get_text("photo_edit_max_3", "ru") or "Максимум 3 фото.", show_alert=True)
         return
 
     await _clear_pending_action(state)
     await state.update_data(sphoto_listing_id=listing_id)
 
+    tmpl = await get_text("photo_edit_add_prompt", "ru") or "Отправьте одно новое фото для добавления.\n\nСейчас загружено: {count} / 3"
     msg = await cb.message.answer(
-        "Отправьте одно новое фото для добавления.\n\n"
-        f"Сейчас загружено: {len(draft)} / 3",
+        tmpl.format(count=len(draft)),
         reply_markup=_cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -470,7 +470,7 @@ async def sphoto_add_receive(message: Message, state: FSMContext):
         listing_id = int(data.get("sphoto_listing_id"))
     except (TypeError, ValueError):
         await state.clear()
-        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        await message.answer(await get_text("photo_edit_session_lost", "ru") or "Сеанс редактирования потерян. Откройте фото ещё раз.")
         return
     if not await _authorize_photo_message(message, state, listing_id):
         return
@@ -507,13 +507,13 @@ async def sphoto_add_not_photo(message: Message, state: FSMContext):
         listing_id = int(data.get("sphoto_listing_id"))
     except (TypeError, ValueError):
         await state.clear()
-        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        await message.answer(await get_text("photo_edit_session_lost", "ru") or "Сеанс редактирования потерян. Откройте фото ещё раз.")
         return
     if not await _authorize_photo_message(message, state, listing_id):
         return
 
     msg = await message.answer(
-        "Пожалуйста, отправьте именно одно фото.",
+        (await get_text("photo_edit_need_one_photo", "ru") or "Пожалуйста, отправьте именно одно фото."),
         reply_markup=_cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -554,8 +554,9 @@ async def sphoto_swap(cb: CallbackQuery, state: FSMContext):
         sphoto_pending_index=idx
     )
 
+    tmpl = await get_text("photo_edit_swap_prompt", "ru") or "Отправьте новое фото для замены фото {idx}."
     msg = await cb.message.answer(
-        f"Отправьте новое фото для замены фото {idx + 1}.",
+        tmpl.format(idx=idx + 1),
         reply_markup=_cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -582,7 +583,7 @@ async def sphoto_receive_replace_one(message: Message, state: FSMContext):
         idx = int(data.get("sphoto_pending_index"))
     except (TypeError, ValueError):
         await state.clear()
-        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        await message.answer(await get_text("photo_edit_session_lost", "ru") or "Сеанс редактирования потерян. Откройте фото ещё раз.")
         return
     if not await _authorize_photo_message(message, state, listing_id):
         return
@@ -619,13 +620,13 @@ async def sphoto_replace_one_not_photo(message: Message, state: FSMContext):
         listing_id = int(data.get("sphoto_listing_id"))
     except (TypeError, ValueError):
         await state.clear()
-        await message.answer("Сеанс редактирования потерян. Откройте фото ещё раз.")
+        await message.answer(await get_text("photo_edit_session_lost", "ru") or "Сеанс редактирования потерян. Откройте фото ещё раз.")
         return
     if not await _authorize_photo_message(message, state, listing_id):
         return
 
     msg = await message.answer(
-        "Пожалуйста, отправьте именно фото.",
+        (await get_text("photo_edit_need_photo", "ru") or "Пожалуйста, отправьте именно фото."),
         reply_markup=_cancel_kb(listing_id)
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -673,10 +674,10 @@ async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
 
     elif action == "add":
         if not pending_photo_ids:
-            await cb.answer("Нет фото для добавления.", show_alert=True)
+            await cb.answer(await get_text("photo_edit_nothing_to_add", "ru") or "Нет фото для добавления.", show_alert=True)
             return
         if len(new_photos) >= 3:
-            await cb.answer("Максимум 3 фото.", show_alert=True)
+            await cb.answer(await get_text("photo_edit_max_3", "ru") or "Максимум 3 фото.", show_alert=True)
             return
         new_photos.append(pending_photo_ids[0])
         new_photos = new_photos[:3]
@@ -686,17 +687,17 @@ async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
             await cb.answer(await get_text("err_photo_404", "ru") or "Фото не найдено.", show_alert=True)
             return
         if not pending_photo_ids:
-            await cb.answer("Нет фото для замены.", show_alert=True)
+            await cb.answer(await get_text("photo_edit_nothing_to_replace", "ru") or "Нет фото для замены.", show_alert=True)
             return
         new_photos[idx] = pending_photo_ids[0]
 
     else:
-        await cb.answer("Нет действия для подтверждения.", show_alert=True)
+        await cb.answer(await get_text("photo_edit_no_pending_action", "ru") or "Нет действия для подтверждения.", show_alert=True)
         return
 
     ok = await _save_listing_photos(listing_id, cb.from_user.id, new_photos)
     if not ok:
-        await cb.answer("Не удалось сохранить фото.", show_alert=True)
+        await cb.answer(await get_text("photo_edit_save_failed", "ru") or "Не удалось сохранить фото.", show_alert=True)
         return
 
     await state.update_data(sphoto_draft_ids=new_photos)
@@ -704,7 +705,7 @@ async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
     await state.set_state(None)
 
     await _render_photo_editor(chat_id, cb.bot, cb.message.answer, listing_id, state)
-    await cb.answer("Изменения применены")
+    await cb.answer(await get_text("photo_edit_applied", "ru") or "Изменения применены")
 
     print(
         f"[services_edit_photos.py] sphoto_apply | "
