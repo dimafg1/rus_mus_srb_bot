@@ -175,7 +175,7 @@ async def start_flex_flow(m_or_cbmsg, state: FSMContext):
         if isinstance(f, dict) and str(f.get("type","text")).lower() in supported:
             fld = {
                 "type": str(f.get("type","text")).lower(),
-                "label": (str(f.get("label") or "") or "Поле").strip(),
+                "label": (str(f.get("label") or "") or (await get_text("vac_add_flex_default_label", "ru") or "Поле")).strip(),
                 "key": (str(f.get("key") or "field")).strip().lower() or "field",
                 "required": bool(f.get("required", False)),
             }
@@ -189,7 +189,7 @@ async def start_flex_flow(m_or_cbmsg, state: FSMContext):
         if after_pub:
             await clear_bot_messages(chat_id, m_or_cbmsg.bot)
             nav_kb = await sell_nav_keyboard()
-            msg = await m_or_cbmsg.answer("Готово. Спасибо!", reply_markup=nav_kb)
+            msg = await m_or_cbmsg.answer(await get_text("market_add_flex_done_thanks", "ru") or "Готово. Спасибо!", reply_markup=nav_kb)
             last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
             await register_bot_messages(chat_id, [msg.message_id])
             await state.clear()
@@ -218,7 +218,7 @@ async def ask_current_flex_field(m_or_cbmsg, state: FSMContext):
     if idx >= len(fields):
         if after_pub:
             nav_kb = await sell_nav_keyboard()
-            msg = await m_or_cbmsg.answer("Готово. Спасибо!", reply_markup=nav_kb)
+            msg = await m_or_cbmsg.answer(await get_text("market_add_flex_done_thanks", "ru") or "Готово. Спасибо!", reply_markup=nav_kb)
             last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
             await register_bot_messages(chat_id, [msg.message_id])
             await state.clear()
@@ -231,9 +231,11 @@ async def ask_current_flex_field(m_or_cbmsg, state: FSMContext):
         return
 
     f = fields[idx]
-    label = f.get("label") or "Поле"
+    label = f.get("label") or (await get_text("vac_add_flex_default_label", "ru") or "Поле")
     ftype = f.get("type")
     required = bool(f.get("required"))
+
+    skip_text = await get_text("btn_skip", "ru") or "Пропустить"
 
     rows = []
 
@@ -241,20 +243,27 @@ async def ask_current_flex_field(m_or_cbmsg, state: FSMContext):
         for i, opt in enumerate(f.get("options", [])):
             rows.append([InlineKeyboardButton(text=str(opt), callback_data=f"sell_flex_select:{i}")])
         if not required:
-            rows.append([InlineKeyboardButton(text="Пропустить", callback_data="sell_flex_skip")])
-        prompt = f"({idx+1}/{len(fields)}) <b>{label}</b>\n\nВыберите один из вариантов:"
+            rows.append([InlineKeyboardButton(text=skip_text, callback_data="sell_flex_skip")])
+        prompt_tmpl = await get_text("market_add_flex_select_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВыберите один из вариантов:"
+        prompt = prompt_tmpl.format(idx=idx + 1, total=len(fields), label=label)
     elif ftype == "checkbox":
         rows.append([
-            InlineKeyboardButton(text="✅ Да",  callback_data="sell_flex_checkbox:1"),
-            InlineKeyboardButton(text="❌ Нет", callback_data="sell_flex_checkbox:0"),
+            InlineKeyboardButton(text=await get_text("vac_add_checkbox_yes", "ru") or "✅ Да", callback_data="sell_flex_checkbox:1"),
+            InlineKeyboardButton(text=await get_text("admin_panel_btn_no", "ru") or "❌ Нет", callback_data="sell_flex_checkbox:0"),
         ])
         if not required:
-            rows.append([InlineKeyboardButton(text="Пропустить", callback_data="sell_flex_skip")])
-        prompt = f"({idx+1}/{len(fields)}) <b>{label}</b>\n\nВыберите вариант:"
+            rows.append([InlineKeyboardButton(text=skip_text, callback_data="sell_flex_skip")])
+        prompt_tmpl = await get_text("market_add_flex_checkbox_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВыберите вариант:"
+        prompt = prompt_tmpl.format(idx=idx + 1, total=len(fields), label=label)
     else:
         if not required:
-            rows.append([InlineKeyboardButton(text="Пропустить", callback_data="sell_flex_skip")])
-        prompt = f"({idx+1}/{len(fields)}) <b>{label}</b>\n\nВведите значение" + (" (число)." if ftype == "number" else ".")
+            rows.append([InlineKeyboardButton(text=skip_text, callback_data="sell_flex_skip")])
+        prompt_tmpl = await get_text("market_add_flex_text_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВведите значение{suffix}"
+        if ftype == "number":
+            suffix = await get_text("market_add_flex_number_suffix", "ru") or " (число)."
+        else:
+            suffix = await get_text("market_add_flex_default_suffix", "ru") or "."
+        prompt = prompt_tmpl.format(idx=idx + 1, total=len(fields), label=label, suffix=suffix)
 
     # низ: Назад / Главное меню
     back_btn = await get_common_menu_button('sell_back', 'ru')
@@ -333,11 +342,14 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lan
     else:
         _descr_short = ""
 
-    helper = (
-        "<b>Вы уже ввели</b>\n"
-        f"• Заголовок: <i>{_html.escape(_title) if _title else '—'}</i>\n"
-        f"• Описание: <i>{_html.escape(_descr_short) if _descr_short else '—'}</i>\n"
-        f"• Стоимость: <i>{_html.escape(_price) if _price else '—'}</i>"
+    helper_tmpl = (
+        await get_text("market_add_helper_title_descr_price_tmpl", lang)
+        or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n• Описание: <i>{descr}</i>\n• Стоимость: <i>{price}</i>"
+    )
+    helper = helper_tmpl.format(
+        title=_html.escape(_title) if _title else '—',
+        descr=_html.escape(_descr_short) if _descr_short else '—',
+        price=_html.escape(_price) if _price else '—',
     )
 
     # — порядок: helper → пустая строка → инструкция —
@@ -524,9 +536,10 @@ async def sell_extras_done(cb: CallbackQuery, state: FSMContext):
 
 
 # RU: Клавиатура «Пропустить» под шагом описания (кнопка вместо ввода «-»).
-def descr_skip_keyboard() -> InlineKeyboardMarkup:
+async def descr_skip_keyboard() -> InlineKeyboardMarkup:
+    skip_text = await get_text("btn_skip", "ru") or "Пропустить"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить", callback_data="sell_descr_skip")]
+        [InlineKeyboardButton(text=skip_text, callback_data="sell_descr_skip")]
     ])
 
 
@@ -539,11 +552,9 @@ async def _render_descr_step(target, state: FSMContext):
     template = await get_text('sell_ask_descr', 'ru') or "Short description (or tap Skip):"
 
     from html import escape as _esc
-    helper = (
-        "<b>Вы уже ввели</b>\n"
-        f"• Заголовок: <i>{_esc(title) or '—'}</i>"
-    )
-    await send_with_nav(target, f"{helper}\n\n{template}", parse_mode="HTML", reply_markup=descr_skip_keyboard())
+    helper_tmpl = await get_text("vac_add_already_ended_for_helper", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>"
+    helper = helper_tmpl.format(title=_esc(title) or '—')
+    await send_with_nav(target, f"{helper}\n\n{template}", parse_mode="HTML", reply_markup=await descr_skip_keyboard())
 
 
 # RU: Рендер шага «Стоимость» — читает уже сохранённые заголовок и описание из FSM.
@@ -559,11 +570,11 @@ async def _render_price_step(target, state: FSMContext):
     template = (await get_text('sell_ask_price', 'ru')) or "Enter <b>price</b> (e.g.: 150 € or 12,000 rsd):"
 
     from html import escape as _esc
-    helper = (
-        "<b>Вы уже ввели</b>\n"
-        f"• Заголовок: <i>{_esc(title) or '—'}</i>\n"
-        f"• Описание: <i>{_esc(descr_short) or '—'}</i>"
+    helper_tmpl = (
+        await get_text("vac_add_already_entered_title_descr_tmpl", "ru")
+        or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n• Описание: <i>{descr}</i>"
     )
+    helper = helper_tmpl.format(title=_esc(title) or '—', descr=_esc(descr_short) or '—')
     await send_with_nav(target, f"{helper}\n\n{template}", parse_mode="HTML")
 
 
@@ -802,7 +813,7 @@ async def flex_select_pick(cb: CallbackQuery, state: FSMContext):
     fields = data.get("flex_fields", []) or []
     idx = int(data.get("flex_idx", 0))
     if idx >= len(fields) or fields[idx].get("type") != "select":
-        await cb.answer("Неверное действие", show_alert=True); return
+        await cb.answer(await get_text("market_add_flex_invalid_action", "ru") or "Неверное действие", show_alert=True); return
 
     try:
         opt_idx = int(cb.data.split(":")[1])
@@ -811,7 +822,7 @@ async def flex_select_pick(cb: CallbackQuery, state: FSMContext):
 
     options = fields[idx].get("options", [])
     if opt_idx < 0 or opt_idx >= len(options):
-        await cb.answer("Неверная опция", show_alert=True); return
+        await cb.answer(await get_text("market_add_flex_invalid_option", "ru") or "Неверная опция", show_alert=True); return
 
     key = fields[idx]["key"]
     val = str(options[opt_idx])
@@ -831,7 +842,7 @@ async def flex_checkbox_pick(cb: CallbackQuery, state: FSMContext):
     fields = data.get("flex_fields", []) or []
     idx = int(data.get("flex_idx", 0))
     if idx >= len(fields) or fields[idx].get("type") != "checkbox":
-        await cb.answer("Неверное действие", show_alert=True); return
+        await cb.answer(await get_text("market_add_flex_invalid_action", "ru") or "Неверное действие", show_alert=True); return
 
     raw = cb.data.split(":")[1]
     val = True if raw == "1" else False
@@ -855,7 +866,7 @@ async def flex_skip(cb: CallbackQuery, state: FSMContext):
         await cb.answer(); return
     # просто двигаем индекс дальше, ничего не записывая
     await state.update_data(flex_idx=idx + 1)
-    await cb.answer("Пропущено")
+    await cb.answer(await get_text("vac_add_flex_skipped_toast", "ru") or "Пропущено")
     await ask_current_flex_field(cb.message, state)
 
 
@@ -878,14 +889,14 @@ async def flex_text_number_input(m: Message, state: FSMContext):
 
     # только text/number принимаем текстом
     if ftype not in {"text", "number"}:
-        await m.answer("Пожалуйста, воспользуйтесь кнопками ниже.")
+        await m.answer(await get_text("market_add_flex_use_buttons", "ru") or "Пожалуйста, воспользуйтесь кнопками ниже.")
         return
 
     value = (m.text or "").strip()
     if ftype == "number":
         # мягкая валидация: пустое запрещаем, остальное — как есть
         if not value:
-            await m.answer("Введите число или нажмите «Пропустить».")
+            await m.answer(await get_text("market_add_flex_need_number", "ru") or "Введите число или нажмите «Пропустить».")
             return
 
     flex_values = data.get("flex_values", {}) or {}
@@ -921,16 +932,19 @@ async def preview_and_confirm(m: Message, state: FSMContext):
     flex_fields = data.get("flex_fields") or []
     flex_values = data.get("flex_values") or {}
     if flex_fields:
+        default_label = await get_text("vac_add_flex_default_label", "ru") or "Поле"
+        bool_yes = await get_text("admin_fields_yes", "ru") or "Да"
+        bool_no = await get_text("admin_fields_no", "ru") or "Нет"
         lines = []
         for f in flex_fields:
-            label = f.get("label") or "Поле"
+            label = f.get("label") or default_label
             key = f.get("key")
             ftype = f.get("type")
             required = bool(f.get("required"))
             if key in flex_values:
                 v = flex_values[key]
                 if ftype == "checkbox":
-                    v = "Да" if bool(v) else "Нет"
+                    v = bool_yes if bool(v) else bool_no
                 lines.append(_esc(f"{label}: {v}"))
             else:
                 if required:
@@ -966,12 +980,12 @@ async def sell_ok(cb: CallbackQuery, state: FSMContext):
     """Не допускаем параллельную публикацию двойным нажатием кнопки."""
     lock = _market_publish_locks[cb.from_user.id]
     if lock.locked():
-        await cb.answer("Публикуем, пожалуйста, подождите.")
+        await cb.answer(await get_text("services_add_publishing_wait", "ru") or "Публикуем, пожалуйста, подождите.")
         return
     async with lock:
         # Второй update мог попасть в диспетчер до смены состояния первым update.
         if await state.get_state() != Sell.confirm.state:
-            await cb.answer("Объявление уже опубликовано.")
+            await cb.answer(await get_text("services_add_already_published", "ru") or "Объявление уже опубликовано.")
             return
         await _sell_ok_locked(cb, state)
 
@@ -986,7 +1000,8 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
     # Жёсткая проверка обязательных полей
     for k in ("city_id", "cat_id", "title", "price"):
         if not data.get(k):
-            await cb.answer(f"Не хватает поля: {k}", show_alert=True)
+            tmpl = await get_text("services_add_missing_field_tmpl", "ru") or "Не хватает поля: {field}"
+            await cb.answer(tmpl.format(field=k), show_alert=True)
             print(f"FUNC: sell_ok | MISSING {k} | data_keys={list(data.keys())}")
             return
 
@@ -1022,8 +1037,10 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
             # После commit в этом try ничего нет — «не удалось сохранить»
             # означает ровно то, что написано.
     except Exception as e:
-        await cb.answer(f"Ошибка сохранения: {type(e).__name__}", show_alert=True)
-        await cb.message.answer(f"❌ Не удалось сохранить объявление.\n<code>{e}</code>", parse_mode="HTML")
+        err_tmpl = await get_text("services_add_save_error_tmpl", "ru") or "Ошибка сохранения: {error}"
+        await cb.answer(err_tmpl.format(error=type(e).__name__), show_alert=True)
+        detail_tmpl = await get_text("market_add_save_error_detail", "ru") or "❌ Не удалось сохранить объявление.\n<code>{error}</code>"
+        await cb.message.answer(detail_tmpl.format(error=e), parse_mode="HTML")
         print(f"FUNC: sell_ok | DB ERROR {e}")
         return
 
@@ -1066,11 +1083,11 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
             cat  = (await s2.execute(select(Category).where(Category.id == l.category_id))).scalar_one()
         rows = [
             [InlineKeyboardButton(
-                text="✏️ Редактировать все поля",
+                text=await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля",
                 callback_data=f"edit_listing_overview:{l.id}"
             )],
             [InlineKeyboardButton(
-                text="📄 К объявлению",
+                text=await get_text("vac_go_listing", "ru") or "📄 К объявлению",
                 callback_data=f"listing:{l.id}:{city.slug}:{cat.slug}:my"
             )],
         ]
@@ -1087,7 +1104,7 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
         if market_btn:
             nav.append(InlineKeyboardButton(text=market_btn.text, callback_data=market_btn.callback_data))
         else:
-            nav.append(InlineKeyboardButton(text="💸 Барахолка", callback_data="go_market"))
+            nav.append(InlineKeyboardButton(text=await get_text("market_add_btn_market_fallback", "ru") or "💸 Барахолка", callback_data="go_market"))
         if main_btn:
             nav.append(InlineKeyboardButton(text=main_btn.text, callback_data=main_btn.callback_data))
         if nav:
@@ -1107,10 +1124,11 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
         print(f"FUNC: sell_ok | POST-SAVE ERROR listing_id={l.id}: {e}")
         try:
             await cb.answer()
-            await cb.message.answer(
-                f"✅ Объявление №{l.id} опубликовано. "
-                "Экран не загрузился — найти его можно в «Моих объявлениях»."
+            fallback_tmpl = (
+                await get_text("market_add_published_fallback_screen", "ru")
+                or "✅ Объявление №{id} опубликовано. Экран не загрузился — найти его можно в «Моих объявлениях»."
             )
+            await cb.message.answer(fallback_tmpl.format(id=l.id))
         except Exception:
             pass
 
@@ -1190,9 +1208,9 @@ async def delete_yes(cb: CallbackQuery, state: FSMContext):
     # здесь запускал мастер создания объявления Барахолки — даже после
     # удаления услуги.
     if listing_type == "service":
-        back_btn = InlineKeyboardButton(text="⬅️ Мои услуги", callback_data="my_services")
+        back_btn = InlineKeyboardButton(text=await get_text("market_add_btn_my_services", "ru") or "⬅️ Мои услуги", callback_data="my_services")
     else:
-        back_btn = InlineKeyboardButton(text="⬅️ Мои объявления", callback_data="my_listings")
+        back_btn = InlineKeyboardButton(text=await get_text("market_add_btn_my_listings", "ru") or "⬅️ Мои объявления", callback_data="my_listings")
     rows = [[back_btn]]
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:

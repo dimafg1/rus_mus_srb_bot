@@ -628,6 +628,27 @@ path = await render_category_path(session, category_id)
      вызовы) — реальных строк на перенос меньше, уточнять по ходу.
      `admin_panel.py`/`admin_analytics.py`/`admin_fields.py` — owner-only,
      но по решению владельца тоже переносятся, просто не первыми.
+     `market_add.py`(61) — **готово (2026-07-20, после исходного «финиша»
+     плана — найден пропуск при аудите).** 18 новых кодов
+     `market_add_*` (`_flex_done_thanks`, `_flex_select_prompt_tmpl`/
+     `_flex_checkbox_prompt_tmpl`/`_flex_text_prompt_tmpl` (шаблоны с
+     `{idx}/{total}/{label}/{suffix}`), `_flex_number_suffix`/
+     `_flex_default_suffix`, `_helper_title_descr_price_tmpl` (шаблон
+     «Вы уже ввели» на 3 поля — заголовок+описание+цена, такого раньше
+     не было, только 1- и 2-строчные варианты в `vac_add_*`),
+     `_flex_invalid_action`/`_flex_invalid_option`/`_flex_use_buttons`/
+     `_flex_need_number`, `_missing_field_alert`, `_save_error_alert`/
+     `_save_error_detail`, `_btn_market_fallback`, `_published_fallback_screen`,
+     `_btn_my_services`/`_btn_my_listings`). Большая переиспользованная
+     часть — из `vacancy_add.py`/`services_add.py` (структурно зеркальны):
+     `vac_add_flex_default_label`, `vac_add_checkbox_yes`,
+     `admin_panel_btn_no` (❌ Нет), `btn_skip`, `vac_add_flex_skipped_toast`,
+     `vac_add_already_ended_for_helper`/`_already_entered_title_descr_tmpl`
+     (helper-блоки «Вы уже ввели» на 1 и 2 поля — байт-в-байт совпали),
+     `admin_fields_yes`/`_no`, `services_add_publishing_wait`/
+     `_already_published`/`_missing_field_tmpl`/`_save_error_tmpl`,
+     `vac_edit_all`/`vac_go_listing`. Функция `descr_skip_keyboard()`
+     сделана `async` (была sync) — единственный вызов уже был из async-контекста.
 - Публичный сайт для пользователей (веб-интерфейс объявлений)
 - Запуск бота в Казахстане после отладки на Сербии
 - Basic Auth + nginx для category_admin при деплое на сервер
