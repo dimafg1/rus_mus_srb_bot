@@ -12,7 +12,7 @@ from html import escape as html_escape
 
 from app.database import SessionLocal
 from app.models import Category, Listing
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 from app.keyboards import get_common_menu_button
 from aiogram.filters import BaseFilter
 from aiogram import types
@@ -446,7 +446,7 @@ async def user_extra_value_message(message: Message, state: FSMContext):
                 num = int(num)
         except Exception:
             kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
-            msg = await message.answer("Нужно число. Попробуйте ещё раз.", reply_markup=kb)
+            msg = await message.answer(await get_text("extra_field_need_number", "ru") or "Нужно число. Попробуйте ещё раз.", reply_markup=kb)
             last_bot_messages[chat_id] = [msg.message_id]
             await register_bot_messages(chat_id, [msg.message_id])
             print(f"[user_extra_fields] bad number chat={chat_id}, text={txt}")
@@ -479,7 +479,7 @@ async def user_extra_video_by_document(message: Message, state: FSMContext):
 
     # Если это не видео-файл — попросим снова
     kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
-    msg = await message.answer("Это не видео-файл. Отправьте видео (как видео или как файл с типом video/*).", reply_markup=kb)
+    msg = await message.answer(await get_text("extra_field_not_video_file", "ru") or "Это не видео-файл. Отправьте видео (как видео или как файл с типом video/*).", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     print(f"[user_extra_fields] bad document (not video) chat={chat_id}, mime={getattr(doc, 'mime_type', None)}")
@@ -507,7 +507,7 @@ async def user_extra_video_by_text(message: Message, state: FSMContext):
     # не ссылка на видео
     kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
     msg = await message.answer(
-        "Это не ссылка на видео. Отправьте видео-файл или ссылку на YouTube.",
+        await get_text("extra_field_not_video_link", "ru") or "Это не ссылка на видео. Отправьте видео-файл или ссылку на YouTube.",
         reply_markup=kb
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -520,7 +520,7 @@ async def user_extra_video_wrong_content(message: Message, state: FSMContext):
     chat_id = message.chat.id
     await clear_bot_messages(chat_id, message.bot)
     kb = InlineKeyboardMarkup(inline_keyboard=await _controls_row())
-    msg = await message.answer("Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
+    msg = await message.answer(await get_text("extra_field_need_video", "ru") or "Нужно отправить видео. Попробуйте ещё раз.", reply_markup=kb)
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     print(f"[user_extra_fields] wrong content while waiting_video chat={chat_id}, content_type={message.content_type}")

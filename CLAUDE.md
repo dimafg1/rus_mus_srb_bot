@@ -311,9 +311,11 @@ path = await render_category_path(session, category_id)
      `send_message|.answer|edit_message_text|caption=`, отсортирован
      по возрастанию — актуален на 2026-07-20, `for f in app/routers/*.py;
      do echo "$(grep -cE ...) $f"; done | sort -n`):
-     `partner_view.py`(3) — **готово** → `err_invalid_data`-паттерн,
-     код `partner_card_unavailable`. Далее по возрастанию:
-     `user_extra_fields.py`(4), `events_admin.py`(16),
+     `partner_view.py`(3) — **готово**, код `partner_card_unavailable`.
+     `user_extra_fields.py`(4) — **готово**, 4 новых кода
+     `extra_field_need_number`/`extra_field_not_video_file`/
+     `extra_field_not_video_link`/`extra_field_need_video`.
+     Далее по возрастанию: `events_admin.py`(16),
      `admin_analytics.py`(20), `services_edit.py`(23), `market_edit.py`(25),
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
