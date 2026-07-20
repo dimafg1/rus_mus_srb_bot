@@ -11,7 +11,7 @@ from app.routers.vacancy_edit_overview import (
     _back_cb_from_ctx,
     _render_overview,
 )
-from app.routers.utils import clear_bot_messages
+from app.routers.utils import clear_bot_messages, get_text
 
 router = Router(name="vacancy_edit")
 # Включаем роутер overview (чтобы все его хендлеры были зарегистрированы)
@@ -26,7 +26,7 @@ async def vacancy_edit_overview_entry(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[1])
     except Exception:
-        await cb.answer("Некорректный ID", show_alert=True)
+        await cb.answer(await get_text("services_edit_invalid_id", "ru") or "Некорректный ID", show_alert=True)
         print("[vacancy_edit.py] handler=vacancy_edit_overview_entry bad_id data=", cb.data)
         return
     if not await _authorize_vacancy_callback(cb, listing_id):

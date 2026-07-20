@@ -777,6 +777,27 @@ path = await render_category_path(session, category_id)
      `_already_published`/`_missing_field_tmpl`/`_save_error_tmpl`,
      `vac_edit_all`/`vac_go_listing`. Функция `descr_skip_keyboard()`
      сделана `async` (была sync) — единственный вызов уже был из async-контекста.
+
+     **Найдено внешним инструментом (Antigravity, 2026-07-20) — вне
+     области `app/routers/*.py`, поэтому пропущено всеми предыдущими
+     проходами:** `app/main.py` (точка входа, не файл роутера — не
+     фигурировал в списке шага 3), `app/routers/market_utils.py` и
+     `app/routers/vacancy_edit.py` (маленькие файлы-обёртки, не попавшие
+     ни в исходный список по количеству вызовов, ни в повторный аудит,
+     который смотрел `app/routers/*.py`, но не сверялся построчно с
+     каждым тривиальным файлом). Добито: `app/main.py` — 6 мест
+     (`action_cancelled` reuse, новый `main_myid_tmpl`, кнопка
+     «🛠 Админ-панель» в двух местах → `admin_panel_btn_admin_panel`,
+     заголовок «Раздел «Вакансии»» → `main_vacancies_section_header`,
+     кнопки «❓ Частые вопросы»/«⬅️ Назад к помощи» →
+     `main_btn_faq`/`main_btn_back_to_help`). `market_utils.py` — 2 новых
+     кода (`market_utils_search_found`, `market_utils_btn_new_search`).
+     `vacancy_edit.py` — переиспользован `services_edit_invalid_id`.
+     **Урок:** аудит по маске `app/routers/*.py` систематически пропускает
+     `app/main.py` (не в этой директории) и не гарантирует, что каждый
+     файл в директории реально проверен построчно — при следующей ревизии
+     стоит явно включить `app/main.py` и пройтись `grep`-ом по ВСЕМ файлам
+     каталога, а не полагаться на память о том, что уже проверено.
 - Публичный сайт для пользователей (веб-интерфейс объявлений)
 - Запуск бота в Казахстане после отладки на Сербии
 - Basic Auth + nginx для category_admin при деплое на сервер

@@ -367,7 +367,7 @@ async def go_isk(cb: CallbackQuery, state: FSMContext):
     await state.clear()               # 2) дальше уже любая логика
     kb = await vacancy_main_menu()
     await cb.message.edit_text(
-        "Раздел «Вакансии»",
+        await get_text("main_vacancies_section_header", "ru") or "Раздел «Вакансии»",
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -400,7 +400,7 @@ async def go_help(cb: CallbackQuery, state: FSMContext):
             "• Для возврата используйте кнопку 'Назад'\n"
             "• Введите 'отмена' для отмены любого действия"
         )
-    rows = [[InlineKeyboardButton(text="❓ Частые вопросы", callback_data="go_faq")]]
+    rows = [[InlineKeyboardButton(text=await get_text("main_btn_faq", "ru") or "❓ Частые вопросы", callback_data="go_faq")]]
     main_menu_btn = await get_common_menu_button('main_menu')
     if main_menu_btn:
         rows.append([main_menu_btn])
@@ -414,7 +414,7 @@ async def go_faq(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.bot)
     faq_text = await get_text("faq", "ru")
-    rows = [[InlineKeyboardButton(text="⬅️ Назад к помощи", callback_data="go_help")]]
+    rows = [[InlineKeyboardButton(text=await get_text("main_btn_back_to_help", "ru") or "⬅️ Назад к помощи", callback_data="go_help")]]
     main_menu_btn = await get_common_menu_button('main_menu')
     if main_menu_btn:
         rows.append([main_menu_btn])
@@ -554,7 +554,7 @@ async def main_menu_cb(cb: CallbackQuery, state: FSMContext):
                 for row in menu_markup.inline_keyboard for btn in row
             ):
                 menu_markup.inline_keyboard.append(
-                    [InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")]
+                    [InlineKeyboardButton(text=await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель", callback_data="admin")]
                 )
     except Exception as e:
         print(f"[WARN] main_menu_cb add admin button: {e}")
@@ -632,7 +632,7 @@ async def fetch_listings(city_id: int, cat_id: int, offset: int = 0) -> List[Lis
 async def cancel_handler(m: Message, state: FSMContext):
     await _clear_pending_album_tasks(m.chat.id, m.bot)
     await state.clear()
-    await m.answer("Действие отменено.")
+    await m.answer(await get_text("action_cancelled", "ru") or "Действие отменено.")
 
 
 @dp.message(CommandStart())
@@ -668,7 +668,7 @@ async def cmd_start(message: Message, state: FSMContext):
             for row in (markup.inline_keyboard or []) for btn in row
         ):
             markup.inline_keyboard.append(
-                [InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")]
+                [InlineKeyboardButton(text=await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель", callback_data="admin")]
             )
 
     # 6) отправляем главное меню
@@ -684,7 +684,8 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 @dp.message(Command("myid"))
 async def get_my_id(message: Message):
-    msg = await message.answer(f"Ваш Telegram ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
+    myid_tmpl = await get_text("main_myid_tmpl", "ru") or "Ваш Telegram ID: <code>{id}</code>"
+    msg = await message.answer(myid_tmpl.format(id=message.from_user.id), parse_mode="HTML")
     last_bot_messages[message.chat.id].append(msg.message_id)
     await register_bot_messages(message.chat.id, [msg.message_id])
 
