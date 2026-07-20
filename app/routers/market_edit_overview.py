@@ -1014,7 +1014,7 @@ async def extra_open_market(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
             print(f"[market_edit_overview.py] handler=extra_open_market ERROR no_listing listing_id={listing_id} chat_id={chat_id}")
             return
         category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
@@ -1114,7 +1114,7 @@ async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
             print(f"[market_edit_overview.py] handler=mextra_del_market ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
             return
 
@@ -1293,7 +1293,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
 
         listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
             print(f"[market_edit_overview.py] handler=mextra_pick_market ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
             return
 

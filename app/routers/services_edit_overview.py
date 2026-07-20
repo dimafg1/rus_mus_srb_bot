@@ -978,7 +978,7 @@ async def extra_open_services(cb: CallbackQuery, state: FSMContext):
         async with SessionLocal() as s:
             listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
             if not listing:
-                await cb.answer("Объявление не найдено.", show_alert=True)
+                await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
                 print(f"[services_edit_overview.py] handler=extra_open_services ERROR no_listing | chat_id={chat_id} listing_id={listing_id}")
                 return
             if listing.owner_id != cb.from_user.id or listing.type != "service":
@@ -1103,7 +1103,7 @@ async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
         if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
             print(f"[services_edit_overview.py] handler=sextra_del_services ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
             return
         if listing.owner_id != cb.from_user.id or listing.type != "service":
@@ -1278,7 +1278,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
 
         listing = (await s.execute(select(Listing).where(Listing.id == listing_id))).scalar_one_or_none()
         if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
             print(f"[services_edit_overview.py] handler=sextra_pick_services ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
             return
 

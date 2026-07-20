@@ -236,7 +236,7 @@ async def _render_overview(chat_id: int, bot, send, listing_id: int, back_cb: st
     """RU: Рендер обзора и клавиатуры (общая точка вызова)."""
     l, city, cat, defs, flex_vals = await _load_listing_bundle(listing_id)
     if not l:
-        msg = await send("Объявление не найдено.", parse_mode="HTML")
+        msg = await send(await get_text("err_listing_404", "ru") or "Объявление не найдено.", parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         _pp("_render_overview", chat_id=chat_id, listing_id=listing_id, err="not_found")

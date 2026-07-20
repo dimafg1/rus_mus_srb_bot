@@ -1324,7 +1324,7 @@ async def market_extend_listing(cb: CallbackQuery):
             select(Listing).where(Listing.id == listing_id, Listing.type == "market")
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
             return
 
         if listing.owner_id != cb.from_user.id:
@@ -1460,7 +1460,7 @@ async def market_close_listing(cb: CallbackQuery):
             select(Listing).where(Listing.id == listing_id, Listing.type == "market")
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Объявление не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
             return
 
         if listing.owner_id != cb.from_user.id:

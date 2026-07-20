@@ -660,7 +660,7 @@ async def afisha_edit_entry(cb: CallbackQuery, state: FSMContext):
         _af_dbg(func, "db_error", f"{type(e).__name__}: {e}")
 
     if not row:
-        await cb.answer("Объявление не найдено.")
+        await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.")
         _af_dbg(func, "not_found", f"id={listing_id} chat_id={chat_id}")
         return
 

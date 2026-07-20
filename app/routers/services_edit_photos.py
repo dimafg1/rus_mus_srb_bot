@@ -183,7 +183,7 @@ async def _render_photo_editor(chat_id: int, bot, send, listing_id: int, state: 
     if draft is None:
         listing = await _get_listing(listing_id)
         if not listing:
-            msg = await send("Объявление не найдено.")
+            msg = await send(await get_text("err_listing_404", "ru") or "Объявление не найдено.")
             last_bot_messages[chat_id] = [msg.message_id]
             await register_bot_messages(chat_id, [msg.message_id])
             return
@@ -286,7 +286,7 @@ async def sphoto_open(cb: CallbackQuery, state: FSMContext):
 
     listing = await _get_listing(listing_id, cb.from_user.id)
     if not listing:
-        await cb.answer("Объявление не найдено.", show_alert=True)
+        await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
         return
 
     await state.update_data(
@@ -659,7 +659,7 @@ async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
 
     listing = await _get_listing(listing_id, cb.from_user.id)
     if not listing:
-        await cb.answer("Объявление не найдено.", show_alert=True)
+        await cb.answer(await get_text("err_listing_404", "ru") or "Объявление не найдено.", show_alert=True)
         return
 
     current = _draft_from_listing(listing)
