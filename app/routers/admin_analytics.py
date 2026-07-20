@@ -993,7 +993,7 @@ async def admin_analytics_owner_detail(cb: CallbackQuery) -> None:
         owner_offset = max(0, int(parts[4]))
         listing_offset = max(0, int(parts[5]))
     except Exception:
-        await cb.answer("Некорректные данные автора", show_alert=True)
+        await cb.answer(await get_text("analytics_bad_owner_data", "ru") or "Некорректные данные автора", show_alert=True)
         return
 
     owner_q = sql("""
@@ -1110,7 +1110,7 @@ async def admin_analytics_listing_detail(cb: CallbackQuery) -> None:
         owner_offset = max(0, int(parts[5]))
         listing_offset = max(0, int(parts[6]))
     except Exception:
-        await cb.answer("Некорректные данные объявления", show_alert=True)
+        await cb.answer(await get_text("analytics_bad_listing_data", "ru") or "Некорректные данные объявления", show_alert=True)
         return
 
     q = sql("""
