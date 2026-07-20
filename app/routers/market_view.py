@@ -1604,7 +1604,7 @@ async def show_listing_photo(cb: CallbackQuery):
             msgs = await cb.message.answer_media_group(media=media_group)
             sent_ids.extend([m.message_id for m in msgs])
     else:
-        await cb.answer("Фото не найдено.", show_alert=True)
+        await cb.answer(await get_text("err_photo_404", "ru") or "Фото не найдено.", show_alert=True)
 
     if sent_ids:
         sent_photo_messages.setdefault(chat_id, []).extend(sent_ids)

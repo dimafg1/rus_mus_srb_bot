@@ -389,7 +389,7 @@ async def sphoto_delete_request(cb: CallbackQuery, state: FSMContext):
 
     idx = idx_1based - 1
     if idx < 0 or idx >= len(draft):
-        await cb.answer("Фото не найдено.", show_alert=True)
+        await cb.answer(await get_text("err_photo_404", "ru") or "Фото не найдено.", show_alert=True)
         return
 
     await state.update_data(
@@ -545,7 +545,7 @@ async def sphoto_swap(cb: CallbackQuery, state: FSMContext):
     draft = list(data.get("sphoto_draft_ids") or [])
 
     if idx < 0 or idx >= len(draft):
-        await cb.answer("Фото не найдено.", show_alert=True)
+        await cb.answer(await get_text("err_photo_404", "ru") or "Фото не найдено.", show_alert=True)
         return
 
     await _clear_pending_action(state)
@@ -667,7 +667,7 @@ async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
 
     if action == "delete":
         if idx is None or idx < 0 or idx >= len(new_photos):
-            await cb.answer("Фото не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_photo_404", "ru") or "Фото не найдено.", show_alert=True)
             return
         new_photos.pop(idx)
 
@@ -683,7 +683,7 @@ async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
 
     elif action == "replace_one":
         if idx is None or idx < 0 or idx >= len(new_photos):
-            await cb.answer("Фото не найдено.", show_alert=True)
+            await cb.answer(await get_text("err_photo_404", "ru") or "Фото не найдено.", show_alert=True)
             return
         if not pending_photo_ids:
             await cb.answer("Нет фото для замены.", show_alert=True)

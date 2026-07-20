@@ -297,9 +297,11 @@ path = await render_category_path(session, category_id)
      (с `text_en`, по образцу `err_not_owner`).
      «Некорректная ссылка.» (12 мест, `artists.py`+`releases.py`) —
      готового кода не было, завели `err_invalid_link` (с `text_en`).
+     «Фото не найдено.» (9 мест, `services_edit_photos.py`/
+     `market_edit_photos.py`/`market_view.py`) — завели `err_photo_404`
+     (с `text_en`).
      **Осталось из исходного списка кандидатов:**
-     «Фото не найдено.» (9), «Неверные данные» (8), «Нет доступа.» (7)
-     и т.д.
+     «Неверные данные» (8), «Нет доступа.» (7) и т.д.
   3. **Файл за файлом — уникальные тексты экранов**, начиная с крупных:
      `events_add.py`(84), `releases.py`(65), `admin_fields.py`(52),
      `market_edit_overview.py`(49), `services_edit_overview.py`(41),
