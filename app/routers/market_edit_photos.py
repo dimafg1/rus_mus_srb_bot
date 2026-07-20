@@ -88,7 +88,7 @@ async def _save_listing_photos(listing_id: int, owner_id: int, photo_ids: list[s
 async def _authorize_photo_edit(cb: CallbackQuery, listing_id: int) -> Listing | None:
     listing = await _get_listing(listing_id, cb.from_user.id)
     if listing is None:
-        await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+        await cb.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.", show_alert=True)
     return listing
 
 
@@ -96,7 +96,7 @@ async def _authorize_photo_message(message: Message, state: FSMContext, listing_
     if await _get_listing(listing_id, message.from_user.id):
         return True
     await state.clear()
-    await message.answer("Можно редактировать только свои объявления.")
+    await message.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
     return False
 
 

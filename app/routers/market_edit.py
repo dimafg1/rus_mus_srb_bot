@@ -131,7 +131,7 @@ async def edit_listing_menu(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _get_listing(s, listing_id, cb.from_user.id)
         if listing is None:
-            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.", show_alert=True)
             return
         city_slug, cat_slug = await _slugs_for_listing(s, listing)
 
@@ -155,7 +155,7 @@ async def edit_skip(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _get_listing(s, int(listing_id), cb.from_user.id)
         if listing is None:
-            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.", show_alert=True)
             await state.clear()
             return
         city_slug, cat_slug = await _slugs_for_listing(s, listing)
@@ -191,7 +191,7 @@ async def edit_finish(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _get_listing(s, int(listing_id), cb.from_user.id)
         if listing is None:
-            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.", show_alert=True)
             await state.clear()
             return
         city_slug, cat_slug = await _slugs_for_listing(s, listing)
@@ -231,7 +231,7 @@ async def edit_back(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _get_listing(s, int(listing_id), cb.from_user.id)
         if listing is None:
-            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.", show_alert=True)
             await state.clear()
             return
         city_slug, cat_slug = await _slugs_for_listing(s, listing)
@@ -293,7 +293,7 @@ async def edit_title_apply(m: Message, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _get_listing(s, int(listing_id), m.from_user.id)
         if listing is None:
-            await m.answer("Можно редактировать только свои объявления.")
+            await m.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
             await state.clear()
             print(f"[edit.title.apply] forbidden user={m.from_user.id} listing={listing_id}")
             return
@@ -322,7 +322,7 @@ async def edit_price_apply(m: Message, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _get_listing(s, int(listing_id), m.from_user.id)
         if listing is None:
-            await m.answer("Можно редактировать только свои объявления.")
+            await m.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
             await state.clear()
             print(f"[edit.price.apply] forbidden user={m.from_user.id} listing={listing_id}")
             return
@@ -351,7 +351,7 @@ async def edit_descr_apply(m: Message, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _get_listing(s, int(listing_id), m.from_user.id)
         if listing is None:
-            await m.answer("Можно редактировать только свои объявления.")
+            await m.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
             await state.clear()
             print(f"[edit.descr.apply] forbidden user={m.from_user.id} listing={listing_id}")
             return

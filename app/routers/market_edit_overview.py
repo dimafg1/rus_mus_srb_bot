@@ -130,7 +130,7 @@ async def _authorize_market_callback(cb: CallbackQuery, listing_id: int) -> bool
     async with SessionLocal() as s:
         listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
     if listing is None:
-        await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+        await cb.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.", show_alert=True)
         return False
     return True
 
@@ -407,7 +407,7 @@ async def edit_listing_overview(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         listing = await _owned_market_in_session(s, listing_id, cb.from_user.id)
         if listing is None:
-            await cb.answer("Можно редактировать только свои объявления.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.", show_alert=True)
             return
         city, cat = await _get_city_cat(s, listing)
 
@@ -519,7 +519,7 @@ async def ef_apply_main_or_extra_textnum(m: Message, state: FSMContext):
         listing = await _owned_market_in_session(s, l_id, m.from_user.id)
         if listing is None:
             await state.clear()
-            await m.answer("Можно редактировать только свои объявления.")
+            await m.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
             return
 
         if mode == "main":
@@ -810,7 +810,7 @@ async def efx_video_by_video(message: Message, state: FSMContext):
         )
         if listing is None:
             await state.clear()
-            await message.answer("Можно редактировать только свои объявления.")
+            await message.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
             return
         # загрузить текущее flex
         try:
@@ -848,7 +848,7 @@ async def efx_video_by_document(message: Message, state: FSMContext):
         )
         if listing is None:
             await state.clear()
-            await message.answer("Можно редактировать только свои объявления.")
+            await message.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
             return
     doc = message.document
     if doc and doc.mime_type and doc.mime_type.startswith("video/"):
@@ -901,7 +901,7 @@ async def efx_video_by_text(message: Message, state: FSMContext):
         )
     if listing is None:
         await state.clear()
-        await message.answer("Можно редактировать только свои объявления.")
+        await message.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
         return
     txt = (message.text or "").strip()
     if _is_youtube_url(txt):
@@ -912,7 +912,7 @@ async def efx_video_by_text(message: Message, state: FSMContext):
             )
             if listing is None:
                 await state.clear()
-                await message.answer("Можно редактировать только свои объявления.")
+                await message.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
                 return
             try:
                 flex = json.loads(listing.flex) if listing.flex else {}
@@ -954,7 +954,7 @@ async def efx_video_wrong_content(message: Message, state: FSMContext):
             )
         if listing is None:
             await state.clear()
-            await message.answer("Можно редактировать только свои объявления.")
+            await message.answer(await get_text("err_not_owner", "ru") or "Можно редактировать только свои объявления.")
             return
     # покажем стандартную клавиатуру «Отменить»
     kb = _controls_cancel(int(l_id)) if l_id else None
