@@ -334,7 +334,20 @@ path = await render_category_path(session, category_id)
      owner-only инструмент, объём труда несоразмерен пользе (никогда не
      переводится на другой язык). Возврат к этому — по явному запросу
      владельца, не проактивно.
-     `services_edit.py`(23), `market_edit.py`(25),
+     `services_edit.py`(23) — **готово**, 11 новых кодов
+     (`services_edit_invalid_id`/`_title_prompt`/`_title_len_error`/
+     `_title_saved`/`_descr_prompt`/`_descr_saved`/`_price_prompt`/
+     `_price_saved`/`_invalid_params`/`_finished`/`_done`; шаблоны
+     `_prompt` — с плейсхолдером `{current}`, `.format()`, по образцу
+     `sell_choose_category`). **Находка (не наша задача сейчас, просто
+     отметили):** часть хендлеров файла (`edit_title_start`,
+     `edit_descr_start`, `edit_price_start`, `edit_extras_start`,
+     `edit_finish`, callback-паттерн `service_legacy_edit:*`) похожа на
+     мёртвый код — ни один callback_data с этим префиксом нигде не
+     генерируется, только `service_legacy_edit_overview:` (алиас на
+     новый флоу) реально достижим. Тексты перенесены на всякий случай
+     (дёшево), но само удаление — отдельное решение владельца.
+     `market_edit.py`(25),
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

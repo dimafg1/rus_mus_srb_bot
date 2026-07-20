@@ -62,7 +62,7 @@ async def service_edit_overview(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[1])
     except Exception:
-        await cb.answer("Некорректный ID", show_alert=True)
+        await cb.answer(await get_text("services_edit_invalid_id", "ru") or "Некорректный ID", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -87,11 +87,11 @@ async def edit_title_start(cb: CallbackQuery, state: FSMContext):
             return
         current = l.title or "—"
     await state.set_state(ServiceLegacyEdit.waiting_title)
-    msg = await cb.message.answer(
-        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{escape(current)}</code>\n\n"
-        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
-        parse_mode="HTML"
+    tmpl = await get_text("services_edit_title_prompt", "ru") or (
+        "🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     )
+    msg = await cb.message.answer(tmpl.format(current=escape(current)), parse_mode="HTML")
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
@@ -103,7 +103,7 @@ async def edit_title_save(msg: Message, state: FSMContext):
     listing_id = int(data["listing_id"])
     title = (msg.text or "").strip()
     if not (1 <= len(title) <= 70):
-        err = await msg.answer("Заголовок должен быть 1–70 символов. Попробуйте снова.")
+        err = await msg.answer(await get_text("services_edit_title_len_error", "ru") or "Заголовок должен быть 1–70 символов. Попробуйте снова.")
         last_bot_messages.setdefault(msg.chat.id, []).append(err.message_id)
         await register_bot_messages(msg.chat.id, [err.message_id])
         return
@@ -115,7 +115,7 @@ async def edit_title_save(msg: Message, state: FSMContext):
             return
         l.title = title
         s.add(l); await s.commit()
-    ok = await msg.answer("Заголовок обновлён.")
+    ok = await msg.answer(await get_text("services_edit_title_saved", "ru") or "Заголовок обновлён.")
     last_bot_messages.setdefault(msg.chat.id, []).append(ok.message_id)
     await register_bot_messages(msg.chat.id, [ok.message_id])
     await state.clear()
@@ -133,11 +133,11 @@ async def edit_descr_start(cb: CallbackQuery, state: FSMContext):
             return
         current = l.descr or "—"
     await state.set_state(ServiceLegacyEdit.waiting_descr)
-    msg = await cb.message.answer(
-        f"📝 <b>Описание</b>\n\nТекущее значение:\n<code>{escape(current)}</code>\n\n"
-        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
-        parse_mode="HTML"
+    tmpl = await get_text("services_edit_descr_prompt", "ru") or (
+        "📝 <b>Описание</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     )
+    msg = await cb.message.answer(tmpl.format(current=escape(current)), parse_mode="HTML")
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
@@ -156,7 +156,7 @@ async def edit_descr_save(msg: Message, state: FSMContext):
             return
         l.descr = descr
         s.add(l); await s.commit()
-    ok = await msg.answer("Описание обновлено.")
+    ok = await msg.answer(await get_text("services_edit_descr_saved", "ru") or "Описание обновлено.")
     last_bot_messages.setdefault(msg.chat.id, []).append(ok.message_id)
     await register_bot_messages(msg.chat.id, [ok.message_id])
     await state.clear()
@@ -174,11 +174,11 @@ async def edit_price_start(cb: CallbackQuery, state: FSMContext):
             return
         current = l.price or "—"
     await state.set_state(ServiceLegacyEdit.waiting_price)
-    msg = await cb.message.answer(
-        f"💰 <b>Стоимость</b>\n\nТекущее значение:\n<code>{escape(current)}</code>\n\n"
-        "Отправьте новую стоимость (или скопируйте текущую ↑ и отредактируйте):",
-        parse_mode="HTML"
+    tmpl = await get_text("services_edit_price_prompt", "ru") or (
+        "💰 <b>Стоимость</b>\n\nТекущее значение:\n<code>{current}</code>\n\n"
+        "Отправьте новую стоимость (или скопируйте текущую ↑ и отредактируйте):"
     )
+    msg = await cb.message.answer(tmpl.format(current=escape(current)), parse_mode="HTML")
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()
@@ -197,7 +197,7 @@ async def edit_price_save(msg: Message, state: FSMContext):
             return
         l.price = price or "Договорная"
         s.add(l); await s.commit()
-    ok = await msg.answer("Стоимость обновлена.")
+    ok = await msg.answer(await get_text("services_edit_price_saved", "ru") or "Стоимость обновлена.")
     last_bot_messages.setdefault(msg.chat.id, []).append(ok.message_id)
     await register_bot_messages(msg.chat.id, [ok.message_id])
     await state.clear()
@@ -211,7 +211,7 @@ async def edit_extras_start(cb: CallbackQuery, state: FSMContext):
         _, listing_id_s, cat_id_s = cb.data.rsplit(":", 2)
         listing_id = int(listing_id_s); cat_id = int(cat_id_s)
     except Exception:
-        await cb.answer("Некорректные параметры", show_alert=True); return
+        await cb.answer(await get_text("services_edit_invalid_params", "ru") or "Некорректные параметры", show_alert=True); return
 
     async with SessionLocal() as s:
         if not await _get_owned_service(s, listing_id, cb.from_user.id):
@@ -225,10 +225,10 @@ async def edit_extras_start(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("service_legacy_edit:finish"))
 async def edit_finish(cb: CallbackQuery):
-    await cb.answer("Редактирование завершено.")
+    await cb.answer(await get_text("services_edit_finished", "ru") or "Редактирование завершено.")
     # Можно вернуть в «Мои услуги» или в объявление — оставляю нейтрально:
     main_btn = await get_common_menu_button('main_menu', 'ru')
     kb = InlineKeyboardMarkup(inline_keyboard=[[main_btn]] if main_btn else [])
-    done = await cb.message.answer("Готово.", reply_markup=kb)
+    done = await cb.message.answer(await get_text("services_edit_done", "ru") or "Готово.", reply_markup=kb)
     last_bot_messages.setdefault(cb.message.chat.id, []).append(done.message_id)
     await register_bot_messages(cb.message.chat.id, [done.message_id])
