@@ -25,14 +25,14 @@ async def feedback_menu(cb: CallbackQuery, state: FSMContext):
 
     main_menu_btn = await get_common_menu_button('main_menu')
     rows = [
-        [InlineKeyboardButton(text="✍️ Написать нам", callback_data="fb:write")],
-        [InlineKeyboardButton(text="📨 Мои обращения", callback_data="fb:mine")],
+        [InlineKeyboardButton(text=await get_text("feedback_btn_write", "ru") or "✍️ Написать нам", callback_data="fb:write")],
+        [InlineKeyboardButton(text=await get_text("feedback_btn_mine", "ru") or "📨 Мои обращения", callback_data="fb:mine")],
     ]
     if main_menu_btn:
         rows.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.bot.send_message(
-        chat_id, "✉️ <b>Обратная связь</b>\n\nВыберите действие:", parse_mode="HTML", reply_markup=kb)
+        chat_id, await get_text("feedback_menu_header", "ru") or "✉️ <b>Обратная связь</b>\n\nВыберите действие:", parse_mode="HTML", reply_markup=kb)
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
@@ -60,7 +60,7 @@ async def fb_write(cb: CallbackQuery, state: FSMContext):
     nav_msg = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup, parse_mode="HTML")
 
     msg = await cb.message.answer(
-        "✉️ <b>Обратная связь</b>\n\nПожалуйста, опишите Ваш вопрос или предложение:",
+        await get_text("feedback_write_prompt", "ru") or "✉️ <b>Обратная связь</b>\n\nПожалуйста, опишите Ваш вопрос или предложение:",
         parse_mode="HTML"
     )
 
@@ -133,14 +133,14 @@ async def feedback_receive(message: Message, state: FSMContext):
     # Пользователю — тёплое подтверждение + выбор «Нужен ответ / Ответ не нужен»
     main_menu_btn = await get_common_menu_button('main_menu')
     rows = [[
-        InlineKeyboardButton(text="🔔 Нужен ответ", callback_data=f"fb:need:{feedback_id}"),
-        InlineKeyboardButton(text="Ответ не нужен", callback_data=f"fb:noneed:{feedback_id}"),
+        InlineKeyboardButton(text=await get_text("feedback_btn_need_reply", "ru") or "🔔 Нужен ответ", callback_data=f"fb:need:{feedback_id}"),
+        InlineKeyboardButton(text=await get_text("feedback_btn_noneed", "ru") or "Ответ не нужен", callback_data=f"fb:noneed:{feedback_id}"),
     ]]
     if main_menu_btn:
         rows.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-    reply = (
+    reply = await get_text("feedback_thank_you_message", "ru") or (
         "🙏 <b>Спасибо, что нашли время написать</b> — для нас это действительно важно.\n"
         "Ваше сообщение уже у администратора.\n\n"
         "Если Вам нужен ответ, нажмите, пожалуйста, кнопку «Нужен ответ» — "
@@ -273,11 +273,11 @@ async def _deliver_reply(bot, admin_chat_id: int, feedback_id, target_user_id: i
         InlineKeyboardButton(text=user_main_btn.text, callback_data=user_main_btn.callback_data)
     ]]) if user_main_btn else None
     # Сначала вопрос пользователя, потом ответ — так логичнее читать
-    user_msg = (
-        "✉️ <b>Ответ администратора</b>\n\n"
-        f"<i>На Ваше сообщение:</i>\n«{html_escape(original)}»\n\n"
-        f"➡️ {html_escape(reply_text)}"
+    user_msg_tmpl = (
+        await get_text("feedback_admin_reply_delivered_tmpl", "ru")
+        or "✉️ <b>Ответ администратора</b>\n\n<i>На Ваше сообщение:</i>\n«{original}»\n\n➡️ {reply}"
     )
+    user_msg = user_msg_tmpl.format(original=html_escape(original), reply=html_escape(reply_text))
     delivered = False
     try:
         sent = await bot.send_message(target_user_id, user_msg, parse_mode="HTML", reply_markup=user_kb)
@@ -594,7 +594,7 @@ async def _render_fb_mine(cb: CallbackQuery, offset: int = 0):
 
     msg = await cb.bot.send_message(
         chat_id,
-        "📨 <b>Мои обращения</b>\n<i>✅ отвечено · ⏳ ждёт ответа</i>",
+        await get_text("feedback_mine_header", "ru") or "📨 <b>Мои обращения</b>\n<i>✅ отвечено · ⏳ ждёт ответа</i>",
         parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
@@ -635,8 +635,8 @@ async def fb_mine_view(cb: CallbackQuery):
     main_menu_btn = await get_common_menu_button('main_menu')
     kb_rows = []
     if row:
-        kb_rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"fb:minedel:{fid}")])
-    kb_rows.append([InlineKeyboardButton(text="⬅️ К обращениям", callback_data="fb:mine")])
+        kb_rows.append([InlineKeyboardButton(text=await get_text("btn_delete", "ru") or "🗑 Удалить", callback_data=f"fb:minedel:{fid}")])
+    kb_rows.append([InlineKeyboardButton(text=await get_text("feedback_btn_back_to_list", "ru") or "⬅️ К обращениям", callback_data="fb:mine")])
     if main_menu_btn:
         kb_rows.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
@@ -645,16 +645,19 @@ async def fb_mine_view(cb: CallbackQuery):
         body = await get_text("feedback_not_found", "ru") or "Обращение не найдено."
     else:
         question, answer, answered, needs = row[0], row[1], row[2], row[3]
+        header_tmpl = await get_text("feedback_card_header_tmpl", "ru") or "📨 <b>Обращение №{id}</b>\n"
+        question_tmpl = await get_text("feedback_card_question_tmpl", "ru") or "<b>Ваш вопрос:</b>\n«{question}»"
         lines = [
-            f"📨 <b>Обращение №{fid}</b>\n",
-            f"<b>Ваш вопрос:</b>\n«{html_escape(question or '')}»",
+            header_tmpl.format(id=fid),
+            question_tmpl.format(question=html_escape(question or '')),
         ]
         if answer:
-            lines.append(f"\n<b>Ответ администратора:</b>\n{html_escape(answer)}")
+            answer_tmpl = await get_text("feedback_card_answer_tmpl", "ru") or "\n<b>Ответ администратора:</b>\n{answer}"
+            lines.append(answer_tmpl.format(answer=html_escape(answer)))
         elif needs:
-            lines.append("\n<i>Администратор ещё не ответил. Ответ придёт сюда же.</i>")
+            lines.append(await get_text("feedback_card_pending_answer", "ru") or "\n<i>Администратор ещё не ответил. Ответ придёт сюда же.</i>")
         else:
-            lines.append("\n<i>Ответ по этому обращению не запрашивался.</i>")
+            lines.append(await get_text("feedback_card_no_reply_requested", "ru") or "\n<i>Ответ по этому обращению не запрашивался.</i>")
         body = "\n".join(lines)
 
     msg = await cb.bot.send_message(chat_id, body, parse_mode="HTML", reply_markup=kb)
@@ -673,8 +676,8 @@ async def fb_mine_delete_confirm(cb: CallbackQuery):
         await cb.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"fb:mineview:{fid}")],
-        [InlineKeyboardButton(text="✅ Удалить навсегда", callback_data=f"fb:minedel_yes:{fid}")],
+        [InlineKeyboardButton(text=await get_text("btn_cancel", "ru") or "❌ Отмена", callback_data=f"fb:mineview:{fid}")],
+        [InlineKeyboardButton(text=await get_text("admin_panel_btn_delete_forever", "ru") or "✅ Удалить навсегда", callback_data=f"fb:minedel_yes:{fid}")],
     ])
     try:
         await cb.message.edit_reply_markup(reply_markup=kb)
