@@ -15,7 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.database import SessionLocal
 from app.models import Listing, City, Category
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 from app.keyboards import get_common_menu_button
 
 
@@ -401,7 +401,7 @@ async def edit_listing_overview(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(parts[1])
     except (IndexError, TypeError, ValueError):
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
 
     async with SessionLocal() as s:
@@ -1004,7 +1004,7 @@ async def extra_open_market(cb: CallbackQuery, state: FSMContext):
         _, _, raw_id = cb.data.split(":")
         listing_id = int(raw_id)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=extra_open_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
     if not await _authorize_market_callback(cb, listing_id):
@@ -1102,7 +1102,7 @@ async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
     # Разбор параметров из callback_data
     m = re.match(r"^mextra:del:(\d+):(1|2)$", cb.data or "")
     if not m:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=mextra_del_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
     listing_id = int(m.group(1))
@@ -1200,7 +1200,7 @@ async def mextra_add_market(cb: CallbackQuery, state: FSMContext):
         _, _, raw_id = (cb.data or "").split(":")
         listing_id = int(raw_id)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=mextra_add_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
     if not await _authorize_market_callback(cb, listing_id):
@@ -1259,7 +1259,7 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
         listing_id = int(raw_lid)
         cat_id     = int(raw_cid)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=mextra_pick_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
     if not await _authorize_market_callback(cb, listing_id):
@@ -1421,7 +1421,7 @@ async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
         listing_id = int(raw_lid)
         parent_id  = int(raw_pid)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[market_edit_overview.py] handler=mextra_up_market ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
     if not await _authorize_market_callback(cb, listing_id):

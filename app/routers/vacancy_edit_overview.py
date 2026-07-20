@@ -13,7 +13,7 @@ from html import escape as html_escape
 from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.keyboards import get_common_menu_button
-from app.routers.utils import clear_bot_messages, last_bot_messages, safe_edit_or_send, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, safe_edit_or_send, register_bot_messages, get_text
 from app.models import Category
 
 router = Router(name="vacancy_edit_overview")
@@ -545,7 +545,7 @@ async def vef_extra_start(cb: CallbackQuery, state: FSMContext):
         _, _, key, lid_s = cb.data.split(":")
         listing_id = int(lid_s)
     except (TypeError, ValueError):
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
     if not await _authorize_vacancy_callback(cb, listing_id):
         await state.set_state(None)

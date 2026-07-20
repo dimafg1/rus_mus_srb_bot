@@ -9,7 +9,7 @@ from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.states import EditListing
 from app.keyboards import get_common_menu_button
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 
 # доп-поля
 from app.routers.user_extra_fields import (
@@ -126,7 +126,7 @@ async def edit_listing_menu(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[1])
     except (IndexError, TypeError, ValueError):
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
     async with SessionLocal() as s:
         listing = await _get_listing(s, listing_id, cb.from_user.id)

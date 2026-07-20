@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import Listing
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 from app.routers.services_edit_overview import _render_overview
 from app.keyboards import get_common_menu_button
 
@@ -281,7 +281,7 @@ async def sphoto_open(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[2])
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
 
     listing = await _get_listing(listing_id, cb.from_user.id)
@@ -320,7 +320,7 @@ async def sphoto_back(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[2])
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
     if not await _authorize_photo_edit(cb, listing_id):
         return
@@ -351,7 +351,7 @@ async def sphoto_cancel(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[2])
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
     if not await _authorize_photo_edit(cb, listing_id):
         return
@@ -425,7 +425,7 @@ async def sphoto_add(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[2])
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
     if not await _authorize_photo_edit(cb, listing_id):
         return
@@ -647,7 +647,7 @@ async def sphoto_apply(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[2])
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         return
 
     data = await _require_current_photo_session(cb, state, listing_id)

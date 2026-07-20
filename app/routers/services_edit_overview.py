@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from app.database import SessionLocal
 from app.models import Listing, City, Category
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 from app.keyboards import get_common_menu_button
 
 from collections import defaultdict
@@ -969,7 +969,7 @@ async def extra_open_services(cb: CallbackQuery, state: FSMContext):
         _, _, raw_id = (cb.data or "").split(":")
         listing_id = int(raw_id)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[services_edit_overview.py] handler=extra_open_services ERROR parse | chat_id={chat_id} data={cb.data!r}")
         return
 
@@ -1093,7 +1093,7 @@ async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
     # Разбор параметров из callback_data
     m = re.match(r"^sextra:del:(\d+):(1|2)$", cb.data or "")
     if not m:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[services_edit_overview.py] handler=sextra_del_services ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
     listing_id = int(m.group(1))
@@ -1188,7 +1188,7 @@ async def sextra_add_services(cb: CallbackQuery, state: FSMContext):
         _, _, raw_id = (cb.data or "").split(":")
         listing_id = int(raw_id)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[services_edit_overview.py] handler=sextra_add_services ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
 
@@ -1246,7 +1246,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
         listing_id = int(raw_lid)
         cat_id     = int(raw_cid)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[services_edit_overview.py] handler=sextra_pick_services ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
 
@@ -1402,7 +1402,7 @@ async def sextra_up_services(cb: CallbackQuery, state: FSMContext):
         listing_id = int(raw_lid)
         parent_id  = int(raw_pid)
     except Exception:
-        await cb.answer("Некорректные данные.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_data", "ru") or "Некорректные данные.", show_alert=True)
         print(f"[services_edit_overview.py] handler=sextra_up_services ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
 
