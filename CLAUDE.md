@@ -407,9 +407,27 @@ path = await render_category_path(session, category_id)
      `_extend`/`_restore`, `vacancy_extend_data_error`/`_unavailable`,
      `vacancy_close_data_error`, `err_photo_404`, `btn_watch_video`) и
      `search_typo_correction_note`.
+     `releases.py`(110) — **готово (2026-07-20)**: 154 новых кода
+     `releases_*` (лента релизов, карточка, жалоба и модерация, «Мои
+     релизы», мастер добавления — исполнитель/тип/название/обложка/медиа/
+     описание/подтверждение/публикация, поиск, редактирование релиза —
+     поля/тип/треки), плюс переиспользованы `err_invalid_link`/
+     `services_add_publishing_wait`/`search_typo_correction_note`/
+     `btn_watch_video`/`btn_main_menu`/`btn_new_search` (точное совпадение).
+     `_menu_btn()`/`_nav_row()`(уже была)/`_release_yt_button()`/
+     `_release_caption()`/`_release_kb()`/`_release_back()` стали async
+     (были `def`) — все вызовы обёрнуты в `await`; тесты в
+     `tests/test_music_release_regressions.py` обновлены под async
+     (класс `MusicHelperTests` переведён на `IsolatedAsyncioTestCase`).
+     **Осознанно НЕ перенесены** (документируется здесь, как и в
+     `events_view.py`): словари-константы `RELEASE_TYPES`/`ARTIST_TYPES`/
+     `LINK_LABELS`/`REPORT_REASONS` — это enum-подобные наборы (типы
+     релиза/исполнителя, площадки-лейблы, причины жалобы), используются
+     как синхронные dict-lookup и `in`-проверки в большом числе мест по
+     всему файлу; перевод на BotText потребовал бы отдельного асинхронного
+     слоя поверх кодов-ключей ради 5–8 значений на словарь — несоразмерно
+     объёму. Возврат к этому — по отдельному решению владельца.
      > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
-     > `releases.py`(110, частично уже задет — 8 мест кодами `music_*`
-     > из шага `artists.py`). Дальше по списку —
      > `events_add.py`(154). Порядок действий на каждый файл (наработан,
      > повторять без дополнительных вопросов, если пользователь просто
      > говорит «да»/«продолжаем»):

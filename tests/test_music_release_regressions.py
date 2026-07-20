@@ -93,7 +93,7 @@ class FakeState:
         self.values.update(kwargs)
 
 
-class MusicHelperTests(unittest.TestCase):
+class MusicHelperTests(unittest.IsolatedAsyncioTestCase):
     def test_feature_gate_is_inner_and_cannot_swallow_unrelated_updates(self):
         self.assertEqual(len(releases.router.callback_query.outer_middleware), 0)
         self.assertGreaterEqual(len(releases.router.callback_query.middleware), 1)
@@ -124,19 +124,19 @@ class MusicHelperTests(unittest.TestCase):
         self.assertEqual(len(links), releases.MAX_LINKS)
         self.assertEqual(len({link["url"] for link in links}), len(links))
 
-    def test_caption_escapes_user_content_without_cutting_tags(self):
+    async def test_caption_escapes_user_content_without_cutting_tags(self):
         listing, meta, artist, tracks = _release_objects()
         listing.descr = "<b>не тег</b> " * 200
-        caption = releases._release_caption(listing, meta, artist, tracks)
+        caption = await releases._release_caption(listing, meta, artist, tracks)
         self.assertLessEqual(len(caption), 1024)
         self.assertIn("&lt;Группа&gt;", caption)
         self.assertIn("A &lt; B", caption)
         self.assertNotIn("<b>не тег</b>", caption)
         self.assertEqual(caption.count("<b>"), caption.count("</b>"))
 
-    def test_hidden_release_has_no_playback_or_external_links(self):
+    async def test_hidden_release_has_no_playback_or_external_links(self):
         listing, meta, artist, tracks = _release_objects(meta_status="hidden")
-        keyboard = releases._release_kb(
+        keyboard = await releases._release_kb(
             listing,
             meta,
             tracks,
@@ -158,10 +158,10 @@ class MusicHelperTests(unittest.TestCase):
         meta.links = None
         self.assertFalse(releases._release_is_public(listing, meta, artist, []))
 
-    def test_artist_search_source_survives_release_round_trip(self):
+    async def test_artist_search_source_survives_release_round_trip(self):
         self.assertEqual(releases._clean_release_source("a201.s"), "a201.s")
         self.assertEqual(
-            releases._release_back("a201.s"),
+            await releases._release_back("a201.s"),
             ("art:view:201:search", "⬅️ К исполнителю"),
         )
 
