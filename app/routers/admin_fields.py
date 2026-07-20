@@ -11,6 +11,7 @@ from app.routers.utils import clear_bot_messages, last_bot_messages, register_bo
 
 # берём проверку админа из admin_panel (важно: admin_panel НЕ должен импортировать этот файл)
 from app.routers.admin_panel import is_admin
+from app.keyboards import get_common_menu_button
 router = Router()
 
 ROOT_CATEGORY_IDS = {30, 80}
@@ -174,7 +175,9 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
 
 
     rows.append([InlineKeyboardButton(text="✚ Добавить поле", callback_data=f"admin:fields:add:{cat_id}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")])
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
+    back_btn.callback_data = f"admin:edit_category:{cat_id}"
+    rows.append([back_btn])
 
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.message.answer(
@@ -206,8 +209,10 @@ async def admin_fields_add_start(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="📋 Список",  callback_data="admin:field_type:select"),
         InlineKeyboardButton(text="☑️ Чекбокс", callback_data="admin:field_type:checkbox")],
         [InlineKeyboardButton(text="🎬 Видео",   callback_data="admin:field_type:video")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")]
     ])
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")
+    back_btn.callback_data = f"admin:fields:{cat_id}"
+    kb.inline_keyboard.append([back_btn])
     msg = await cb.message.answer("➕ <b>Новое поле</b>\nВыберите <b>тип</b> поля:", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
@@ -266,7 +271,9 @@ async def admin_field_edit_menu(cb: CallbackQuery):
     rows.append([InlineKeyboardButton(text=("❎ Сделать необязательным" if f.get("required") else "✅ Сделать обязательным"),
                                       callback_data=f"admin:field_toggle_required:{cat_id}:{idx}")])
     rows.append([InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"admin:field_delete_confirm:{cat_id}:{idx}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")])
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")
+    back_btn.callback_data = f"admin:fields:{cat_id}"
+    rows.append([back_btn])
 
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.message.answer(text, reply_markup=markup, parse_mode="HTML")
@@ -386,8 +393,10 @@ async def admin_field_edit_label_start(cb: CallbackQuery, state: FSMContext):
     if isinstance(fields, list) and 0 <= idx < len(fields) and isinstance(fields[idx], dict):
         old_label = str(fields[idx].get("label", ""))
 
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:field_edit:{cat_id}:{idx}")
+    back_btn.callback_data = f"admin:field_edit:{cat_id}:{idx}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:field_edit:{cat_id}:{idx}")]
+        [back_btn]
     ])
     msg = await cb.message.answer(
         f"Текущий заголовок: <b>{old_label or '(пусто)'}</b>\n\n"
@@ -450,8 +459,10 @@ async def admin_field_edit_key_start(cb: CallbackQuery, state: FSMContext):
     if isinstance(fields, list) and 0 <= idx < len(fields) and isinstance(fields[idx], dict):
         old_key = str(fields[idx].get("key", ""))
 
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:field_edit:{cat_id}:{idx}")
+    back_btn.callback_data = f"admin:field_edit:{cat_id}:{idx}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:field_edit:{cat_id}:{idx}")]
+        [back_btn]
     ])
     msg = await cb.message.answer(
         f"Текущий ключ: <code>{old_key or '(пусто)'}</code>\n\n"
@@ -532,8 +543,10 @@ async def admin_field_edit_options_start(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
     await state.update_data(edit_cat_id=cat_id, edit_idx=idx)
 
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:field_edit:{cat_id}:{idx}")
+    back_btn.callback_data = f"admin:field_edit:{cat_id}:{idx}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:field_edit:{cat_id}:{idx}")]
+        [back_btn]
     ])
     msg = await cb.message.answer("Введите варианты через запятую:\n<code>Опция 1, Опция 2, ...</code>", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
@@ -582,8 +595,10 @@ async def admin_field_pick_type(cb: CallbackQuery, state: FSMContext):
     await state.update_data(field_type=ftype)
     cat_id = (await state.get_data()).get("field_cat_id")
 
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:add:{cat_id}")
+    back_btn.callback_data = f"admin:fields:add:{cat_id}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:add:{cat_id}")]
+        [back_btn]
     ])
     msg = await cb.message.answer("Введите <b>заголовок</b> поля (например: <i>Модель</i>)", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
@@ -866,7 +881,9 @@ async def admin_field_view(cb: CallbackQuery, state: FSMContext):
         InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"admin:field_edit:{cat_id}:{idx}"),
         InlineKeyboardButton(text="🗑 Удалить",       callback_data=f"admin:field_delete_confirm:{cat_id}:{idx}"),
     ])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")])
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:fields:{cat_id}")
+    back_btn.callback_data = f"admin:fields:{cat_id}"
+    rows.append([back_btn])
 
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await cb.bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)

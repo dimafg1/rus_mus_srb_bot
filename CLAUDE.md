@@ -265,8 +265,8 @@ path = await render_category_path(session, category_id)
      `KeyboardButton`, синхронизированная с проверками `message.text ==
      "⬅️ Назад"` в нескольких хендлерах — сознательно не трогали,
      риск рассинхронизации не оправдан для owner-only экрана).
-     **Осталось** (файл: число мест с `text="⬅️ Назад"`):
-     `admin_fields.py`(8),
+     `app/routers/admin_fields.py` (8 мест). **Осталось** (файл: число
+     мест с `text="⬅️ Назад"`):
      `admin_fields.py`(8), `releases.py`(9), `vacancy_add.py`(10),
      `market_edit_overview.py`(13), `services_edit_overview.py`(13),
      `services_view.py`(13). (Отдельный вариант «◀️ Назад» в
