@@ -39,7 +39,7 @@ from app.routers.releases import (
     _replace_prompt,
     _send_screen,
 )
-from app.routers.utils import clear_bot_messages
+from app.routers.utils import clear_bot_messages, get_text
 
 router = Router(name="artists")
 router.callback_query.middleware(_MusicEnabledMiddleware())
@@ -143,7 +143,7 @@ async def artist_view(cb: CallbackQuery):
     try:
         artist_id = int(parts[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     src = parts[3] if len(parts) > 3 else "list"
     await _show_artist_card(cb, artist_id, src)
@@ -395,7 +395,7 @@ async def artist_edit_type(cb: CallbackQuery, state: FSMContext):
     try:
         idx_int = int(idx)
     except ValueError:
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     t = ARTIST_TYPES[idx_int] if 0 <= idx_int < len(ARTIST_TYPES) else "Другое"
     if not await _save_artist_field(cb.from_user.id, int(aid), "type", t):

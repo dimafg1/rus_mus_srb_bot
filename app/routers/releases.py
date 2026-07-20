@@ -40,6 +40,7 @@ from app.routers.utils import (
     clear_bot_messages,
     register_bot_messages,
     last_bot_messages,
+    get_text,
 )
 
 router = Router(name="releases")
@@ -580,7 +581,7 @@ async def release_view(cb: CallbackQuery):
     try:
         listing_id = int(parts[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     src = _clean_release_source(parts[3] if len(parts) > 3 else "")
     await _show_release_card(cb, listing_id, src)
@@ -625,7 +626,7 @@ async def release_listen(cb: CallbackQuery):
     try:
         listing_id = int(parts[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     src = _clean_release_source(parts[3] if len(parts) > 3 else "")
     listing, meta, artist, tracks = await _load_release(listing_id)
@@ -656,7 +657,7 @@ async def release_video_play(cb: CallbackQuery):
     try:
         listing_id = int(parts[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     listing, meta, artist, tracks = await _load_release(listing_id)
     if not _release_is_public(listing, meta, artist, tracks) or not meta.video_file_id:
@@ -680,7 +681,7 @@ async def release_track_play(cb: CallbackQuery):
     try:
         track_id = int(parts[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     async with SessionLocal() as s:
         t = (await s.execute(
@@ -722,7 +723,7 @@ async def release_report_ask(cb: CallbackQuery):
     try:
         listing_id = int(cb.data.split(":")[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     listing, meta, artist, tracks = await _load_release(listing_id)
     if not _release_is_public(listing, meta, artist, tracks):
@@ -753,13 +754,13 @@ async def release_report_send(cb: CallbackQuery, state: FSMContext):
     """Шаг 2: жалоба с причиной уходит админам. «Другое» — просим описать."""
     parts = cb.data.split(":", 3)
     if len(parts) != 4:
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     _, _, lid_raw, reason = parts
     try:
         listing_id = int(lid_raw)
     except ValueError:
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
 
     if reason not in REPORT_REASONS:
@@ -800,7 +801,7 @@ async def release_report_back(cb: CallbackQuery, state: FSMContext):
     try:
         listing_id = int(cb.data.split(":")[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     await cb.answer()
     await state.clear()
@@ -1048,7 +1049,7 @@ async def add_pick_artist(cb: CallbackQuery, state: FSMContext):
     try:
         artist_id = int(cb.data.split(":")[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     async with SessionLocal() as s:
         artist = (await s.execute(
@@ -1133,7 +1134,7 @@ async def artist_type_pick(cb: CallbackQuery, state: FSMContext):
     try:
         idx = int(cb.data.split(":")[2])
     except (IndexError, ValueError):
-        await cb.answer("Некорректная ссылка.", show_alert=True)
+        await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
     await cb.answer()
     data = await state.get_data()
