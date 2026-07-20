@@ -95,7 +95,7 @@ async def _send_yt_button(cb: CallbackQuery, video_url: str, listing_id: int) ->
             return None
         twa_url = f"{WEBAPP_BASE}/media/video_yt.html?u={urllib.parse.quote(video_url, safe='')}&listing_id={listing_id}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="▶️ Смотреть видео", web_app=WebAppInfo(url=twa_url))]
+            [InlineKeyboardButton(text=(await get_text("services_view_btn_watch_video", "ru") or "▶️ Смотреть видео"), web_app=WebAppInfo(url=twa_url))]
         ])
         try:
             m = await cb.message.answer(" ", reply_markup=kb)
@@ -356,7 +356,8 @@ async def sv_city(cb: CallbackQuery):
         )).scalars().all()
 
     kb = await _services_categories_kb(cats, city_id=city.id, parent_id=SERVICES_ROOT_CATEGORY_ID)
-    text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nВыберите категорию:"
+    city_categories_tmpl = await get_text("services_view_city_categories_tmpl", "ru") or "🛎 Услуги → <b>{city}</b>\nВыберите категорию:"
+    text = city_categories_tmpl.format(city=escape_html(city.name))
     msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -408,7 +409,8 @@ async def sv_cat(cb: CallbackQuery):
                 )).scalars().all()
 
                 kb = await _services_categories_kb(top_cats, city_id=city_id, parent_id=SERVICES_ROOT_CATEGORY_ID)
-                text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nВыберите категорию:"
+                city_categories_tmpl = await get_text("services_view_city_categories_tmpl", "ru") or "🛎 Услуги → <b>{city}</b>\nВыберите категорию:"
+                text = city_categories_tmpl.format(city=escape_html(city.name))
                 msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
                 last_bot_messages[chat_id] = [msg.message_id]
                 await register_bot_messages(chat_id, [msg.message_id])
@@ -423,10 +425,8 @@ async def sv_cat(cb: CallbackQuery):
             )).scalars().all()
 
             kb = await _services_categories_kb(siblings, city_id=city_id, parent_id=parent_id)
-            text = (
-                f"🛎 Услуги → <b>{escape_html(city.name)}</b>\n"
-                f"Категория: <b>{escape_html(parent.name)}</b>\nВыберите подкатегорию:"
-            )
+            subcat_header_tmpl = await get_text("services_view_subcat_header_tmpl", "ru") or "🛎 Услуги → <b>{city}</b>\nКатегория: <b>{category}</b>\nВыберите подкатегорию:"
+            text = subcat_header_tmpl.format(city=escape_html(city.name), category=escape_html(parent.name))
             msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
             last_bot_messages[chat_id] = [msg.message_id]
             await register_bot_messages(chat_id, [msg.message_id])
@@ -438,7 +438,8 @@ async def sv_cat(cb: CallbackQuery):
     # если есть дети и это не «назад» — показываем подкатегории
     if children:
         kb = await _services_categories_kb(children, city_id=city_id, parent_id=cat_id)
-        text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nКатегория: <b>{escape_html(cat.name)}</b>\nВыберите подкатегорию:"
+        subcat_header_tmpl = await get_text("services_view_subcat_header_tmpl", "ru") or "🛎 Услуги → <b>{city}</b>\nКатегория: <b>{category}</b>\nВыберите подкатегорию:"
+        text = subcat_header_tmpl.format(city=escape_html(city.name), category=escape_html(cat.name))
         msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
@@ -476,7 +477,8 @@ async def sv_cat(cb: CallbackQuery):
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         async with SessionLocal() as s:
             cat_path = await render_category_path(s, cat_id, root_id=SERVICES_ROOT_CATEGORY_ID)
-        text = f"🛎 Услуги → <b>{escape_html(city.name)}</b> → {cat_path}\nПока пусто в этой категории."
+        category_empty_tmpl = await get_text("services_view_category_empty_tmpl", "ru") or "🛎 Услуги → <b>{city}</b> → {cat_path}\nПока пусто в этой категории."
+        text = category_empty_tmpl.format(city=escape_html(city.name), cat_path=cat_path)
         msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
@@ -485,7 +487,8 @@ async def sv_cat(cb: CallbackQuery):
         return
 
     kb = await _services_listings_kb(items, city_id=city_id, cat_id=cat_id, offset=offset)
-    text = f"🛎 Услуги → <b>{escape_html(city.name)}</b>\nКатегория: <b>{escape_html(cat.name)}</b>\nВыберите услугу:"
+    listing_choose_tmpl = await get_text("services_view_listing_choose_tmpl", "ru") or "🛎 Услуги → <b>{city}</b>\nКатегория: <b>{category}</b>\nВыберите услугу:"
+    text = listing_choose_tmpl.format(city=escape_html(city.name), category=escape_html(cat.name))
     msg = await cb.bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
@@ -534,7 +537,7 @@ async def sv_item(cb: CallbackQuery):
         listing = (await s.execute(stmt)).scalar_one_or_none()
         city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one_or_none() if listing else None
     if not listing or (from_my and listing.owner_id != cb.from_user.id):
-        msg = await cb.bot.send_message(chat_id, "Объявление не найдено или удалено.")
+        msg = await cb.bot.send_message(chat_id, await get_text("services_view_not_found_or_removed", "ru") or "Объявление не найдено или удалено.")
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()
@@ -626,9 +629,14 @@ async def sv_item(cb: CallbackQuery):
     # Основные блоки
     async with SessionLocal() as s:
         category_path = await render_category_path(s, cat_id, root_id=SERVICES_ROOT_CATEGORY_ID)
-    category_line = f"Категория: <b>Услуги → {category_path}</b>" if category_path else "Категория: <b>Услуги</b>"
+    if category_path:
+        category_path_tmpl = await get_text("services_view_card_category_path_tmpl", "ru") or "Категория: <b>Услуги → {path}</b>"
+        category_line = category_path_tmpl.format(path=category_path)
+    else:
+        category_line = await get_text("services_view_card_category_root", "ru") or "Категория: <b>Услуги</b>"
 
-    city_line = f"Город: <b>{escape_html(city.name)}</b>" if city else ""
+    city_tmpl = await get_text("vacancy_card_city", "ru") or "Город: <b>{name}</b>"
+    city_line = city_tmpl.format(name=escape_html(city.name)) if city else ""
     price_label = (await get_text("service_price", "ru")) or (await get_text("listing_price", "ru")) or "Стоимость услуг"
     title_line = f"<b>{escape_html((listing.title or '').strip())}</b>" if listing.title else ""
     descr_line = escape_html((listing.descr or "").strip())
@@ -645,7 +653,8 @@ async def sv_item(cb: CallbackQuery):
 
     # Если есть YouTube/URL — добавляем ссылку перед контактами
     if video_url:
-        caption_parts.append(f"Видео: {escape_html(video_url)}")
+        video_line_tmpl = await get_text("services_view_video_line_tmpl", "ru") or "Видео: {url}"
+        caption_parts.append(video_line_tmpl.format(url=escape_html(video_url)))
 
     if contact_block:
         caption_parts.append(contact_block)
@@ -653,7 +662,7 @@ async def sv_item(cb: CallbackQuery):
     caption = "\n\n".join([p for p in caption_parts if p]) or " "
 
     is_owner = listing.owner_id == cb.from_user.id
-    management_text = "Контакты/Управление:"
+    management_text = await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:"
     if is_owner:
         left_line = days_left_text(listing)
         if left_line:
@@ -672,29 +681,29 @@ async def sv_item(cb: CallbackQuery):
     if is_owner:
         edit_btn = await get_common_menu_button("btn_edit_service", "ru")
         buttons.append([InlineKeyboardButton(
-            text=(edit_btn.text if edit_btn else "✏️ Редактировать все поля"),
+            text=(edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля")),
             callback_data=f"service_edit_overview:{listing.id}"
         )])
         if is_active(listing):
             buttons.append([InlineKeyboardButton(
-                text="📦 Закрыть (в архив)",
+                text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
                 callback_data=f"service_close:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
             )])
         del_btn = await get_common_menu_button("btn_delete_service", "ru")
         buttons.append([InlineKeyboardButton(
-            text=(del_btn.text if del_btn else "❌ Удалить объявление"),
+            text=(del_btn.text if del_btn else (await get_text("services_view_btn_delete_listing", "ru") or "❌ Удалить объявление")),
             callback_data=f"sell_sold:{listing.id}"
         )])
 
         if should_show_extend_button(listing):
             buttons.append([InlineKeyboardButton(
-                text="🔄 Продлить на 30 дней",
+                text=(await get_text("vacancy_btn_extend", "ru") or "🔄 Продлить на 30 дней"),
                 callback_data=f"service_extend:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
             )])
     elif listing.contact and listing.contact.startswith("@"):
         c_btn = await get_common_menu_button("btn_contact_provider", "ru")
         buttons.append([InlineKeyboardButton(
-            text=(c_btn.text if c_btn else "💬 Связаться"),
+            text=(c_btn.text if c_btn else (await get_text("vacancy_btn_contact", "ru") or "💬 Связаться")),
             url=build_contact_url(listing.id, listing.contact, cb.from_user.id, source),
         )])
 
@@ -800,13 +809,13 @@ async def sv_item(cb: CallbackQuery):
 async def service_extend_listing(cb: CallbackQuery):
     parts = cb.data.split(":", 2)
     if len(parts) < 3:
-        await cb.answer("Ошибка данных продления.", show_alert=True)
+        await cb.answer(await get_text("vacancy_extend_data_error", "ru") or "Ошибка данных продления.", show_alert=True)
         return
 
     try:
         listing_id = int(parts[1])
     except ValueError:
-        await cb.answer("Неверный идентификатор услуги.", show_alert=True)
+        await cb.answer(await get_text("services_view_invalid_service_id", "ru") or "Неверный идентификатор услуги.", show_alert=True)
         return
 
     back_cb = urllib.parse.unquote(parts[2])
@@ -816,17 +825,17 @@ async def service_extend_listing(cb: CallbackQuery):
             select(Listing).where(Listing.id == listing_id, Listing.type == "service")
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Услуга не найдена.", show_alert=True)
+            await cb.answer(await get_text("services_view_not_found", "ru") or "Услуга не найдена.", show_alert=True)
             return
         if listing.owner_id != cb.from_user.id:
-            await cb.answer("Продлить может только автор услуги.", show_alert=True)
+            await cb.answer(await get_text("services_view_extend_owner_only", "ru") or "Продлить может только автор услуги.", show_alert=True)
             return
 
         if not should_show_extend_button(listing):
             # Либо снято с публикации (admin_removed/unpublished), либо до
             # истечения ещё далеко — старый callback не должен накручивать срок.
             await cb.answer(
-                "Продление сейчас недоступно. Кнопка появится за 5 дней до истечения срока.",
+                await get_text("vacancy_extend_unavailable", "ru") or "Продление сейчас недоступно. Кнопка появится за 5 дней до истечения срока.",
                 show_alert=True,
             )
             return
@@ -839,7 +848,7 @@ async def service_extend_listing(cb: CallbackQuery):
     await log_event("listing_extended", user_id=cb.from_user.id,
                     section="services", entity_type="listing", entity_id=listing.id)
 
-    management_text = "Контакты/Управление:"
+    management_text = await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:"
     left_line = days_left_text(listing)
     if left_line:
         management_text += f"\n{left_line}"
@@ -848,25 +857,25 @@ async def service_extend_listing(cb: CallbackQuery):
 
     edit_btn = await get_common_menu_button("btn_edit_service", "ru")
     buttons.append([InlineKeyboardButton(
-        text=(edit_btn.text if edit_btn else "✏️ Редактировать все поля"),
+        text=(edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля")),
         callback_data=f"service_edit_overview:{listing.id}"
     )])
 
     if is_active(listing):
         buttons.append([InlineKeyboardButton(
-            text="📦 Закрыть (в архив)",
+            text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
             callback_data=f"service_close:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
         )])
 
     del_btn = await get_common_menu_button("btn_delete_service", "ru")
     buttons.append([InlineKeyboardButton(
-        text=(del_btn.text if del_btn else "❌ Удалить объявление"),
+        text=(del_btn.text if del_btn else (await get_text("services_view_btn_delete_listing", "ru") or "❌ Удалить объявление")),
         callback_data=f"sell_sold:{listing.id}"
     )])
 
     if should_show_extend_button(listing):
         buttons.append([InlineKeyboardButton(
-            text="🔄 Продлить на 30 дней",
+            text=(await get_text("vacancy_btn_extend", "ru") or "🔄 Продлить на 30 дней"),
             callback_data=f"service_extend:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
         )])
 
@@ -889,7 +898,7 @@ async def service_extend_listing(cb: CallbackQuery):
         my_listing_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
         await register_bot_messages(cb.message.chat.id, [msg.message_id])
 
-    await cb.answer("Услуга продлена на 30 дней.")
+    await cb.answer(await get_text("services_view_extended", "ru") or "Услуга продлена на 30 дней.")
     print(
         f"[services_view.py] service_extend_listing ✓ | "
         f"listing_id={listing.id} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
@@ -902,13 +911,13 @@ async def service_extend_listing(cb: CallbackQuery):
 async def service_close_listing(cb: CallbackQuery):
     parts = cb.data.split(":", 2)
     if len(parts) < 3:
-        await cb.answer("Ошибка данных закрытия.", show_alert=True)
+        await cb.answer(await get_text("vacancy_close_data_error", "ru") or "Ошибка данных закрытия.", show_alert=True)
         return
 
     try:
         listing_id = int(parts[1])
     except ValueError:
-        await cb.answer("Неверный идентификатор услуги.", show_alert=True)
+        await cb.answer(await get_text("services_view_invalid_service_id", "ru") or "Неверный идентификатор услуги.", show_alert=True)
         return
 
     back_cb = urllib.parse.unquote(parts[2])
@@ -918,13 +927,13 @@ async def service_close_listing(cb: CallbackQuery):
             select(Listing).where(Listing.id == listing_id, Listing.type == "service")
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Услуга не найдена.", show_alert=True)
+            await cb.answer(await get_text("services_view_not_found", "ru") or "Услуга не найдена.", show_alert=True)
             return
         if listing.owner_id != cb.from_user.id:
-            await cb.answer("Закрыть может только автор услуги.", show_alert=True)
+            await cb.answer(await get_text("services_view_close_owner_only", "ru") or "Закрыть может только автор услуги.", show_alert=True)
             return
         if not is_active(listing):
-            await cb.answer("Услуга уже закрыта или в архиве.", show_alert=True)
+            await cb.answer(await get_text("services_view_already_closed", "ru") or "Услуга уже закрыта или в архиве.", show_alert=True)
             return
 
         archive_as_closed(listing, user_id=cb.from_user.id)
@@ -938,7 +947,7 @@ async def service_close_listing(cb: CallbackQuery):
     except Exception as e:
         print(f"[services_view.py] service_close analytics error listing_id={listing.id}: {e}")
 
-    management_text = (
+    management_text = await get_text("services_view_closed_management_tmpl", "ru") or (
         "Контакты/Управление:\n"
         "🔴 Услуга закрыта и скрыта из каталога.\n"
         "Вернуть её можно кнопкой ниже — текст и фото сохранены."
@@ -947,19 +956,19 @@ async def service_close_listing(cb: CallbackQuery):
     buttons = []
 
     buttons.append([InlineKeyboardButton(
-        text="↩️ Вернуть в каталог (на 30 дней)",
+        text=(await get_text("vacancy_btn_restore", "ru") or "↩️ Вернуть в каталог (на 30 дней)"),
         callback_data=f"service_extend:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
     )])
 
     edit_btn = await get_common_menu_button("btn_edit_service", "ru")
     buttons.append([InlineKeyboardButton(
-        text=(edit_btn.text if edit_btn else "✏️ Редактировать все поля"),
+        text=(edit_btn.text if edit_btn else (await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля")),
         callback_data=f"service_edit_overview:{listing.id}"
     )])
 
     del_btn = await get_common_menu_button("btn_delete_service", "ru")
     buttons.append([InlineKeyboardButton(
-        text=(del_btn.text if del_btn else "❌ Удалить объявление"),
+        text=(del_btn.text if del_btn else (await get_text("services_view_btn_delete_listing", "ru") or "❌ Удалить объявление")),
         callback_data=f"sell_sold:{listing.id}"
     )])
 
@@ -982,7 +991,7 @@ async def service_close_listing(cb: CallbackQuery):
         my_listing_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
         await register_bot_messages(cb.message.chat.id, [msg.message_id])
 
-    await cb.answer("Услуга закрыта.")
+    await cb.answer(await get_text("services_view_closed", "ru") or "Услуга закрыта.")
     print(
         f"[services_view.py] service_close_listing ✓ | "
         f"listing_id={listing.id} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
@@ -1019,7 +1028,7 @@ async def _render_my_services(cb: CallbackQuery, offset: int = 0):
         if main_btn:
             rows.append([main_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
-        msg = await cb.bot.send_message(chat_id, "У вас пока нет услуг.", reply_markup=kb)
+        msg = await cb.bot.send_message(chat_id, await get_text("services_view_my_empty", "ru") or "У вас пока нет услуг.", reply_markup=kb)
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()
@@ -1059,7 +1068,8 @@ async def _render_my_services(cb: CallbackQuery, offset: int = 0):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     suffix = f" ({total})" if pages > 1 else ""
-    msg = await cb.bot.send_message(chat_id, f"<b>Мои услуги{suffix}:</b>", reply_markup=kb, parse_mode="HTML")
+    my_title_tmpl = await get_text("services_view_my_title_tmpl", "ru") or "<b>Мои услуги{suffix}:</b>"
+    msg = await cb.bot.send_message(chat_id, my_title_tmpl.format(suffix=suffix), reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
@@ -1131,7 +1141,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
 
     if not ids:
         rows = [
-            [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")],
+            [InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="services_search_new")],
             await _back_row("go_services"),
         ]
         main_btn = await get_common_menu_button("main_menu", "ru")
@@ -1139,7 +1149,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
             rows.append([main_btn])
 
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
-        msg = await cb.message.answer("Результаты поиска не найдены. Начните новый поиск.", reply_markup=kb)
+        msg = await cb.message.answer(await get_text("services_view_search_no_results_return", "ru") or "Результаты поиска не найдены. Начните новый поиск.", reply_markup=kb)
         services_last_search_menu_message[chat_id] = msg.message_id
         services_last_search_query_message[chat_id] = msg.message_id
         await register_bot_messages(chat_id, [msg.message_id])
@@ -1160,7 +1170,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
         # Например, закрыли единственную услугу из результатов — не бросаем
         # пользователя на экране без навигации.
         rows = [
-            [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")],
+            [InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="services_search_new")],
             await _back_row("go_services"),
         ]
         main_btn = await get_common_menu_button("main_menu", "ru")
@@ -1168,7 +1178,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
             rows.append([main_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         msg = await cb.message.answer(
-            "Все услуги из результатов уже недоступны. Начните новый поиск.",
+            await get_text("services_view_search_all_gone", "ru") or "Все услуги из результатов уже недоступны. Начните новый поиск.",
             reply_markup=kb,
         )
         await register_bot_messages(chat_id, [msg.message_id])
@@ -1211,7 +1221,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
                 text="»", callback_data=f"services_search_page:{offset + SERVICES_SEARCH_PAGE_SIZE}"))
         rows.append(pager_row)
 
-    rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")])
+    rows.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="services_search_new")])
     rows.append(await _back_row("go_services"))
 
     main_btn = await get_common_menu_button("main_menu", "ru")
@@ -1220,8 +1230,9 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
+    search_found_tmpl = await get_text("services_view_search_found_tmpl", "ru") or "{correction_note}🔎 Найдено: <b>{count}</b> по запросу: <b>{query}</b>\n\nВыберите услугу:"
     msg = await cb.message.answer(
-        f"🔎 Найдено: <b>{total_count}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
+        search_found_tmpl.format(correction_note="", count=total_count, query=escape_html(query)),
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1267,9 +1278,10 @@ async def services_search_start(cb: CallbackQuery, state: FSMContext):
     nav_text    = await get_text('return_to_menu', 'ru') or "Возврат"
     query_text  = await get_text('services_search_query', 'ru') or "Введите запрос для поиска услуг:"
 
+    search_header_tmpl = await get_text("services_view_search_header_tmpl", "ru") or "🔎 <b>Поиск услуг</b>\n\n{query_text}"
     nav_msg   = await cb.bot.send_message(chat_id, nav_text, reply_markup=nav_markup)
     query_msg = await cb.bot.send_message(
-        chat_id, f"🔎 <b>Поиск услуг</b>\n\n{query_text}", parse_mode="HTML")
+        chat_id, search_header_tmpl.format(query_text=query_text), parse_mode="HTML")
 
     services_last_search_menu_message[chat_id]  = nav_msg.message_id
     services_last_search_query_message[chat_id] = query_msg.message_id
@@ -1308,7 +1320,7 @@ async def handle_services_search_query(m: Message, state: FSMContext):
             pass
 
     if not query:
-        msg = await m.answer("Пустой запрос. Введите текст запроса или нажмите «🔄 Новый поиск».")
+        msg = await m.answer(await get_text("services_view_search_empty_query", "ru") or "Пустой запрос. Введите текст запроса или нажмите «🔄 Новый поиск».")
         service_search_messages[chat_id].append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         await state.set_state(ServiceSearch.waiting_for_query)
@@ -1372,7 +1384,7 @@ async def handle_services_search_query(m: Message, state: FSMContext):
         results_count=total_count,
     )
 
-    new_search_btn = InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")
+    new_search_btn = InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="services_search_new")
     back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")
     back_btn.callback_data = "go_services"
     main_btn = await get_common_menu_button("main_menu", "ru")
@@ -1384,8 +1396,9 @@ async def handle_services_search_query(m: Message, state: FSMContext):
 
         kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
 
+        nothing_found_tmpl = await get_text("services_view_search_nothing_found_tmpl", "ru") or "😕 Ничего не найдено по запросу: <b>{query}</b>"
         msg = await m.answer(
-            f"😕 Ничего не найдено по запросу: <b>{escape_html(query)}</b>",
+            nothing_found_tmpl.format(query=escape_html(query)),
             reply_markup=kb,
             parse_mode="HTML"
         )
@@ -1451,16 +1464,14 @@ async def handle_services_search_query(m: Message, state: FSMContext):
 
     correction_note = ""
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
-        correction_note = (
-            f"🧠 Показаны результаты по запросу: "
-            f"<b>{escape_html(search_query_effective)}</b> "
-            f"(учтена возможная опечатка).\n\n"
-        )
+        correction_note_tmpl = await get_text("search_typo_correction_note", "ru") or "🧠 Показаны результаты по запросу: <b>{query}</b> (учтена возможная опечатка).\n\n"
+        correction_note = correction_note_tmpl.format(query=escape_html(search_query_effective))
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
 
+    search_found_tmpl = await get_text("services_view_search_found_tmpl", "ru") or "{correction_note}🔎 Найдено: <b>{count}</b> по запросу: <b>{query}</b>\n\nВыберите услугу:"
     msg = await m.answer(
-        f"{correction_note}🔎 Найдено: <b>{total_count}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
+        search_found_tmpl.format(correction_note=correction_note, count=total_count, query=escape_html(query)),
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1579,7 +1590,7 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
         query = data.get("search_query") or ""
 
     if not ids:
-        msg = await cb.message.answer("Контекст поиска потерян. Начните новый поиск.")
+        msg = await cb.message.answer(await get_text("services_view_search_context_lost", "ru") or "Контекст поиска потерян. Начните новый поиск.")
         services_last_search_menu_message[chat_id] = msg.message_id
         services_last_search_query_message[chat_id] = msg.message_id
         last_bot_messages[chat_id] = [msg.message_id]
@@ -1638,7 +1649,7 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
 
         rows.append(pager_row)
 
-    rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")])
+    rows.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="services_search_new")])
     rows.append(await _back_row("go_services"))
 
     main_btn = await get_common_menu_button("main_menu", "ru")
@@ -1647,8 +1658,9 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
+    search_found_tmpl = await get_text("services_view_search_found_tmpl", "ru") or "{correction_note}🔎 Найдено: <b>{count}</b> по запросу: <b>{query}</b>\n\nВыберите услугу:"
     msg = await cb.message.answer(
-        f"🔎 Найдено: <b>{total_count}</b> по запросу: <b>{escape_html(query)}</b>\n\nВыберите услугу:",
+        search_found_tmpl.format(correction_note="", count=total_count, query=escape_html(query)),
         reply_markup=kb,
         parse_mode="HTML"
     )

@@ -339,9 +339,22 @@ path = await render_category_path(session, category_id)
      `vac_published`/`vac_to_menu`/`vac_ask_title` (точное совпадение
      текста — хорошая находка межфайловых дублей с шагом 2 и другими
      файлами шага 3).
+     `services_view.py`(70) — **готово (2026-07-20)**: 27 новых кодов
+     `services_view_*` (главное меню/город/категория/карточка услуги,
+     продление/закрытие/восстановление, «Мои услуги», поиск услуг —
+     заголовки/пагинация/ошибки), плюс переиспользованы межфайловые
+     дубли из раздела «Вакансии» (`vacancy_contacts_mgmt_label`,
+     `vacancy_btn_archive`/`_extend`/`_restore`/`_contact`,
+     `vac_edit_all`, `vacancy_extend_data_error`/`_unavailable`,
+     `vacancy_close_data_error`, `vacancy_btn_new_search`,
+     `vacancy_card_city`) и из общего поиска (`search_typo_correction_note`
+     — байт-в-байт совпадение шаблона с опечаткой, включая двойной
+     перевод строки). Хорошая находка: карточка вакансии и карточка
+     услуги почти зеркальны текстово — почти все переиспользования нашлись
+     именно там.
      > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
-     > `services_view.py`(70). Дальше по списку —
-     > `services_edit_overview.py`(73), `market_edit_overview.py`(78),
+     > `services_edit_overview.py`(73). Дальше по списку —
+     > `market_edit_overview.py`(78),
      > `events_view.py`(86), `market_view.py`(89), `releases.py`(110,
      > частично уже задет — 8 мест кодами `music_*` из шага `artists.py`),
      > `events_add.py`(154). Порядок действий на каждый файл (наработан,
