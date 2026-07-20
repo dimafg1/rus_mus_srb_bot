@@ -1009,11 +1009,40 @@ async def admin_success_ok_cb(cb: CallbackQuery, state: FSMContext):
 
 
 # Новый обработчик входа в обратную связь
+def _fmt_dt_belgrade(dt_raw) -> str:
+    dt = dt_raw
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except Exception:
+            dt = datetime.strptime(dt[:19], "%Y-%m-%d %H:%M:%S")
+    if dt.tzinfo is None:
+        dt = pytz.UTC.localize(dt)
+    dt = dt.astimezone(SERBIA_TZ)
+    return dt.strftime("%H:%M %d:%m:%y")
+
+
+def _fb_status_marker(answered_at, needs_reply, is_read) -> str:
+    # ✅ отвечено · 🔔 запросили ответ · • непрочитано
+    if answered_at:
+        return "✅"
+    if needs_reply:
+        return "🔔"
+    if not is_read:
+        return "•"
+    return ""
+
+
 @router.callback_query(F.data == "admin_feedback")
 async def admin_feedback_entry(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
+    # Убираем сообщение, с которого нажали (уведомление/меню), как в карточке обращения
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await send_admin_feedback_list(cb, offset=0)
 
 # Новый обработчик страниц
@@ -1032,10 +1061,13 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
     async with SessionLocal() as session:
         # всего писем
         total = (await session.execute(text("SELECT COUNT(*) AS c FROM feedback"))).scalar_one()
+        unanswered = (await session.execute(text(
+            "SELECT COUNT(*) AS c FROM feedback WHERE needs_reply=1 AND answered_at IS NULL"
+        ))).scalar_one()
 
         result = await session.execute(
             text(
-                "SELECT id, username, created_at, is_read "
+                "SELECT id, username, created_at, is_read, needs_reply, answered_at "
                 "FROM feedback "
                 "ORDER BY created_at DESC, id DESC "
                 "LIMIT :limit OFFSET :offset"
@@ -1046,30 +1078,18 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
 
     keyboard = []
 
-    # Кнопка "Более поздние" (новее) — только если offset > 0
-    if offset > 0:
-        keyboard.append([InlineKeyboardButton(
-            text="⏫⏫⏫ Более поздние ⏫⏫⏫",
-            callback_data=f"admin_feedback_list:{max(0, offset - limit)}"
-        )])
+    # Подстраховка: неотвеченные — отдельным пунктом сразу под сообщением,
+    # чтобы не потерять их в общем списке, даже если бегло листать список.
+    unanswered_label = f"🔔 Неотвеченные ({unanswered})" if unanswered else "✅ Неотвеченных нет"
+    keyboard.append([InlineKeyboardButton(text=unanswered_label, callback_data="admin_feedback_unanswered")])
 
     # Сообщения (нумерация глобальная)
     start_no = offset + 1
     for i, r in enumerate(rows):
         idx = offset + i + 1
-        status = "•" if not r.is_read else ""
+        status = _fb_status_marker(r.answered_at, r.needs_reply, r.is_read)
         uname = f"@{r.username}" if r.username else "Без ника"
-
-        dt = r.created_at
-        if isinstance(dt, str):
-            try:
-                dt = datetime.fromisoformat(dt)
-            except Exception:
-                dt = datetime.strptime(dt[:19], "%Y-%m-%d %H:%M:%S")
-        if dt.tzinfo is None:
-            dt = pytz.UTC.localize(dt)
-        dt = dt.astimezone(SERBIA_TZ)
-        dt_str = dt.strftime("%H:%M %d:%m:%y")
+        dt_str = _fmt_dt_belgrade(r.created_at)
 
         btn_text = f"{idx}. {status} {uname} · {dt_str}"
         keyboard.append([InlineKeyboardButton(
@@ -1077,12 +1097,19 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
             callback_data=f"admin_feedback_view:{r.id}"
         )])
 
-    # Кнопка "Более ранние" — если есть ещё страницы
-    if offset + limit < total:
-        keyboard.append([InlineKeyboardButton(
-            text="⏬⏬⏬ Более ранние ⏬⏬⏬",
-            callback_data=f"admin_feedback_list:{offset + limit}"
-        )])
+    # Пагинация — единый стиль бота: «  page/pages  »
+    pages = max(1, (total + limit - 1) // limit)
+    if pages > 1:
+        page = offset // limit + 1
+        pager = []
+        if offset > 0:
+            pager.append(InlineKeyboardButton(
+                text="«", callback_data=f"admin_feedback_list:{max(0, offset - limit)}"))
+        pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+        if offset + limit < total:
+            pager.append(InlineKeyboardButton(
+                text="»", callback_data=f"admin_feedback_list:{offset + limit}"))
+        keyboard.append(pager)
 
     # Кнопки возврата
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin")])
@@ -1091,13 +1118,101 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     end_no = min(offset + len(rows), total)
-    header = f"📬 <b>Сообщения (новые сверху)</b>\nПоказаны {start_no}–{end_no} из {total}"
+    header = f"📬 <b>Сообщения от пользователей (новые сверху)</b>\nПоказаны {start_no}–{end_no} из {total}"
 
     msg = await cb.message.answer(header, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     print(
         f"FUNC: send_admin_feedback_list | offset: {offset} | "
+        f"chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id} | rows: {len(rows)} | total: {total}"
+    )
+
+
+# ── Админ: «Неотвеченные» — подстраховка, отдельный фильтрованный список ──
+#    Только обращения, где пользователь запросил ответ, а ответа ещё нет.
+#    Старейшие — первыми (сначала отвечаем тем, кто ждёт дольше всех).
+@router.callback_query(F.data == "admin_feedback_unanswered")
+async def admin_feedback_unanswered_entry(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await send_admin_feedback_unanswered_list(cb, offset=0)
+
+
+@router.callback_query(F.data.startswith("admin_feedback_unanswered_list"))
+async def admin_feedback_unanswered_list(cb: CallbackQuery):
+    data = cb.data.split(":")
+    offset = int(data[1]) if len(data) > 1 and data[1].isdigit() else 0
+    await send_admin_feedback_unanswered_list(cb, offset=offset)
+
+
+async def send_admin_feedback_unanswered_list(cb: CallbackQuery, offset: int = 0):
+    await clear_bot_messages(cb.message.chat.id, cb.bot)
+    limit = FEEDBACK_PAGE_SIZE
+
+    async with SessionLocal() as session:
+        total = (await session.execute(text(
+            "SELECT COUNT(*) AS c FROM feedback WHERE needs_reply=1 AND answered_at IS NULL"
+        ))).scalar_one()
+
+        result = await session.execute(
+            text(
+                "SELECT id, username, created_at "
+                "FROM feedback WHERE needs_reply=1 AND answered_at IS NULL "
+                "ORDER BY created_at ASC, id ASC "
+                "LIMIT :limit OFFSET :offset"
+            ),
+            {"limit": limit, "offset": offset}
+        )
+        rows = result.fetchall()
+
+    keyboard = []
+
+    if not rows and offset == 0:
+        keyboard.append([InlineKeyboardButton(text="◀️ К списку сообщений", callback_data="admin_feedback")])
+        keyboard.append([InlineKeyboardButton(text="🛠️ Админпанель", callback_data="admin")])
+        header = "🔔 <b>Неотвеченные сообщения пользователей</b>\n\n✅ Отличная работа — неотвеченных обращений нет."
+    else:
+        start_no = offset + 1
+        for i, r in enumerate(rows):
+            idx = offset + i + 1
+            uname = f"@{r.username}" if r.username else "Без ника"
+            dt_str = _fmt_dt_belgrade(r.created_at)
+            keyboard.append([InlineKeyboardButton(
+                text=f"{idx}. 🔔 {uname} · {dt_str}",
+                callback_data=f"admin_feedback_view:{r.id}"
+            )])
+
+        pages = max(1, (total + limit - 1) // limit)
+        if pages > 1:
+            page = offset // limit + 1
+            pager = []
+            if offset > 0:
+                pager.append(InlineKeyboardButton(
+                    text="«", callback_data=f"admin_feedback_unanswered_list:{max(0, offset - limit)}"))
+            pager.append(InlineKeyboardButton(text=f"{page}/{pages}", callback_data="stub"))
+            if offset + limit < total:
+                pager.append(InlineKeyboardButton(
+                    text="»", callback_data=f"admin_feedback_unanswered_list:{offset + limit}"))
+            keyboard.append(pager)
+
+        keyboard.append([InlineKeyboardButton(text="◀️ К списку сообщений", callback_data="admin_feedback")])
+        keyboard.append([InlineKeyboardButton(text="🛠️ Админпанель", callback_data="admin")])
+
+        end_no = min(offset + len(rows), total)
+        header = f"🔔 <b>Неотвеченные сообщения пользователей (старые сверху)</b>\nПоказаны {start_no}–{end_no} из {total}"
+
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    msg = await cb.message.answer(header, reply_markup=markup, parse_mode="HTML")
+    last_bot_messages[cb.message.chat.id] = [msg.message_id]
+    await register_bot_messages(cb.message.chat.id, [msg.message_id])
+    print(
+        f"FUNC: send_admin_feedback_unanswered_list | offset: {offset} | "
         f"chat_id: {cb.message.chat.id} | user_id: {cb.from_user.id} | rows: {len(rows)} | total: {total}"
     )
 
@@ -1126,7 +1241,8 @@ async def admin_feedback_view(cb: CallbackQuery):
     async with SessionLocal() as session:
         res = await session.execute(
             text(
-                "SELECT id, user_id, username, message, created_at, is_read "
+                "SELECT id, user_id, username, message, created_at, is_read, "
+                "needs_reply, answered_at "
                 "FROM feedback WHERE id = :id"
             ),
             {"id": fb_id}
@@ -1187,8 +1303,15 @@ async def admin_feedback_view(cb: CallbackQuery):
         dt_val = utcnow_naive()
     dt_str = dt_val.strftime("%H:%M %d:%m:%y")
 
+    if row.answered_at:
+        status_line = "✅ <b>Отвечено</b>\n"
+    elif row.needs_reply:
+        status_line = "🔔 <b>Пользователь запросил ответ</b>\n"
+    else:
+        status_line = ""
     header = (
         f"📨 <b>Обратная связь</b>  <i>[{pos}/{total}]</i>\n"
+        f"{status_line}"
         f"<b>От:</b> {uname}\n"
         f"<b>Дата:</b> {dt_str}\n"
     )
@@ -1204,6 +1327,7 @@ async def admin_feedback_view(cb: CallbackQuery):
         rows.append([InlineKeyboardButton(text="⏫⏫⏫", callback_data=f"admin_feedback_view:{prev_id}")])
     if next_id:
         rows.append([InlineKeyboardButton(text="⏬⏬⏬", callback_data=f"admin_feedback_view:{next_id}")])
+    rows.append([InlineKeyboardButton(text="✍️ Ответить", callback_data=f"fb:reply:{row.id}")])
     rows.append([
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_feedback_delete:{row.id}"),
         InlineKeyboardButton(text="↩️ К списку", callback_data=f"admin_feedback_list:{back_offset}")

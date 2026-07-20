@@ -4,6 +4,7 @@
 Открыть: http://localhost:8001
 """
 import base64
+import html
 import secrets
 import sqlite3, json, datetime, os, re
 from contextlib import contextmanager
@@ -2046,6 +2047,128 @@ async def track_add(listing_id: int, request: Request, filename: str = ""):
     return {"ok": True}
 
 
+# ─────────────────────── Обратная связь (вкладка «✉️ Обратная связь») ──────
+# Тот же функционал, что в Telegram-Админ-панели (app/routers/admin_panel.py,
+# app/routers/feedback.py): единый источник правды — таблица feedback,
+# синхронизация между ботом и веб-админкой не нужна, читают/пишут одну БД.
+
+async def _send_telegram_message(chat_id: int, text_: str, reply_markup: dict | None) -> dict:
+    """Отправка сообщения через Telegram Bot API напрямую (веб-админка —
+    отдельный процесс от бота, поэтому не может дёрнуть его aiogram-объект)."""
+    if not BOT_TOKEN:
+        return {"ok": False, "description": "Bot token not configured"}
+    payload = {"chat_id": chat_id, "text": text_, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data=payload)
+        return r.json()
+
+
+def _feedback_reply_message(original: str, reply_text: str) -> str:
+    """Тот же формат, что и в боте (app/routers/feedback.py:_deliver_reply):
+    сначала вопрос пользователя, потом ответ — чтобы легче читалось."""
+    return (
+        "✉️ <b>Ответ администратора</b>\n\n"
+        f"<i>На Ваше сообщение:</i>\n«{html.escape(original or '')}»\n\n"
+        f"➡️ {html.escape(reply_text)}"
+    )
+
+
+def _feedback_main_menu_markup(conn) -> dict:
+    row = conn.execute("SELECT text, callback_data FROM menu WHERE code='main_menu'").fetchone()
+    btn_text = (row[0] if row and row[0] else "Главное меню.")
+    btn_cb = (row[1] if row and row[1] else "main_menu")
+    return {"inline_keyboard": [[{"text": btn_text, "callback_data": btn_cb}]]}
+
+
+@app.get("/api/feedback")
+def feedback_list(unanswered: int = Query(0), offset: int = Query(0), limit: int = Query(20)):
+    with db() as conn:
+        where = "WHERE needs_reply=1 AND answered_at IS NULL" if unanswered else ""
+        total = conn.execute(f"SELECT COUNT(*) FROM feedback {where}").fetchone()[0] or 0
+        rows = conn.execute(
+            f"SELECT id, user_id, username, message, created_at, is_read, needs_reply, answered_at "
+            f"FROM feedback {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    return {
+        "total": total,
+        "rows": [{
+            "id": r[0], "user_id": r[1], "username": r[2] or "",
+            "message": r[3] or "", "created_at": r[4] or "",
+            "is_read": bool(r[5]), "needs_reply": bool(r[6]),
+            "answered": r[7] is not None,
+        } for r in rows],
+    }
+
+
+@app.get("/api/feedback/{fid}")
+def feedback_get(fid: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id, user_id, username, message, answer_text, answered_at, "
+            "needs_reply, created_at, is_read FROM feedback WHERE id=?", (fid,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Обращение не найдено")
+        if not row[8]:
+            conn.execute("UPDATE feedback SET is_read=1 WHERE id=?", (fid,))
+    return {
+        "id": row[0], "user_id": row[1], "username": row[2] or "",
+        "message": row[3] or "", "answer_text": row[4], "answered_at": row[5],
+        "needs_reply": bool(row[6]), "created_at": row[7] or "",
+    }
+
+
+class FeedbackReplyBody(BaseModel):
+    text: str
+
+
+@app.post("/api/feedback/{fid}/reply")
+async def feedback_reply(fid: int, body: FeedbackReplyBody):
+    reply_text = (body.text or "").strip()
+    if not reply_text:
+        raise HTTPException(400, "Пустой ответ")
+    with db() as conn:
+        row = conn.execute(
+            "SELECT user_id, message FROM feedback WHERE id=?", (fid,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Обращение не найдено")
+        target_user_id, original = row[0], row[1]
+        reply_markup = _feedback_main_menu_markup(conn)
+
+    text_html = _feedback_reply_message(original, reply_text)
+    resp = await _send_telegram_message(target_user_id, text_html, reply_markup)
+
+    if not resp.get("ok"):
+        return {"ok": False, "detail": resp.get("description") or "Не удалось доставить ответ"}
+
+    with db() as conn:
+        conn.execute(
+            "UPDATE feedback SET answered_at=CURRENT_TIMESTAMP, answer_text=? WHERE id=?",
+            (reply_text, fid),
+        )
+        # Ответ попадёт под обычную чат-гигиену бота — сметётся при
+        # следующей навигации пользователя, как и ответы через сам бот.
+        msg_id = (resp.get("result") or {}).get("message_id")
+        if msg_id:
+            conn.execute(
+                "INSERT INTO botmessage (chat_id, message_id, created_at) VALUES (?, ?, ?)",
+                (target_user_id, msg_id,
+                 datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()),
+            )
+    return {"ok": True}
+
+
+@app.delete("/api/feedback/{fid}")
+def feedback_delete(fid: int):
+    with db() as conn:
+        conn.execute("DELETE FROM feedback WHERE id=?", (fid,))
+    return {"ok": True}
+
+
 @app.get("/api/catalog/sections")
 def catalog_sections():
     with db() as conn:
@@ -2607,6 +2730,7 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
   <button class="tab" onclick="switchTab('catalog')" data-i18n="tab_catalog">📦 Объявления</button>
   <button class="tab" onclick="switchTab('releases')">🎵 Релизы</button>
   <button class="tab" onclick="switchTab('artists')">🎤 Исполнители</button>
+  <button class="tab" onclick="switchTab('feedback')">✉️ Обратная связь</button>
 </div>
 
 <div id="panel-market"  class="panel active"><div class="toolbar">
@@ -2751,6 +2875,25 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 
 <div id="panel-artists" class="panel">
   <div id="artists-content"></div>
+</div>
+
+<div id="panel-feedback" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-ghost btn-sm" id="fb-tab-all" onclick="fbSetFilter(false)">Все</button>
+    <button class="btn btn-ghost btn-sm" id="fb-tab-unanswered" onclick="fbSetFilter(true)">🔔 Неотвеченные</button>
+    <button class="btn btn-ghost btn-sm" onclick="loadFeedback()">↻ Обновить</button>
+  </div>
+  <div id="feedback-content"></div>
+</div>
+
+<!-- Feedback detail/reply modal -->
+<div class="overlay" id="modal-feedback" onclick="if(event.target===this)closeFeedbackModal()">
+  <div class="modal" style="width:520px;max-width:94vw;max-height:90vh;overflow-y:auto;padding:24px">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+      <button class="btn btn-ghost btn-sm" onclick="closeFeedbackModal()">✕ Закрыть</button>
+    </div>
+    <div id="feedback-modal-content"><div class="empty" style="padding:40px;text-align:center">…</div></div>
+  </div>
 </div>
 
 <!-- Listing detail modal -->
@@ -3298,7 +3441,7 @@ document.querySelectorAll('.overlay').forEach(o=>{
 });
 
 // ── tabs ──
-const ALL_TABS = ['market','services','vacancy','analytics','catalog','releases','artists'];
+const ALL_TABS = ['market','services','vacancy','analytics','catalog','releases','artists','feedback'];
 function switchTab(section) {
   currentTab=section;
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ALL_TABS[i]===section));
@@ -3308,6 +3451,7 @@ function switchTab(section) {
   else if (section==='catalog') catalogLoad(0);
   else if (section==='artists') loadArtists();
   else if (section==='releases') loadReleases();
+  else if (section==='feedback') loadFeedback();
   else loadTree(section);
 }
 
@@ -3413,6 +3557,139 @@ async function loadArtists() {
         </td>
       </tr>`).join('')}</tbody>
   </table>`;
+}
+
+// ── Обратная связь ──
+let fbUnansweredOnly = false, fbOffset = 0;
+const FB_LIMIT = 20;
+
+function fbSetFilter(flag) {
+  fbUnansweredOnly = flag;
+  fbOffset = 0;
+  document.getElementById('fb-tab-all').classList.toggle('btn-primary', !flag);
+  document.getElementById('fb-tab-unanswered').classList.toggle('btn-primary', flag);
+  loadFeedback();
+}
+
+function fbMarker(r) {
+  if (r.answered) return '✅';
+  if (r.needs_reply) return '🔔';
+  if (!r.is_read) return '•';
+  return '';
+}
+
+async function loadFeedback() {
+  const el = document.getElementById('feedback-content');
+  el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  const data = await fetch(`/api/feedback?unanswered=${fbUnansweredOnly?1:0}&offset=${fbOffset}&limit=${FB_LIMIT}`).then(r=>r.json());
+  const rows = data.rows || [];
+  if (!rows.length) {
+    el.innerHTML = `<div class="empty" style="padding:30px;text-align:center">${fbUnansweredOnly ? 'Неотвеченных обращений нет 🎉' : 'Обращений пока нет'}</div>`;
+    return;
+  }
+  const pages = Math.max(1, Math.ceil(data.total / FB_LIMIT));
+  const page = Math.floor(fbOffset / FB_LIMIT) + 1;
+  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${data.total} обращений</div>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:#556;font-size:11px;text-align:left">
+      <th style="padding:6px 8px"></th>
+      <th style="padding:6px 8px">От кого</th>
+      <th style="padding:6px 8px">Когда</th>
+      <th style="padding:6px 8px">Сообщение</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr style="border-top:1px solid #0d1628">
+        <td style="padding:7px 8px">${fbMarker(r)}</td>
+        <td style="padding:7px 8px;font-weight:600;color:#99a">${r.username?'@'+esc(r.username):'id'+r.user_id}</td>
+        <td style="padding:7px 8px;color:#778">${esc(r.created_at)}</td>
+        <td style="padding:7px 8px;color:#ccd;cursor:pointer" onclick="openFeedback(${r.id})">
+          ${esc((r.message||'').slice(0,60))}${(r.message||'').length>60?'…':''}</td>
+        <td style="padding:7px 8px;white-space:nowrap">
+          <button class="btn btn-sm" onclick="openFeedback(${r.id})">👁 Открыть</button>
+          <button class="btn btn-sm btn-del" onclick="fbDelete(${r.id})">🗑</button>
+        </td>
+      </tr>`).join('')}</tbody>
+  </table>
+  ${pages > 1 ? `<div class="an-pagination">
+    <button onclick="fbPage(${Math.max(0, fbOffset - FB_LIMIT)})" ${fbOffset===0?'disabled':''}>◀</button>
+    <span>стр. ${page} из ${pages}</span>
+    <button onclick="fbPage(${fbOffset + FB_LIMIT})" ${fbOffset + FB_LIMIT >= data.total?'disabled':''}>▶</button>
+  </div>` : ''}`;
+}
+
+function fbPage(offset) {
+  fbOffset = offset;
+  loadFeedback();
+}
+
+async function openFeedback(id) {
+  document.getElementById('feedback-modal-content').innerHTML = '<div class="empty" style="padding:40px;text-align:center">…</div>';
+  openOverlay('modal-feedback');
+  try {
+    const d = await fetch(`/api/feedback/${id}`).then(r=>r.json());
+    renderFeedbackModal(d);
+  } catch(e) {
+    document.getElementById('feedback-modal-content').innerHTML = `<div class="empty" style="color:#f66">Ошибка: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderFeedbackModal(d) {
+  const el = document.getElementById('feedback-modal-content');
+  const who = d.username ? '@'+esc(d.username) : 'id'+d.user_id;
+  const answerBlock = d.answer_text
+    ? `<div style="margin-top:14px"><b>Ответ администратора:</b><br>${esc(d.answer_text).replace(/\n/g,'<br>')}</div>`
+    : `<div style="margin-top:14px;color:#889">Пока не отвечено.</div>`;
+  el.innerHTML = `
+    <div style="font-size:12px;color:#778;margin-bottom:8px">Обращение №${d.id} · ${who} · ${esc(d.created_at)}</div>
+    <div><b>Сообщение:</b><br>${esc(d.message).replace(/\n/g,'<br>')}</div>
+    ${answerBlock}
+    <div style="margin-top:16px">
+      <textarea id="fb-reply-input" placeholder="Ваш ответ пользователю…"
+        style="width:100%;min-height:90px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:8px;font:inherit;box-sizing:border-box"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-primary" onclick="fbSendReply(${d.id})">✍️ Отправить ответ</button>
+      <button class="btn btn-del btn-sm" onclick="fbDelete(${d.id}, true)">🗑 Удалить</button>
+    </div>
+    <div id="fb-reply-status" style="margin-top:8px;font-size:12px"></div>`;
+}
+
+async function fbSendReply(id) {
+  const input = document.getElementById('fb-reply-input');
+  const text = (input.value || '').trim();
+  if (!text) return;
+  const statusEl = document.getElementById('fb-reply-status');
+  statusEl.style.color = '#889';
+  statusEl.textContent = 'Отправка…';
+  try {
+    const r = await fetch(`/api/feedback/${id}/reply`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({text})
+    }).then(x=>x.json());
+    if (r.ok) {
+      statusEl.style.color = '#6ef5aa';
+      statusEl.textContent = '✅ Ответ отправлен';
+      openFeedback(id);
+      loadFeedback();
+    } else {
+      statusEl.style.color = '#f66';
+      statusEl.textContent = '⚠️ ' + (r.detail || 'не удалось доставить');
+    }
+  } catch(e) {
+    statusEl.style.color = '#f66';
+    statusEl.textContent = 'Ошибка: ' + e.message;
+  }
+}
+
+async function fbDelete(id, fromModal) {
+  if (!confirm('Удалить это обращение навсегда?')) return;
+  await fetch(`/api/feedback/${id}`, {method:'DELETE'});
+  if (fromModal) closeFeedbackModal();
+  loadFeedback();
+}
+
+function closeFeedbackModal() {
+  document.getElementById('modal-feedback').classList.remove('open');
 }
 
 function _artistReleaseRows(releases) {

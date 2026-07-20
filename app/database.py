@@ -130,3 +130,14 @@ async def init_db() -> None:
             except Exception as e:
                 if not _is_duplicate_column(e):
                     raise  # колонка уже есть — нормально; остальное — громко наружу
+        # Миграция: обратная связь — запрос ответа пользователем и отметка ответа (Р-15)
+        for col, ddl in (
+            ("needs_reply", "INTEGER NOT NULL DEFAULT 0"),
+            ("answered_at", "DATETIME"),
+            ("answer_text", "TEXT"),
+        ):
+            try:
+                await conn.execute(text(f"ALTER TABLE feedback ADD COLUMN {col} {ddl}"))
+            except Exception as e:
+                if not _is_duplicate_column(e):
+                    raise  # колонка уже есть — нормально; остальное — громко наружу
