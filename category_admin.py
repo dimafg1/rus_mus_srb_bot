@@ -3603,7 +3603,8 @@ async function loadFeedback() {
         <td style="padding:7px 8px">${fbMarker(r)}</td>
         <td style="padding:7px 8px;font-weight:600;color:#99a">${r.username?'@'+esc(r.username):'id'+r.user_id}</td>
         <td style="padding:7px 8px;color:#778">${esc(r.created_at)}</td>
-        <td style="padding:7px 8px;color:#ccd;cursor:pointer" onclick="openFeedback(${r.id})">
+        <td style="padding:7px 8px;color:#ccd;cursor:pointer" onclick="openFeedback(${r.id})"
+          title="${esc(r.message||'')}">
           ${esc((r.message||'').slice(0,60))}${(r.message||'').length>60?'…':''}</td>
         <td style="padding:7px 8px;white-space:nowrap">
           <button class="btn btn-sm" onclick="openFeedback(${r.id})">👁 Открыть</button>
