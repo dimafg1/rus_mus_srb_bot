@@ -7,7 +7,7 @@ import json, inspect, re
 from app.database import SessionLocal
 from app.models import Category
 from app.states import AdminFieldStates
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 
 # берём проверку админа из admin_panel (важно: admin_panel НЕ должен импортировать этот файл)
 from app.routers.admin_panel import is_admin
@@ -102,7 +102,7 @@ async def admin_fields_menu(cb: CallbackQuery, state: FSMContext, cat_id: int | 
         try:
             cat_id = int(re.match(r"^admin:fields:(\d+)$", (cb.data or "")).group(1))
         except Exception:
-            await cb.answer("Неверные данные", show_alert=True); return
+            await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True); return
 
 
     # подчистка
@@ -232,7 +232,7 @@ async def admin_field_edit_menu(cb: CallbackQuery):
         _, _, cat_id_s, idx_s = cb.data.split(":")
         cat_id = int(cat_id_s); idx = int(idx_s)
     except Exception:
-        await cb.answer("Неверные данные", show_alert=True); return
+        await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True); return
 
     await clear_bot_messages(chat_id, cb.bot)
 
@@ -414,7 +414,7 @@ async def admin_field_edit_label_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminFieldStates.editing_label)
 async def admin_field_edit_label_save(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа."); return
+        await message.answer(await get_text("err_no_access", "ru") or "Нет доступа."); return
 
     await clear_bot_messages(message.chat.id, message.bot)
     data = await state.get_data()
@@ -480,7 +480,7 @@ async def admin_field_edit_key_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminFieldStates.editing_key)
 async def admin_field_edit_key_save(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа."); return
+        await message.answer(await get_text("err_no_access", "ru") or "Нет доступа."); return
 
     await clear_bot_messages(message.chat.id, message.bot)
     import re
@@ -560,7 +560,7 @@ async def admin_field_edit_options_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminFieldStates.editing_options)
 async def admin_field_edit_options_save(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа."); return
+        await message.answer(await get_text("err_no_access", "ru") or "Нет доступа."); return
 
     await clear_bot_messages(message.chat.id, message.bot)
     data = await state.get_data()
@@ -611,7 +611,7 @@ async def admin_field_pick_type(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminFieldStates.waiting_label)
 async def admin_field_label(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа."); return
+        await message.answer(await get_text("err_no_access", "ru") or "Нет доступа."); return
 
     await clear_bot_messages(message.chat.id, message.bot)
     label = message.text.strip()
@@ -676,7 +676,7 @@ async def admin_field_keep_key(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminFieldStates.waiting_key)
 async def admin_field_key(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа."); return
+        await message.answer(await get_text("err_no_access", "ru") or "Нет доступа."); return
 
     await clear_bot_messages(message.chat.id, message.bot)
 
@@ -753,7 +753,7 @@ async def admin_field_required(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminFieldStates.waiting_options)
 async def admin_field_options(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа."); return
+        await message.answer(await get_text("err_no_access", "ru") or "Нет доступа."); return
 
     await clear_bot_messages(message.chat.id, message.bot)
     options = [o.strip() for o in message.text.split(",") if o.strip()]
@@ -831,7 +831,7 @@ async def admin_field_view(cb: CallbackQuery, state: FSMContext):
         _, _, _, cat_id_s, idx_s = cb.data.split(":")
         cat_id, idx = int(cat_id_s), int(idx_s)
     except Exception:
-        await cb.answer("Неверные данные", show_alert=True); return
+        await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True); return
 
     # подчистка
     try:
@@ -912,7 +912,7 @@ async def admin_field_move(cb: CallbackQuery, state: FSMContext):
     # ожидаем: admin:field_move:<cat_id>:<idx>:<direction>
     parts = cb.data.split(":")
     if len(parts) != 5:
-        await cb.answer("Неверные данные", show_alert=True); return
+        await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True); return
     _, _, cat_id_s, idx_s, direction = parts
 
     try:
@@ -920,7 +920,7 @@ async def admin_field_move(cb: CallbackQuery, state: FSMContext):
         idx = int(idx_s)
         direction = direction.lower()
     except Exception:
-        await cb.answer("Неверные данные", show_alert=True); return
+        await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True); return
 
     # подчистка
     try:
@@ -999,7 +999,7 @@ async def admin_fields_toggle_extra(cb: CallbackQuery, state: FSMContext):
 
     m = re.match(r"^admin:fields:toggle_extra:(\d+):(0|1)$", (cb.data or ""))
     if not m:
-        await cb.answer("Неверные данные", show_alert=True)
+        await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True)
         print(f"[admin_fields.py] handler=admin_fields_toggle_extra ERROR parse chat_id={chat_id} data={cb.data!r}")
         return
 

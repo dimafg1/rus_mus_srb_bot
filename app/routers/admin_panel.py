@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 from sqlalchemy import select, text, func, and_, or_
 from app.database import SessionLocal
 from app.models import Category, BotUser, Item, Listing, Profile
@@ -211,7 +211,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
     try:
         parent_id = int(cb.data.split(":")[-1])
     except Exception:
-        await cb.answer("Неверные данные", show_alert=True)
+        await cb.answer(await get_text("err_bad_data", "ru") or "Неверные данные", show_alert=True)
         return
 
     ROOT_CATEGORY_IDS = {30, 80, 90}
@@ -1456,7 +1456,7 @@ USERS_PAGE_SIZE = 20
 @router.callback_query(F.data.startswith("admin:users:"))
 async def admin_users_list(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
-        await cb.answer("Нет доступа.", show_alert=True)
+        await cb.answer(await get_text("err_no_access", "ru") or "Нет доступа.", show_alert=True)
         return
 
     try:
