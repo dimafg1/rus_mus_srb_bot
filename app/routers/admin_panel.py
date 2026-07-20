@@ -17,7 +17,8 @@ import json
 import pytz
 from html import escape as html_escape
 from app.admin_ids import ADMIN_IDS, is_admin
-from app.keyboards import get_common_menu_button
+import app.keyboards as _keyboards  # импорт модуля, а не имени — иначе цикл
+                                     # (app.keyboards импортирует is_admin отсюда)
 SERBIA_TZ = pytz.timezone("Europe/Belgrade")
 FEEDBACK_PAGE_SIZE = 10
 
@@ -291,7 +292,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
         if parent_category.parent_id is not None else
         "admin:edit_categories"
     )
-    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)
+    back_btn = await _keyboards.get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)
     back_btn.callback_data = back_cb
     keyboard.append([back_btn])
 
@@ -335,7 +336,7 @@ async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
     parent_id = int(cb.data.split(":")[-1])
     await state.update_data(parent_id=parent_id)
 
-    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{parent_id}")
+    back_btn = await _keyboards.get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{parent_id}")
     back_btn.callback_data = f"admin:edit_category:{parent_id}"
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -396,7 +397,7 @@ async def admin_add_category_name(message: Message, state: FSMContext):
         return
     await state.update_data(category_name=category_name)
 
-    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{parent_id}")
+    back_btn = await _keyboards.get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{parent_id}")
     back_btn.callback_data = f"admin:edit_category:{parent_id}"
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -539,7 +540,7 @@ async def admin_rename_category_start(cb: CallbackQuery, state: FSMContext):
 
     await state.update_data(rename_cat_id=cat_id, old_name=category.name, old_slug=category.slug)
 
-    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{category.parent_id}")
+    back_btn = await _keyboards.get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{category.parent_id}")
     back_btn.callback_data = f"admin:edit_category:{category.parent_id}"
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -606,7 +607,7 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
         return
     await state.update_data(new_name=new_name)
 
-    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
+    back_btn = await _keyboards.get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
     back_btn.callback_data = f"admin:edit_category:{cat_id}"
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -686,7 +687,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
 
     import re
     if not slug or not re.fullmatch(r'[a-z0-9_\-]+', slug):
-        back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
+        back_btn = await _keyboards.get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
         back_btn.callback_data = f"admin:edit_category:{cat_id}"
         menu = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -732,7 +733,7 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
             )
         )).first()
         if exists:
-            back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
+            back_btn = await _keyboards.get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:edit_category:{cat_id}")
             back_btn.callback_data = f"admin:edit_category:{cat_id}"
             menu = InlineKeyboardMarkup(inline_keyboard=[
                 [
