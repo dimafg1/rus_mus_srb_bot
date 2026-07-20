@@ -373,7 +373,8 @@ async def service_descr_set(m: Message, state: FSMContext):
     price_suffix = await get_text("services_add_price_prompt_suffix", "ru") or (
         "Введите стоимость (прейскурант) услуг\nили нажмите «Договорная»."
     )
-    price_text = f"Заголовок — <b>{escape(title)}</b>\n\n{escape(descr)}\n\n{price_suffix}"
+    title_line_tmpl = await get_text("services_add_title_line_tmpl", "ru") or "Заголовок — <b>{title}</b>"
+    price_text = f"{title_line_tmpl.format(title=escape(title))}\n\n{escape(descr)}\n\n{price_suffix}"
     await _send_with_services_nav(m, price_text, parse_mode="HTML", reply_markup=(await _deal_price_kb()))
 
     print(f"[services_add.py] service_descr_set ✓ | chat_id={chat_id} user_id={m.from_user.id} title={title!r} descr_len={len(descr)}")
@@ -388,7 +389,7 @@ async def service_price_deal(cb: CallbackQuery, state: FSMContext):
     try: await cb.message.delete()
     except Exception: pass
 
-    await state.update_data(price="Договорная")
+    await state.update_data(price=await get_text('services_add_btn_deal_price', 'ru') or "Договорная")
     await state.set_state(ServiceForm.photo)
 
     # ВАЖНО: промпт по фото — с учётом уже загруженных (могли вернуться «Назад»)
@@ -465,8 +466,9 @@ async def _send_photo_prompt(m: Message, photo_count: int, state: FSMContext, la
     else:
         descr_short = ""
 
+    title_line_tmpl = await get_text("services_add_title_line_tmpl", "ru") or "Заголовок — <b>{title}</b>"
     header = (
-        (f"Заголовок — <b>{title}</b>\n" if title else "") +
+        (f"{title_line_tmpl.format(title=title)}\n" if title else "") +
         (f"{esc(descr_short)}\n" if descr_short else "") +
         (f"{price_label} — <b>{esc(price)}</b>\n" if price else "")
     )

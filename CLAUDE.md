@@ -585,6 +585,50 @@ path = await render_category_path(session, category_id)
      обёрнут в `await` (`tests/test_listing_form_regressions.py` —
      `ListingFormHelperTests` переведён на `IsolatedAsyncioTestCase`;
      `tests/test_audit_package_fixes.py` — mock заменён на `AsyncMock`).
+
+     **Повторный аудит по всем `app/routers/*.py` (2026-07-20, по запросу
+     владельца — «пройдите проход» после инцидента с названиями месяцев):**
+     нашёл ещё 4 файла с реальными пропусками, не связанными с ранее
+     задокументированными исключениями:
+     `market_edit.py` — **добито**: старый мастер редактирования объявления
+     Барахолки (`edit_listing:` флоу, отдельный от `market_edit_overview.py`)
+     был не тронут в шаге 3. 3 новых кода (`market_edit_ask_copy_edit_text`/
+     `_ask_copy_edit_price`, `market_edit_btn_return_to_listing`), плюс
+     переиспользованы `market_edit_main_prompt_tmpl`/`_title_label_short`/
+     `_price_label_short`/`_descr_label_short` (уже заведены для
+     `market_edit_overview.py`, формат текста совпал один в один),
+     `releases_btn_skip`, `extra_field_btn_finish`.
+     `services_edit.py` — **добито**: сам файл был почти полностью готов
+     (унаследовал коды из `services_edit_overview.py`), пропущен только
+     фолбэк `l.price = price or "Договорная"` (данные, реально показываемые
+     покупателю как цена — не спутать с «контакт не указан», который
+     осознанно пропущен как внутренние данные) → переиспользован
+     `services_add_btn_deal_price`. Плюс шаблон «Заголовок — {title}» в
+     `services_add.py` (2 места) был хардкодом без `get_text` — новый код
+     `services_add_title_line_tmpl`.
+     `events_admin.py` — **добито**: кнопки `_kb_list`/`_kb_event` (owner-only
+     модерация Афиши) были sync-функциями с хардкодом, не пойманным
+     регэкспом аудита шага 3. 5 новых кодов `events_admin_btn_back_to_panel`/
+     `_btn_reject`/`_btn_back_to_list`/`_pending_header`/`_title_fallback`,
+     плюс переиспользованы `vac_add_btn_publish`, `af_no_city_fallback`.
+     Обе функции стали `async`.
+     `artists.py`(29) — **это был реальный крупный пропуск**: изначальный
+     проход (2026-07-06/07-20) перенёс только toast-сообщения (`music_*`,
+     10 кодов), но всю остальную разметку экрана — ленту исполнителей,
+     карточку, обзор редактирования, поиск — не трогал. Добито:
+     30 новых кодов `artist_*` (лейблы/подсказки полей редактирования,
+     кнопки ленты и карточки, заголовки ленты/поиска, шаблоны строк
+     карточки), плюс переиспользование из `releases.py` (`releases_edit_title_label`/
+     `_type_label`/`_descr_label`/`_links_label`, `releases_choose_type`,
+     `releases_btn_clear_field`, `releases_btn_search`, `releases_search_min_2_chars`),
+     `af_no_city_fallback`, `btn_new_search`. `EDIT_FIELDS` (словарь-константа)
+     заменён на асинхронную функцию `_edit_fields()` — по образцу
+     `_rel_edit_fields()` в `releases.py` (тот же паттерн уже был обкатан
+     там же для точно такой же структуры «код → (лейбл, подсказка)»).
+     **Урок с этим файлом:** «уже помечен готовым в CLAUDE.md» — не
+     гарантия полноты; при повторном аудите нельзя доверять старым
+     пометкам без грепа по факту, см. [[no-skip-i18n-for-calendar-names]].
+
      `artists.py`(29) — **готово**, 10 новых кодов (`music_*` — общие
      для музыкального слоя, т.к. 5 из 10 фраз дублировались и в
      `releases.py`, подключены сразу в обоих: `music_section_unavailable`,

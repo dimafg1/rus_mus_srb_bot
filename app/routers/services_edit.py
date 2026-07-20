@@ -195,7 +195,7 @@ async def edit_price_save(msg: Message, state: FSMContext):
             await msg.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             await state.clear()
             return
-        l.price = price or "Договорная"
+        l.price = price or (await get_text("services_add_btn_deal_price", "ru") or "Договорная")
         s.add(l); await s.commit()
     ok = await msg.answer(await get_text("services_edit_price_saved", "ru") or "Стоимость обновлена.")
     last_bot_messages.setdefault(msg.chat.id, []).append(ok.message_id)

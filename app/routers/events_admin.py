@@ -95,7 +95,7 @@ async def _fetch_one(event_id: int) -> dict | None:
         return None
 
 
-def _kb_list(offset: int, has_more: bool) -> InlineKeyboardMarkup:
+async def _kb_list(offset: int, has_more: bool) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     nav: list[InlineKeyboardButton] = []
     if offset > 0:
@@ -104,15 +104,15 @@ def _kb_list(offset: int, has_more: bool) -> InlineKeyboardMarkup:
         nav.append(InlineKeyboardButton(text="➡️", callback_data=f"admin:events:{offset+PAGE}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="◀️ В админ-панель", callback_data="admin")])
+    rows.append([InlineKeyboardButton(text=await get_text("events_admin_btn_back_to_panel", "ru") or "◀️ В админ-панель", callback_data="admin")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _kb_event(event_id: int, back_offset: int) -> InlineKeyboardMarkup:
+async def _kb_event(event_id: int, back_offset: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"admin:event:pub:{event_id}:{back_offset}")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin:event:rej:{event_id}:{back_offset}")],
-        [InlineKeyboardButton(text="◀️ К списку", callback_data=f"admin:events:{back_offset}")],
+        [InlineKeyboardButton(text=await get_text("vac_add_btn_publish", "ru") or "✅ Опубликовать", callback_data=f"admin:event:pub:{event_id}:{back_offset}")],
+        [InlineKeyboardButton(text=await get_text("events_admin_btn_reject", "ru") or "❌ Отклонить", callback_data=f"admin:event:rej:{event_id}:{back_offset}")],
+        [InlineKeyboardButton(text=await get_text("events_admin_btn_back_to_list", "ru") or "◀️ К списку", callback_data=f"admin:events:{back_offset}")],
     ])
 
 
@@ -139,21 +139,22 @@ async def admin_events_list(cb: CallbackQuery):
 
     items = await _fetch_pending(offset)
     if not items:
-        msg = await cb.message.answer(await get_text("events_admin_no_pending", "ru") or "Нет событий на модерации.", reply_markup=_kb_list(offset=0, has_more=False))
+        msg = await cb.message.answer(await get_text("events_admin_no_pending", "ru") or "Нет событий на модерации.", reply_markup=await _kb_list(offset=0, has_more=False))
         last_bot_messages[chat_id] = [msg.message_id]
         await cb.answer()
         return
 
-    lines = ["🧾 <b>Афиша: модерация (pending)</b>"]
+    lines = [await get_text("events_admin_pending_header", "ru") or "🧾 <b>Афиша: модерация (pending)</b>"]
+    title_fallback = await get_text("events_admin_title_fallback", "ru") or "Событие"
     kb_rows: list[list[InlineKeyboardButton]] = []
     for it in items:
-        title = (it.get("title") or "Событие").strip()
+        title = (it.get("title") or title_fallback).strip()
         if len(title) > 48:
             title = title[:45] + "…"
         kb_rows.append([InlineKeyboardButton(text=title, callback_data=f"admin:event:view:{int(it['id'])}:{offset}")])
 
     has_more = len(items) == PAGE
-    kb_rows.extend(_kb_list(offset=offset, has_more=has_more).inline_keyboard)
+    kb_rows.extend((await _kb_list(offset=offset, has_more=has_more)).inline_keyboard)
     msg = await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
     last_bot_messages[chat_id] = [msg.message_id]
     await cb.answer()
@@ -186,15 +187,16 @@ async def admin_event_view(cb: CallbackQuery):
 
     row = await _fetch_one(event_id)
     if not row:
-        msg = await cb.message.answer(await get_text("events_admin_not_found", "ru") or "Не найдено.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ К списку", callback_data=f"admin:events:{back_offset}")]]))
+        back_to_list_btn = await get_text("events_admin_btn_back_to_list", "ru") or "◀️ К списку"
+        msg = await cb.message.answer(await get_text("events_admin_not_found", "ru") or "Не найдено.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=back_to_list_btn, callback_data=f"admin:events:{back_offset}")]]))
         last_bot_messages[chat_id] = [msg.message_id]
         await cb.answer()
         return
 
     dt = datetime.fromtimestamp(int(row.get("start_at_utc") or 0), tz=timezone.utc).astimezone(_TZ)
     when = dt.strftime("%d.%m.%Y %H:%M") if row.get("start_at_utc") else "—"
-    title = escape_html(row.get("title") or "Событие")
-    city = escape_html(row.get("city_name") or "Город")
+    title = escape_html(row.get("title") or (await get_text("events_admin_title_fallback", "ru") or "Событие"))
+    city = escape_html(row.get("city_name") or (await get_text("af_no_city_fallback", "ru") or "Город"))
     venue = escape_html(row.get("venue_text") or "")
     price = escape_html(row.get("price_text") or "—")
     descr = escape_html((row.get("descr") or "").strip())
@@ -206,7 +208,7 @@ async def admin_event_view(cb: CallbackQuery):
         f"{descr}"
     ).strip()
 
-    kb = _kb_event(event_id, back_offset)
+    kb = await _kb_event(event_id, back_offset)
     if row.get("photo_file_id"):
         sent = await cb.message.answer_photo(photo=row["photo_file_id"], caption=txt, parse_mode="HTML", reply_markup=kb)
     else:

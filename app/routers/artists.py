@@ -54,19 +54,38 @@ async def _back_btn(callback_data: str) -> InlineKeyboardButton:
     return btn
 
 # Поля карточки для редактирования: код → (подпись, подсказка ввода)
-EDIT_FIELDS = {
-    "name": ("Название", "Новое название исполнителя?"),
-    "type": ("Тип", None),  # выбирается кнопками
-    "photo": ("Фото", "Пришлите новое фото или логотип."),
-    "descr": ("Описание", "Расскажите об исполнителе (пара абзацев):"),
-    "genres": ("Жанры", "Жанры через запятую (например: рок, инди):"),
-    "city_text": ("Город", "Город базирования (например: Белград):"),
-    "links": ("Ссылки", "Ссылки на соцсети и площадки — одним сообщением,\n"
-                        "каждая с новой строки или через пробел:"),
-    "contact": ("Контакты", "Дополнительные контакты через пробел — участники "
-                            "группы, агент (например: @drummer @manager).\n"
-                            "Контакт автора карточки остаётся всегда:"),
-}
+async def _edit_fields() -> dict:
+    return {
+        "name": (
+            await get_text("releases_edit_title_label", "ru") or "Название",
+            await get_text("artist_edit_name_hint", "ru") or "Новое название исполнителя?",
+        ),
+        "type": (await get_text("releases_edit_type_label", "ru") or "Тип", None),  # выбирается кнопками
+        "photo": (
+            await get_text("artist_edit_photo_label", "ru") or "Фото",
+            await get_text("artist_edit_photo_hint", "ru") or "Пришлите новое фото или логотип.",
+        ),
+        "descr": (
+            await get_text("releases_edit_descr_label", "ru") or "Описание",
+            await get_text("artist_edit_descr_hint", "ru") or "Расскажите об исполнителе (пара абзацев):",
+        ),
+        "genres": (
+            await get_text("artist_edit_genres_label", "ru") or "Жанры",
+            await get_text("artist_edit_genres_hint", "ru") or "Жанры через запятую (например: рок, инди):",
+        ),
+        "city_text": (
+            await get_text("af_no_city_fallback", "ru") or "Город",
+            await get_text("artist_edit_city_hint", "ru") or "Город базирования (например: Белград):",
+        ),
+        "links": (
+            await get_text("releases_edit_links_label", "ru") or "Ссылки",
+            await get_text("artist_edit_links_hint", "ru") or "Ссылки на соцсети и площадки — одним сообщением,\nкаждая с новой строки или через пробел:",
+        ),
+        "contact": (
+            await get_text("artist_edit_contact_label", "ru") or "Контакты",
+            await get_text("artist_edit_contact_hint", "ru") or "Дополнительные контакты через пробел — участники группы, агент (например: @drummer @manager).\nКонтакт автора карточки остаётся всегда:",
+        ),
+    }
 CLEARABLE = {"descr", "genres", "city_text", "links", "contact"}
 
 
@@ -113,15 +132,13 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
         if offset + PAGE < total:
             nav.append(InlineKeyboardButton(text="▶️", callback_data=f"art:list:{offset + PAGE}"))
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="🔍 Поиск", callback_data="art:search"),
-                 InlineKeyboardButton(text="➕ Добавить исполнителя", callback_data="art:add")])
-    rows.append([InlineKeyboardButton(text="🎵 Релизы", callback_data="go_releases"), _menu_btn()])
+    rows.append([InlineKeyboardButton(text=await get_text("releases_btn_search", "ru") or "🔍 Поиск", callback_data="art:search"),
+                 InlineKeyboardButton(text=await get_text("artist_btn_add", "ru") or "➕ Добавить исполнителя", callback_data="art:add")])
+    rows.append([InlineKeyboardButton(text=await get_text("artist_btn_go_releases", "ru") or "🎵 Релизы", callback_data="go_releases"), _menu_btn()])
 
-    text = ("🎤 <b>Исполнители сообщества</b>\n\n"
-            "Сольные артисты, группы и музыкальные проекты.")
+    text = await get_text("artist_feed_header", "ru") or "🎤 <b>Исполнители сообщества</b>\n\nСольные артисты, группы и музыкальные проекты."
     if total == 0:
-        text += ("\n\nПока пусто. Карточка исполнителя создаётся при публикации "
-                 "первого релиза — раздел «🎵 Релизы».")
+        text += await get_text("artist_feed_empty_suffix", "ru") or "\n\nПока пусто. Карточка исполнителя создаётся при публикации первого релиза — раздел «🎵 Релизы»."
     await _send_screen(cb.bot, cb.message.chat.id, text,
                        InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -207,19 +224,21 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
         sub.append(_e(artist.city_text))
     lines = [f"🎤 <b>{_e(artist.name)}</b>", " · ".join(sub)]
     if artist.status != "active":
-        lines.insert(0, "🚫 <i>Карточка скрыта</i>")
+        lines.insert(0, await get_text("artist_card_hidden_badge", "ru") or "🚫 <i>Карточка скрыта</i>")
     if artist.descr:
         lines.append("")
         lines.append(_e(artist.descr))
     if artist.contact:
         lines.append("")
-        lines.append(f"✍️ Связаться: {_e(artist.contact)}")
+        contact_tmpl = await get_text("artist_card_contact_line_tmpl", "ru") or "✍️ Связаться: {contact}"
+        lines.append(contact_tmpl.format(contact=_e(artist.contact)))
     if releases:
         lines.append("")
-        lines.append(f"Релизов: {len(releases)}")
+        releases_count_tmpl = await get_text("artist_card_releases_count_tmpl", "ru") or "Релизов: {count}"
+        lines.append(releases_count_tmpl.format(count=len(releases)))
     else:
         lines.append("")
-        lines.append("Релизов пока нет.")
+        lines.append(await get_text("artist_card_no_releases", "ru") or "Релизов пока нет.")
     caption = _fit_html_lines(lines)
 
     artist_source = "s" if src == "search" else "l"
@@ -240,12 +259,12 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
     if link_row:
         rows.append(link_row)
     if artist.owner_user_id == cb.from_user.id or is_admin(cb.from_user.id):
-        rows.append([InlineKeyboardButton(text="✏️ Редактировать",
+        rows.append([InlineKeyboardButton(text=await get_text("artist_btn_edit", "ru") or "✏️ Редактировать",
                                           callback_data=f"art:edit:{artist.id}")])
     if is_admin(cb.from_user.id) and artist.status == "active":
-        rows.append([InlineKeyboardButton(text="🚫 Скрыть", callback_data=f"art:hide:{artist.id}")])
+        rows.append([InlineKeyboardButton(text=await get_text("artist_btn_hide", "ru") or "🚫 Скрыть", callback_data=f"art:hide:{artist.id}")])
     if is_admin(cb.from_user.id) and artist.status == "hidden":
-        rows.append([InlineKeyboardButton(text="✅ Показать", callback_data=f"art:show:{artist.id}")])
+        rows.append([InlineKeyboardButton(text=await get_text("artist_btn_show", "ru") or "✅ Показать", callback_data=f"art:show:{artist.id}")])
     # «Назад» — ровно на один шаг: к списку, к результатам поиска
     # или к релизу — туда, откуда пришли
     if src == "list":
@@ -295,20 +314,26 @@ async def _render_edit_overview(bot, chat_id: int, user_id: int, artist_id: int)
         n_links = len(_load_links(artist.links))
     except Exception:
         n_links = 0
+    photo_has_value = await get_text("artist_photo_has_value", "ru") or "есть"
+    links_count_tmpl = await get_text("artist_links_count_tmpl", "ru") or "{count} шт."
     values = {
         "name": artist.name, "type": artist.artist_type,
-        "photo": "есть" if artist.photo_file_id else "—",
+        "photo": photo_has_value if artist.photo_file_id else "—",
         "descr": _fmt(artist.descr), "genres": _fmt(artist.genres),
         "city_text": _fmt(artist.city_text),
-        "links": f"{n_links} шт." if n_links else "—",
+        "links": links_count_tmpl.format(count=n_links) if n_links else "—",
         "contact": _fmt(artist.contact),
     }
-    lines = [f"✏️ <b>Карточка: {_e(artist.name)}</b>", ""]
-    for code, (label, _) in EDIT_FIELDS.items():
-        lines.append(f"{label}: {_e(values[code])}")
-    rows = [[InlineKeyboardButton(text=f"✏️ Править: {label}",
+    edit_fields = await _edit_fields()
+    header_tmpl = await get_text("artist_edit_overview_header_tmpl", "ru") or "✏️ <b>Карточка: {name}</b>"
+    field_line_tmpl = await get_text("artist_edit_overview_field_line_tmpl", "ru") or "{label}: {value}"
+    field_btn_tmpl = await get_text("artist_edit_btn_field_tmpl", "ru") or "✏️ Править: {label}"
+    lines = [header_tmpl.format(name=_e(artist.name)), ""]
+    for code, (label, _) in edit_fields.items():
+        lines.append(field_line_tmpl.format(label=label, value=_e(values[code])))
+    rows = [[InlineKeyboardButton(text=field_btn_tmpl.format(label=label),
                                   callback_data=f"art:ef:{code}:{artist_id}")]
-            for code, (label, _) in EDIT_FIELDS.items()]
+            for code, (label, _) in edit_fields.items()]
     rows.append([await _back_btn(f"art:view:{artist_id}:list"), _menu_btn()])
     await _send_screen(bot, chat_id, "\n".join(lines),
                        InlineKeyboardMarkup(inline_keyboard=rows))
@@ -326,7 +351,8 @@ async def artist_edit(cb: CallbackQuery, state: FSMContext):
 async def artist_edit_field(cb: CallbackQuery, state: FSMContext):
     _, _, field, aid = cb.data.split(":")
     artist_id = int(aid)
-    if field not in EDIT_FIELDS:
+    edit_fields = await _edit_fields()
+    if field not in edit_fields:
         await cb.answer()
         return
     async with SessionLocal() as s:
@@ -341,15 +367,15 @@ async def artist_edit_field(cb: CallbackQuery, state: FSMContext):
         rows = [[InlineKeyboardButton(text=t, callback_data=f"art:etype:{artist_id}:{i}")]
                 for i, t in enumerate(ARTIST_TYPES)]
         rows.append([await _back_btn(f"art:edit:{artist_id}"), _menu_btn()])
-        await _replace_prompt(state, cb.bot, cb.message.chat.id, "Выберите тип:",
+        await _replace_prompt(state, cb.bot, cb.message.chat.id, await get_text("releases_choose_type", "ru") or "Выберите тип:",
                               InlineKeyboardMarkup(inline_keyboard=rows))
         return
     await state.set_state(ArtistEdit.value)
     await state.update_data(edit_field=field, edit_artist_id=artist_id)
-    label, hint = EDIT_FIELDS[field]
+    label, hint = edit_fields[field]
     rows = []
     if field in CLEARABLE:
-        rows.append([InlineKeyboardButton(text="🗑 Очистить поле",
+        rows.append([InlineKeyboardButton(text=await get_text("releases_btn_clear_field", "ru") or "🗑 Очистить поле",
                                           callback_data=f"art:eclr:{artist_id}:{field}")])
     rows.append([await _back_btn(f"art:edit:{artist_id}"), _menu_btn()])
     await _replace_prompt(state, cb.bot, cb.message.chat.id, hint,
@@ -397,7 +423,7 @@ async def artist_edit_type(cb: CallbackQuery, state: FSMContext):
     except ValueError:
         await cb.answer(await get_text("err_invalid_link", "ru") or "Некорректная ссылка.", show_alert=True)
         return
-    t = ARTIST_TYPES[idx_int] if 0 <= idx_int < len(ARTIST_TYPES) else "Другое"
+    t = ARTIST_TYPES[idx_int] if 0 <= idx_int < len(ARTIST_TYPES) else (await get_text("artist_type_other_fallback", "ru") or "Другое")
     if not await _save_artist_field(cb.from_user.id, int(aid), "type", t):
         await cb.answer(await get_text("music_no_rights_or_unavailable", "ru") or "Нет прав или карточка недоступна.", show_alert=True)
         return
@@ -540,8 +566,7 @@ async def art_search_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ArtSearch.waiting_query)
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _replace_prompt(state, cb.bot, cb.message.chat.id,
-                          "🔍 Введите запрос: название исполнителя, жанр или город "
-                          "(от 2 символов).",
+                          await get_text("artist_search_ask_query", "ru") or "🔍 Введите запрос: название исполнителя, жанр или город (от 2 символов).",
                           InlineKeyboardMarkup(inline_keyboard=[await _nav_row("go_artists")]))
 
 
@@ -565,10 +590,11 @@ async def _render_art_search(bot, chat_id: int, state: FSMContext, offset: int =
         if offset + SEARCH_PAGE < total:
             nav.append(InlineKeyboardButton(text="▶️", callback_data=f"art:spage:{offset + SEARCH_PAGE}"))
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="art:search")])
+    rows.append([InlineKeyboardButton(text=await get_text("btn_new_search", "ru") or "🔄 Новый поиск", callback_data="art:search")])
     rows.append(await _nav_row("go_artists"))
+    results_tmpl = await get_text("artist_search_results_tmpl", "ru") or "{note}Результаты по запросу: <b>{query}</b>\nНайдено: {total}"
     await _send_screen(bot, chat_id,
-                       f"{note}Результаты по запросу: <b>{_e(q)}</b>\nНайдено: {total}",
+                       results_tmpl.format(note=note, query=_e(q), total=total),
                        InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -581,7 +607,7 @@ async def art_search_do(message: Message, state: FSMContext):
         pass
     if len(q) < 2:
         await _replace_prompt(state, message.bot, message.chat.id,
-                              "Минимум 2 символа. Введите запрос ещё раз:",
+                              await get_text("releases_search_min_2_chars", "ru") or "Минимум 2 символа. Введите запрос ещё раз:",
                               InlineKeyboardMarkup(inline_keyboard=[await _nav_row("go_artists")]))
         return
 
@@ -603,8 +629,8 @@ async def art_search_do(message: Message, state: FSMContext):
                      results_count=len(outcome.results))
     note = ""
     if outcome.match_mode == "corrected" and outcome.query_effective != outcome.query_normalized:
-        note = (f"🧠 Показаны результаты по запросу: <b>{_e(outcome.query_effective)}</b> "
-                f"(учтена возможная опечатка).\n\n")
+        typo_tmpl = await get_text("artist_search_typo_note_tmpl", "ru") or "🧠 Показаны результаты по запросу: <b>{query}</b> (учтена возможная опечатка).\n\n"
+        note = typo_tmpl.format(query=_e(outcome.query_effective))
     await state.update_data(
         art_s_results=[(it[0], it[1]) for it in outcome.results],
         art_s_query=q, art_s_note=note,

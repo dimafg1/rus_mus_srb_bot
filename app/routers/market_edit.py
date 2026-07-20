@@ -41,8 +41,8 @@ async def _nav_row(city_slug: str, cat_slug: str, listing_id: int):
     back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data="edit:back")
     back_btn.callback_data = "edit:back"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="edit:skip")],
-        [InlineKeyboardButton(text="✅ Завершить", callback_data=f"edit:finish:{listing_id}")],
+        [InlineKeyboardButton(text=await get_text("releases_btn_skip", "ru") or "⏭ Пропустить", callback_data="edit:skip")],
+        [InlineKeyboardButton(text=await get_text("extra_field_btn_finish", "ru") or "✅ Завершить", callback_data=f"edit:finish:{listing_id}")],
         [back_btn]
     ])
 
@@ -61,9 +61,11 @@ async def _ask_title(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     await clear_bot_messages(chat_id, bot)
 
     kb = await _nav_row(city_slug, cat_slug, listing.id)
+    prompt_tmpl = await get_text("market_edit_main_prompt_tmpl", "ru") or "{title}\n\nТекущее значение:\n<code>{current}</code>\n\n{ask}"
+    title_label = await get_text("market_edit_title_label_short", "ru") or "🪧 <b>Заголовок</b>"
+    ask_text = await get_text("market_edit_ask_copy_edit_text", "ru") or "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
-        f"🪧 <b>Заголовок</b>\n\nТекущее значение:\n<code>{html.escape(str(listing.title or '—'))}</code>\n\n"
-        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
+        prompt_tmpl.format(title=title_label, current=html.escape(str(listing.title or '—')), ask=ask_text),
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -77,9 +79,11 @@ async def _ask_price(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     await clear_bot_messages(chat_id, bot)
 
     kb = await _nav_row(city_slug, cat_slug, listing.id)
+    prompt_tmpl = await get_text("market_edit_main_prompt_tmpl", "ru") or "{title}\n\nТекущее значение:\n<code>{current}</code>\n\n{ask}"
+    price_label = await get_text("market_edit_price_label_short", "ru") or "💰 <b>Цена</b>"
+    ask_price = await get_text("market_edit_ask_copy_edit_price", "ru") or "Отправьте новую цену (или скопируйте текущую ↑ и отредактируйте):"
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
-        f"💰 <b>Цена</b>\n\nТекущее значение:\n<code>{html.escape(str(listing.price or '—'))}</code>\n\n"
-        "Отправьте новую цену (или скопируйте текущую ↑ и отредактируйте):",
+        prompt_tmpl.format(title=price_label, current=html.escape(str(listing.price or '—')), ask=ask_price),
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -93,10 +97,11 @@ async def _ask_descr(ev, state: FSMContext, listing: Listing, city_slug: str, ca
     await clear_bot_messages(chat_id, bot)
 
     kb = await _nav_row(city_slug, cat_slug, listing.id)
+    prompt_tmpl = await get_text("market_edit_main_prompt_tmpl", "ru") or "{title}\n\nТекущее значение:\n<code>{current}</code>\n\n{ask}"
+    descr_label = await get_text("market_edit_descr_label_short", "ru") or "📝 <b>Описание</b>"
+    ask_text = await get_text("market_edit_ask_copy_edit_text", "ru") or "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):"
     msg = await (ev.message.answer if isinstance(ev, CallbackQuery) else ev.answer)(
-        "📝 <b>Описание</b>\n\nТекущее значение:\n"
-        f"<code>{html.escape(str(listing.descr or '—'))}</code>\n\n"
-        "Отправьте новый текст (или скопируйте текущий ↑ и отредактируйте):",
+        prompt_tmpl.format(title=descr_label, current=html.escape(str(listing.descr or '—')), ask=ask_text),
         reply_markup=kb, parse_mode="HTML"
     )
     last_bot_messages[chat_id] = [msg.message_id]
@@ -208,7 +213,7 @@ async def edit_finish(cb: CallbackQuery, state: FSMContext):
     await clear_bot_messages(chat_id, cb.bot)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Вернуться к объявлению",
+        [InlineKeyboardButton(text=await get_text("market_edit_btn_return_to_listing", "ru") or "⬅️ Вернуться к объявлению",
                               callback_data=f"listing:{listing.id}:{city_slug}:{cat_slug}:my")]
     ])
     msg = await cb.message.answer(await get_text("market_edit_saved", "ru") or "Изменения сохранены ✅", reply_markup=kb)
@@ -259,7 +264,7 @@ async def edit_back(cb: CallbackQuery, state: FSMContext):
     else:
         # С заголовка «назад» — в карточку
         kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="⬅️ Вернуться к объявлению",
+            InlineKeyboardButton(text=await get_text("market_edit_btn_return_to_listing", "ru") or "⬅️ Вернуться к объявлению",
                                  callback_data=f"listing:{listing.id}:{city_slug}:{cat_slug}:my")
         ]])
         chat_id = cb.message.chat.id
