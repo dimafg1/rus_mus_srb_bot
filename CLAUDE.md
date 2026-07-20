@@ -283,9 +283,12 @@ path = await render_category_path(session, category_id)
      скрипт-замену — паттерн везде был одинаковый:
      `X.append([InlineKeyboardButton(text="⬅️ Назад",
      callback_data=EXPR)])`), `app/routers/services_edit_overview.py`
-     (13 мест, тот же приём — файл почти зеркало market_edit_overview.py).
-     **Осталось** (файл: число мест с `text="⬅️ Назад"`):
-     `services_view.py`(13). (Отдельный вариант «◀️ Назад» в
+     (13 мест, тот же приём — файл почти зеркало market_edit_overview.py),
+     `app/routers/services_view.py` (13 мест, тот же хелпер; одно место —
+     переиспользуемая переменная `back_btn` в двух разных `rows_kb` внутри
+     одной функции — трогали аккуратно, вручную). **Шаг 1 плана
+     закрыт целиком** (все файлы из списка «Осталось» обработаны).
+     (Отдельный вариант «◀️ Назад» в
      `admin_panel.py`/`admin_analytics.py`/`events_view.py`/`events_add.py` —
      это пагинация «пред./след.», НЕ трогать, другая семантика.)
   2. **Дедуп общих фраз-сообщений** (не кнопок) в `BotText` — одна запись на

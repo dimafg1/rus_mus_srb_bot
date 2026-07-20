@@ -26,6 +26,13 @@ except Exception:
     Menu = None
 
 from app.keyboards import get_common_menu_button, build_main_menu
+
+
+async def _back_row(callback_data: str) -> list[InlineKeyboardButton]:
+    """Строка «Назад» из одной кнопки (общий хелпер, текст берётся из menu)."""
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data=callback_data)
+    back_btn.callback_data = callback_data
+    return [back_btn]
 from app.routers.utils import (
     clear_bot_messages, safe_edit_or_send, register_bot_messages,
     last_bot_messages, sent_photo_messages,
@@ -218,7 +225,7 @@ async def _services_categories_kb(cats, city_id: int, parent_id: int) -> InlineK
         back_cb = "sv:cities"
     else:
         back_cb = f"sv:cat:{city_id}:{parent_id}:back"
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
+    rows.append(await _back_row(back_cb))
 
     main_menu_btn = await get_common_menu_button("main_menu", "ru")
     if main_menu_btn:
@@ -259,7 +266,7 @@ async def _services_listings_kb(items, city_id: int, cat_id: int, offset: int = 
                 text="»", callback_data=f"sv:cat:{city_id}:{cat_id}:{offset + SERVICES_LIST_PAGE_SIZE}"))
         rows.append(pager)
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"sv:cat:{city_id}:{cat_id}:back")])
+    rows.append(await _back_row(f"sv:cat:{city_id}:{cat_id}:back"))
 
     main_menu_btn = await get_common_menu_button("main_menu", "ru")
     if main_menu_btn:
@@ -460,10 +467,7 @@ async def sv_cat(cb: CallbackQuery):
     if not items:
         # :back поднимает на уровень выше ОТ УКАЗАННОЙ категории —
         # передаём саму категорию (передача родителя прыгала через уровень)
-        rows = [[InlineKeyboardButton(
-            text="⬅️ Назад",
-            callback_data=f"sv:cat:{city_id}:{cat.id}:back"
-        )]]
+        rows = [await _back_row(f"sv:cat:{city_id}:{cat.id}:back")]
 
         main_menu_btn = await get_common_menu_button("main_menu", "ru")
         if main_menu_btn:
@@ -695,7 +699,7 @@ async def sv_item(cb: CallbackQuery):
         )])
 
     # Кнопки навигации — в конец
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
+    buttons.append(await _back_row(back_cb))
 
     main_btn = await get_common_menu_button("main_menu", "ru")
     if main_btn:
@@ -866,7 +870,7 @@ async def service_extend_listing(cb: CallbackQuery):
             callback_data=f"service_extend:{listing.id}:{urllib.parse.quote(back_cb, safe='')}"
         )])
 
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
+    buttons.append(await _back_row(back_cb))
 
     main_btn = await get_common_menu_button("main_menu", "ru")
     if main_btn:
@@ -959,7 +963,7 @@ async def service_close_listing(cb: CallbackQuery):
         callback_data=f"sell_sold:{listing.id}"
     )])
 
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
+    buttons.append(await _back_row(back_cb))
 
     main_btn = await get_common_menu_button("main_menu", "ru")
     if main_btn:
@@ -1011,7 +1015,7 @@ async def _render_my_services(cb: CallbackQuery, offset: int = 0):
     main_btn = await get_common_menu_button("main_menu", "ru")
 
     if not items:
-        rows = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")]]
+        rows = [await _back_row("go_services")]
         if main_btn:
             rows.append([main_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1049,7 +1053,7 @@ async def _render_my_services(cb: CallbackQuery, offset: int = 0):
                 text="»", callback_data=f"my_services_page:{offset + MY_SERVICES_PAGE_SIZE}"))
         rows.append(pager)
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")])
+    rows.append(await _back_row("go_services"))
     if main_btn:
         rows.append([main_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1128,7 +1132,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
     if not ids:
         rows = [
             [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")],
+            await _back_row("go_services"),
         ]
         main_btn = await get_common_menu_button("main_menu", "ru")
         if main_btn:
@@ -1157,7 +1161,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
         # пользователя на экране без навигации.
         rows = [
             [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")],
+            await _back_row("go_services"),
         ]
         main_btn = await get_common_menu_button("main_menu", "ru")
         if main_btn:
@@ -1208,7 +1212,7 @@ async def services_search_back(cb: CallbackQuery, state: FSMContext):
         rows.append(pager_row)
 
     rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")])
+    rows.append(await _back_row("go_services"))
 
     main_btn = await get_common_menu_button("main_menu", "ru")
     if main_btn:
@@ -1369,7 +1373,8 @@ async def handle_services_search_query(m: Message, state: FSMContext):
     )
 
     new_search_btn = InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")
-    back_btn = InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")
+    back_btn.callback_data = "go_services"
     main_btn = await get_common_menu_button("main_menu", "ru")
 
     if not results:
@@ -1634,7 +1639,7 @@ async def services_search_page(cb: CallbackQuery, state: FSMContext):
         rows.append(pager_row)
 
     rows.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="services_search_new")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="go_services")])
+    rows.append(await _back_row("go_services"))
 
     main_btn = await get_common_menu_button("main_menu", "ru")
     if main_btn:
