@@ -235,59 +235,34 @@ path = await render_category_path(session, category_id)
   языка (см. пункт выше) — это чистая подготовка.
   План (3 шага, делать последовательно, файл за файлом, с прогоном тестов
   после каждого):
-  1. **Кнопки «Назад»/«Главное меню»** — свести хардкод на уже существующие
+  1. **Кнопки «Назад»/«Главное меню» — ЗАВЕРШЕНО (2026-07-20).** Хардкод
+     `text="⬅️ Назад"` (103 места по всем `app/routers/*.py`) сведён на
      `menu` (таблица) + `get_common_menu_button(code, lang)`
-     (`app/keyboards.py`). Паттерн: если кнопке нужен свой `callback_data`,
-     взять объект через хелпер и переопределить один атрибут:
+     (`app/keyboards.py`). Паттерн:
      ```python
      back_btn = await get_common_menu_button('back')
-     back_btn.callback_data = "свой_callback"
+     if back_btn:                        # может вернуть None (нет строки в menu)
+         back_btn.callback_data = "свой_callback"
      ```
-     Если кнопка лежит в обычной (не `async def`) функции — сделать функцию
-     `async` и добавить `await` во всех местах вызова (проверить, что все
-     вызовы уже находятся в async-контексте — были случаи, где это так).
-     **Прогресс:** готово и протестировано — `app/routers/user_extra_fields.py`
-     (`_controls_row` → async), `app/routers/market_edit.py` (`_nav_row` →
-     async), `app/routers/vacancy_utils.py`, `app/routers/market_view.py`,
-     `app/routers/services_edit_photos.py` (`_photo_editor_kb` → async),
-     `app/routers/market_edit_photos.py` (`_photo_editor_kb` → async),
-     `app/routers/feedback.py` (3 места), `app/routers/artists.py`
-     (добавлен локальный хелпер `_back_btn(callback_data)` — паттерн
-     повторялся 4 раза). Паттерн `get_common_menu_button` может вернуть
-     `None` (нет строки в `menu`) — везде, где кнопка необязательна,
-     добавлен `if back_btn:`; там, где «Назад» обязательна по правилу
-     навигации (мастера редактирования, `artists.py`), добавлен
-     хардкод-фолбэк `or InlineKeyboardButton(...)`.
-     `app/routers/services_add.py` (4 места), `app/routers/vacancy_view.py`
-     (6 мест, 3 идентичных блока `if source=="search"/elif catalog`),
-     `app/routers/admin_panel.py` (7 из 8 — `InlineKeyboardButton`;
-     8-е место, строка ~457, это персистентная Reply-клавиатура
-     `KeyboardButton`, синхронизированная с проверками `message.text ==
-     "⬅️ Назад"` в нескольких хендлерах — сознательно не трогали,
-     риск рассинхронизации не оправдан для owner-only экрана).
-     `app/routers/admin_fields.py` (8 мест), `app/routers/releases.py`
-     (общий хелпер `_nav_row(back_cb)` → async, 24 места вызова разом —
-     в т.ч. 3 в `app/routers/artists.py`, который его импортирует).
-     **ВАЖНО (найденный и исправленный баг):** первая правка
-     `admin_panel.py` создала циклический импорт `app.keyboards` ↔
-     `app.routers.admin_panel` (keyboards.py импортирует `is_admin`
-     оттуда) — падал `import app.main`, но не тесты (у них другой
-     порядок импорта, маскирует цикл). Исправлено: в admin_panel.py
-     `import app.keyboards as _keyboards` вместо `from app.keyboards
-     import get_common_menu_button` (см. коммит 067a633). **Урок:**
-     после каждой правки, трогающей `app/keyboards.py` или
-     `admin_panel.py`, проверять `python -c "import app.main"`, тестов
-     недостаточно. `app/routers/vacancy_add.py` (10 мест),
-     `app/routers/market_edit_overview.py` (13 мест, добавлен локальный
-     хелпер `_back_row(callback_data)`, применён массово через
-     скрипт-замену — паттерн везде был одинаковый:
-     `X.append([InlineKeyboardButton(text="⬅️ Назад",
-     callback_data=EXPR)])`), `app/routers/services_edit_overview.py`
-     (13 мест, тот же приём — файл почти зеркало market_edit_overview.py),
-     `app/routers/services_view.py` (13 мест, тот же хелпер; одно место —
-     переиспользуемая переменная `back_btn` в двух разных `rows_kb` внутри
-     одной функции — трогали аккуратно, вручную). **Шаг 1 плана
-     закрыт целиком** (все файлы из списка «Осталось» обработаны).
+     где кнопка обязательна по правилу навигации — фолбэк
+     `or InlineKeyboardButton(text="⬅️ Назад", callback_data=...)`.
+     В нескольких файлах с повторяющимся паттерном заведён локальный
+     хелпер (`_back_btn`/`_back_row`/`_nav_row` — по одному на файл,
+     не общий, т.к. сигнатуры и наборы кнопок отличаются).
+     **Единственное сознательное исключение:** `admin_panel.py` (~строка
+     457) — персистентная Reply-клавиатура `KeyboardButton`,
+     синхронизированная с проверками `message.text == "⬅️ Назад"` в
+     нескольких хендлерах; риск рассинхронизации не оправдан для
+     owner-only экрана, оставлено в хардкоде.
+     **Найденный и исправленный баг:** правка `admin_panel.py` сначала
+     создала циклический импорт `app.keyboards` ↔ `app.routers.admin_panel`
+     (keyboards.py импортирует `is_admin` оттуда) — падал `import
+     app.main`, но не тесты (у них другой порядок импорта, маскирует
+     цикл). Исправлено `import app.keyboards as _keyboards` вместо
+     `from app.keyboards import get_common_menu_button` (коммит 067a633).
+     **Урок на будущее:** после правок в `app/keyboards.py` или
+     `admin_panel.py` проверять `python -c "import app.main"` —
+     тестов недостаточно, они импортируют модули в другом порядке.
      (Отдельный вариант «◀️ Назад» в
      `admin_panel.py`/`admin_analytics.py`/`events_view.py`/`events_add.py` —
      это пагинация «пред./след.», НЕ трогать, другая семантика.)
