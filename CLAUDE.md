@@ -310,9 +310,20 @@ path = await render_category_path(session, category_id)
      `vac_edit_all`/`vac_go_listing` (точное совпадение текста кнопок).
      `_deal_price_kb()`/`_photo_skip_kb()` стали async (текст кнопок теперь
      из БД) — оба вызова обёрнуты в `await`.
+     `admin_panel.py`(49) — **готово (2026-07-20)**: 60 новых кодов
+     `admin_panel_*` (владельческий раздел — вход в панель, категории:
+     создание/переименование/удаление/slug-конфликты, кнопки главного меню
+     и подменю, обратная связь: списки/пагинация/карточка/удаление,
+     список пользователей бота), плюс переиспользованы `btn_cancel`/
+     `btn_yes_delete`/`btn_delete` (точное совпадение текста кнопок).
+     `get_admin_menu()` стала async (текст кнопок теперь из БД) — оба
+     вызова обёрнуты в `await`. Не тронуто намеренно (см. запись выше
+     про исключение `admin_panel.py`): персистентная Reply-клавиатура
+     «⬅️ Назад» и сверки `message.text == "⬅️ Назад"`; пагинационные
+     «◀️ Назад» — другая семантика, как и в остальных файлах.
      > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
-     > `admin_panel.py`(49). Дальше по списку —
-     > `admin_fields.py`(57), `vacancy_add.py`(62), `services_view.py`(70),
+     > `admin_fields.py`(57). Дальше по списку —
+     > `vacancy_add.py`(62), `services_view.py`(70),
      > `services_edit_overview.py`(73), `market_edit_overview.py`(78),
      > `events_view.py`(86), `market_view.py`(89), `releases.py`(110,
      > частично уже задет — 8 мест кодами `music_*` из шага `artists.py`),

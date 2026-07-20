@@ -43,26 +43,26 @@ def _normalized_category_slug(value: str | None) -> str:
         raise ValueError("Slug длиннее 100 символов")
     return slug
 
-def get_admin_menu():
+async def get_admin_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🗂 Редактировать категории", callback_data="admin:edit_categories")
+                InlineKeyboardButton(text=await get_text("admin_panel_btn_edit_categories", "ru") or "🗂 Редактировать категории", callback_data="admin:edit_categories")
             ],
             [
-                InlineKeyboardButton(text="🎭 Афиша: модерация", callback_data="admin:events:0")
+                InlineKeyboardButton(text=await get_text("admin_panel_btn_events_moderation", "ru") or "🎭 Афиша: модерация", callback_data="admin:events:0")
             ],
             [
-                InlineKeyboardButton(text="📬 Обратная связь", callback_data="admin_feedback")
+                InlineKeyboardButton(text=await get_text("admin_panel_btn_feedback", "ru") or "📬 Обратная связь", callback_data="admin_feedback")
             ],
             [
-                InlineKeyboardButton(text="📊 Аналитика", callback_data="admin:analytics")
+                InlineKeyboardButton(text=await get_text("admin_panel_btn_analytics", "ru") or "📊 Аналитика", callback_data="admin:analytics")
             ],
             [
-                InlineKeyboardButton(text="👥 Пользователи бота", callback_data="admin:users:0")
+                InlineKeyboardButton(text=await get_text("admin_panel_btn_users", "ru") or "👥 Пользователи бота", callback_data="admin:users:0")
             ],
             [
-                InlineKeyboardButton(text="👤 Панель пользователя", callback_data="main_menu")
+                InlineKeyboardButton(text=await get_text("admin_panel_btn_user_panel", "ru") or "👤 Панель пользователя", callback_data="main_menu")
             ]
         ]
     )
@@ -86,16 +86,16 @@ async def save_category_fields(session, cat_id: int, fields: list[dict]) -> None
 @router.message(Command("admin"))
 async def admin_panel_entry(message: Message):
     if not is_admin(message.from_user.id):
-        msg = await message.answer("У вас нет доступа к админ-панели.")
+        msg = await message.answer(await get_text("admin_panel_no_access", "ru") or "У вас нет доступа к админ-панели.")
         last_bot_messages.setdefault(message.chat.id, []).append(msg.message_id)
         await register_bot_messages(message.chat.id, [msg.message_id])
         return
 
     await clear_bot_messages(message.chat.id, message.bot)
 
-    menu = get_admin_menu()
+    menu = await get_admin_menu()
     msg = await message.answer(
-        "🔒 <b>Админ-панель</b>\nВыберите действие:",
+        (await get_text("admin_panel_header", "ru") or "🔒 <b>Админ-панель</b>\nВыберите действие:"),
         parse_mode="HTML",
         reply_markup=menu
     )
@@ -135,7 +135,7 @@ async def admin_edit_categories_cb(cb: CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     msg = await cb.message.answer(
-        "🗂 <b>Список категорий</b>\nНажмите на категорию для редактирования.",
+        (await get_text("admin_panel_categories_list_header", "ru") or "🗂 <b>Список категорий</b>\nНажмите на категорию для редактирования."),
         reply_markup=markup,
         parse_mode="HTML"
     )
@@ -167,12 +167,12 @@ async def admin_main_menu_cb(cb: CallbackQuery):
     await clear_bot_messages(chat_id, cb.bot)
 
     # 3) Рисуем админ-меню и кладём его в кэш
-    menu = get_admin_menu()
+    menu = await get_admin_menu()
     msg = None
     try:
         msg = await cb.bot.send_message(
             chat_id,
-            "🔒 <b>Админ-панель</b>\nВыберите действие:",
+            (await get_text("admin_panel_header", "ru") or "🔒 <b>Админ-панель</b>\nВыберите действие:"),
             parse_mode="HTML",
             reply_markup=menu
         )
@@ -247,13 +247,13 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
     if parent_category.id not in ROOT_CATEGORY_IDS:
         keyboard.append([
             InlineKeyboardButton(
-                text="⚙️ Дополнительные поля категории",
+                text=(await get_text("admin_panel_btn_extra_fields", "ru") or "⚙️ Дополнительные поля категории"),
                 callback_data=f"admin:fields:{parent_id}"
             )
         ])
 
     keyboard.append([
-        InlineKeyboardButton(text="------ Подкатегории ------", callback_data="noop")
+        InlineKeyboardButton(text=(await get_text("admin_panel_btn_subcats_divider", "ru") or "------ Подкатегории ------"), callback_data="noop")
     ])
 
     for subcat in subcategories:
@@ -266,23 +266,25 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
 
     keyboard.append([
         InlineKeyboardButton(
-            text="✚ Добавить подкатегорию",
+            text=(await get_text("admin_panel_btn_add_subcategory", "ru") or "✚ Добавить подкатегорию"),
             callback_data=f"admin:add_category:{parent_id}"
         )
     ])
 
     if parent_category.id not in ROOT_CATEGORY_IDS:
         keyboard.append([InlineKeyboardButton(text="———————————————", callback_data="noop")])
+        edit_btn_tmpl = await get_text("admin_panel_btn_edit_category_tmpl", "ru") or "✏️ Редактировать {name}"
         keyboard.append([
             InlineKeyboardButton(
-                text=f"✏️ Редактировать {parent_category.name}",
+                text=edit_btn_tmpl.format(name=parent_category.name),
                 callback_data=f"admin:rename_category:{parent_category.id}"
             )
         ])
         if not subcategories:  # показывать «Удалить» только если нет подкатегорий
+            delete_btn_tmpl = await get_text("admin_panel_btn_delete_category_tmpl", "ru") or "🗑️ Удалить {name}"
             keyboard.append([
                 InlineKeyboardButton(
-                    text=f"🗑️ Удалить {parent_category.name}",
+                    text=delete_btn_tmpl.format(name=parent_category.name),
                     callback_data=f"admin:delete_category:{parent_category.id}"
                 )
             ])
@@ -298,7 +300,7 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
 
     keyboard.append([
         InlineKeyboardButton(
-            text="🛠 Админ-панель",
+            text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"),
             callback_data=f"admin"
         )
     ])
@@ -306,9 +308,8 @@ async def admin_edit_subcategories_cb(cb: CallbackQuery, state: FSMContext = Non
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     # Заголовок с полной цепочкой
-    text = (
-        f"📂 Админпанель - Категории: \n\n<b>{breadcrumb}</b>\n\n"
-    )
+    breadcrumb_tmpl = await get_text("admin_panel_categories_breadcrumb_tmpl", "ru") or "📂 Админпанель - Категории: \n\n<b>{breadcrumb}</b>\n\n"
+    text = breadcrumb_tmpl.format(breadcrumb=breadcrumb)
 
     msg = await cb.message.answer(text, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
@@ -341,15 +342,15 @@ async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             back_btn,
-            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
+            InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"), callback_data="admin"),
         ]
     ])
     menu_msg = await cb.message.answer(
-        "Возврат",
+        (await get_text("admin_panel_return", "ru") or "Возврат"),
         reply_markup=menu
     )
     msg = await cb.message.answer(
-        "✏️ Введите <b>название</b> новой категории:",
+        (await get_text("admin_panel_ask_category_name", "ru") or "✏️ Введите <b>название</b> новой категории:"),
         parse_mode="HTML"
     )
     last_bot_messages[cb.message.chat.id] = [menu_msg.message_id, msg.message_id]
@@ -367,7 +368,7 @@ async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminCategoryStates.waiting_for_new_category_name)
 async def admin_add_category_name(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа к этой функции.")
+        await message.answer(await get_text("admin_panel_no_access_short", "ru") or "Нет доступа к этой функции.")
         return
 
     if message.text == "⬅️ Назад":
@@ -391,7 +392,8 @@ async def admin_add_category_name(message: Message, state: FSMContext):
     try:
         category_name = _normalized_category_name(message.text)
     except ValueError as exc:
-        msg = await message.answer(f"❗️{html_escape(str(exc))}. Введите название снова:")
+        name_error_tmpl = await get_text("admin_panel_name_error_tmpl", "ru") or "❗️{error}. Введите название снова:"
+        msg = await message.answer(name_error_tmpl.format(error=html_escape(str(exc))))
         last_bot_messages[message.chat.id] = [msg.message_id]
         await register_bot_messages(message.chat.id, [msg.message_id])
         return
@@ -402,11 +404,11 @@ async def admin_add_category_name(message: Message, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             back_btn,
-            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
+            InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"), callback_data="admin"),
         ]
     ])
-    menu_msg = await message.answer("Возврат", reply_markup=menu)
-    msg = await message.answer("✏️ Введите <b>slug</b> для категории ...")
+    menu_msg = await message.answer((await get_text("admin_panel_return", "ru") or "Возврат"), reply_markup=menu)
+    msg = await message.answer((await get_text("admin_panel_ask_category_slug", "ru") or "✏️ Введите <b>slug</b> для категории ..."))
     last_bot_messages[message.chat.id] = [menu_msg.message_id, msg.message_id]
     await register_bot_messages(message.chat.id, [menu_msg.message_id, msg.message_id])
     await state.set_state(AdminCategoryStates.waiting_for_new_category_slug)
@@ -424,7 +426,7 @@ async def admin_add_category_name(message: Message, state: FSMContext):
 @router.message(AdminCategoryStates.waiting_for_new_category_slug)
 async def admin_add_category_slug(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа к этой функции.")
+        await message.answer(await get_text("admin_panel_no_access_short", "ru") or "Нет доступа к этой функции.")
         return
 
     if message.text == "⬅️ Назад":
@@ -459,7 +461,7 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
             resize_keyboard=True
         )
         msg = await message.answer(
-            "❗️Slug должен содержать только латинские буквы, цифры, дефис или _ (нижнее подчёркивание). Введите снова:",
+            await get_text("admin_panel_slug_invalid_simple", "ru") or "❗️Slug должен содержать только латинские буквы, цифры, дефис или _ (нижнее подчёркивание). Введите снова:",
             parse_mode="HTML",
             reply_markup=markup
         )
@@ -485,7 +487,7 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
         )).first()
         if exists:
             msg = await message.answer(
-                "❗️Категория с таким slug уже существует. Введите другой slug:",
+                await get_text("admin_panel_slug_duplicate_simple", "ru") or "❗️Категория с таким slug уже существует. Введите другой slug:",
                 parse_mode="HTML",
                 reply_markup=ReplyKeyboardRemove()
             )
@@ -508,9 +510,10 @@ async def admin_add_category_slug(message: Message, state: FSMContext):
         await session.commit()
 
     await state.clear()
+    added_tmpl = await get_text("admin_panel_category_added_tmpl", "ru") or "✅ Категория <b>{name}</b> ({slug}) добавлена."
     await admin_send_success(
         message,
-        f"✅ Категория <b>{html_escape(category_name)}</b> ({slug}) добавлена.",
+        added_tmpl.format(name=html_escape(category_name), slug=slug),
         parent_id,
     )
     print(
@@ -545,12 +548,13 @@ async def admin_rename_category_start(cb: CallbackQuery, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             back_btn,
-            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
+            InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"), callback_data="admin"),
         ]
     ])
-    menu_msg = await cb.message.answer("Возврат", reply_markup=menu)
+    menu_msg = await cb.message.answer((await get_text("admin_panel_return", "ru") or "Возврат"), reply_markup=menu)
+    rename_prompt_tmpl = await get_text("admin_panel_rename_prompt_tmpl", "ru") or "✏️ Переименование категории:\n<b>{name}</b>\n\nВведите новое название:"
     msg = await cb.message.answer(
-        f"✏️ Переименование категории:\n<b>{html_escape(category.name or '')}</b>\n\nВведите новое название:",
+        rename_prompt_tmpl.format(name=html_escape(category.name or '')),
         parse_mode="HTML"
     )
     last_bot_messages[cb.message.chat.id] = [menu_msg.message_id, msg.message_id]
@@ -572,7 +576,7 @@ async def admin_rename_category_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminCategoryStates.renaming_category_name)
 async def admin_rename_category_name(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("У вас нет доступа к этой функции.")
+        await message.answer(await get_text("admin_panel_no_access_polite", "ru") or "У вас нет доступа к этой функции.")
         return
 
     if message.text == "⬅️ Назад":
@@ -601,7 +605,8 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
     try:
         new_name = _normalized_category_name(message.text)
     except ValueError as exc:
-        msg = await message.answer(f"❗️{html_escape(str(exc))}. Введите название снова:")
+        name_error_tmpl = await get_text("admin_panel_name_error_tmpl", "ru") or "❗️{error}. Введите название снова:"
+        msg = await message.answer(name_error_tmpl.format(error=html_escape(str(exc))))
         last_bot_messages[message.chat.id] = [msg.message_id]
         await register_bot_messages(message.chat.id, [msg.message_id])
         return
@@ -612,22 +617,25 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             back_btn,
-            InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin"),
+            InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"), callback_data="admin"),
         ]
     ])
-    menu_msg = await message.answer("Возврат", reply_markup=menu)
+    menu_msg = await message.answer((await get_text("admin_panel_return", "ru") or "Возврат"), reply_markup=menu)
 
     slug_menu = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
-                text=f"⬇️ Оставить прежний slug: {old_slug}",
+                text=(await get_text("admin_panel_btn_keep_slug_tmpl", "ru") or "⬇️ Оставить прежний slug: {slug}").format(slug=old_slug),
                 callback_data=f"admin:keep_slug:{cat_id}"
             )
         ]
     ])
+    rename_slug_prompt_tmpl = await get_text("admin_panel_rename_slug_prompt_tmpl", "ru") or (
+        "✏️ Введите <b>slug</b> для категории (или нажмите кнопку ниже для старого slug):\n"
+        "Текущий slug: <code>{old_slug}</code>"
+    )
     msg = await message.answer(
-        f"✏️ Введите <b>slug</b> для категории (или нажмите кнопку ниже для старого slug):\n"
-        f"Текущий slug: <code>{html_escape(old_slug or '')}</code>",
+        rename_slug_prompt_tmpl.format(old_slug=html_escape(old_slug or '')),
         parse_mode="HTML",
         reply_markup=slug_menu
     )
@@ -649,7 +657,7 @@ async def admin_rename_category_name(message: Message, state: FSMContext):
 @router.message(AdminCategoryStates.renaming_category_slug)
 async def admin_rename_category_slug(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Нет доступа к этой функции.")
+        await message.answer(await get_text("admin_panel_no_access_short", "ru") or "Нет доступа к этой функции.")
         return
 
     if message.text == "⬅️ Назад":
@@ -692,16 +700,18 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
         menu = InlineKeyboardMarkup(inline_keyboard=[
             [
                 back_btn,
-                InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")
+                InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"), callback_data="admin")
             ],
             [
-                InlineKeyboardButton(text=f"⬇️ Оставить прежний slug: {old_slug}",
+                InlineKeyboardButton(text=(await get_text("admin_panel_btn_keep_slug_tmpl", "ru") or "⬇️ Оставить прежний slug: {slug}").format(slug=old_slug),
                                      callback_data=f"admin:keep_slug:{cat_id}")
             ]
         ])
         msg = await message.answer(
-            "❗️Slug должен содержать только латинские буквы, цифры, дефис или _ (нижнее подчёркивание).\n"
-            "Введите новый slug или нажмите кнопку ниже, чтобы оставить старый (⬇️):",
+            await get_text("admin_panel_slug_invalid_with_keep", "ru") or (
+                "❗️Slug должен содержать только латинские буквы, цифры, дефис или _ (нижнее подчёркивание).\n"
+                "Введите новый slug или нажмите кнопку ниже, чтобы оставить старый (⬇️):"
+            ),
             reply_markup=menu,
             parse_mode="HTML"
         )
@@ -738,16 +748,18 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
             menu = InlineKeyboardMarkup(inline_keyboard=[
                 [
                     back_btn,
-                    InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")
+                    InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"), callback_data="admin")
                 ],
                 [
-                    InlineKeyboardButton(text=f"⬇️ Оставить прежний slug: {old_slug}",
+                    InlineKeyboardButton(text=(await get_text("admin_panel_btn_keep_slug_tmpl", "ru") or "⬇️ Оставить прежний slug: {slug}").format(slug=old_slug),
                                          callback_data=f"admin:keep_slug:{cat_id}")
                 ]
             ])
             msg = await message.answer(
-                "❗️Категория с таким slug уже существует. Введите другой slug "
-                "или нажмите кнопку ниже, чтобы оставить прежний (⬇️):",
+                await get_text("admin_panel_slug_duplicate_with_keep", "ru") or (
+                    "❗️Категория с таким slug уже существует. Введите другой slug "
+                    "или нажмите кнопку ниже, чтобы оставить прежний (⬇️):"
+                ),
                 reply_markup=menu,
                 parse_mode="HTML"
             )
@@ -773,9 +785,10 @@ async def admin_rename_category_slug(message: Message, state: FSMContext):
         await session.commit()
 
     await state.clear()
+    renamed_tmpl = await get_text("admin_panel_category_renamed_tmpl", "ru") or "✅ Категория <b>{name}</b> ({slug}) успешно переименована."
     await admin_send_success(
         message,
-        f"✅ Категория <b>{html_escape(new_name)}</b> ({slug}) успешно переименована.",
+        renamed_tmpl.format(name=html_escape(new_name), slug=slug),
         parent_id,
     )
     print(
@@ -806,7 +819,7 @@ async def admin_keep_slug_cb(cb: CallbackQuery, state: FSMContext):
         old_slug = _normalized_category_slug(data.get("old_slug"))
     except ValueError:
         await state.clear()
-        await cb.answer("Данные формы устарели. Начните переименование снова.", show_alert=True)
+        await cb.answer(await get_text("admin_panel_rename_stale", "ru") or "Данные формы устарели. Начните переименование снова.", show_alert=True)
         return
 
     async with SessionLocal() as session:
@@ -820,9 +833,10 @@ async def admin_keep_slug_cb(cb: CallbackQuery, state: FSMContext):
         await session.commit()
 
     await state.clear()
+    renamed_tmpl = await get_text("admin_panel_category_renamed_tmpl", "ru") or "✅ Категория <b>{name}</b> ({slug}) успешно переименована."
     await admin_send_success(
         cb,
-        f"✅ Категория <b>{html_escape(new_name or '')}</b> ({html_escape(old_slug or '')}) успешно переименована.",
+        renamed_tmpl.format(name=html_escape(new_name or ''), slug=html_escape(old_slug or '')),
         parent_id,
     )
     print(
@@ -853,14 +867,17 @@ async def admin_delete_category_confirm(cb: CallbackQuery, state: FSMContext):
 
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Нет", callback_data=f"admin:edit_category:{category.id}")],
-            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"admin:delete_category_yes:{category.id}")]
+            [InlineKeyboardButton(text=(await get_text("admin_panel_btn_no", "ru") or "❌ Нет"), callback_data=f"admin:edit_category:{category.id}")],
+            [InlineKeyboardButton(text=(await get_text("btn_yes_delete", "ru") or "✅ Да, удалить"), callback_data=f"admin:delete_category_yes:{category.id}")]
         ]
     )
-    msg = await cb.message.answer(
-        f"⚠️ <b>Удалить категорию?</b>\n\n<b>{html_escape(category.name or '')}</b>\n\n"
+    delete_confirm_tmpl = await get_text("admin_panel_delete_confirm_tmpl", "ru") or (
+        "⚠️ <b>Удалить категорию?</b>\n\n<b>{name}</b>\n\n"
         "Категория будет безвозвратно удалениа!\n\n"
-        "<i>Вы уверены?</i>",
+        "<i>Вы уверены?</i>"
+    )
+    msg = await cb.message.answer(
+        delete_confirm_tmpl.format(name=html_escape(category.name or '')),
         reply_markup=markup,
         parse_mode="HTML"
     )
@@ -896,9 +913,10 @@ async def admin_delete_category(cb: CallbackQuery, state: FSMContext):
         )).scalars().all()
         if subcats:
             # Если есть подкатегории — выводим ошибку и НЕ удаляем!
+            blocked_subcats_tmpl = await get_text("admin_panel_delete_blocked_subcats_tmpl", "ru") or "❗️Нельзя удалить <b>{name}</b> — сначала удалите все подкатегории!"
             await admin_send_success(
                 cb,
-                f"❗️Нельзя удалить <b>{html_escape(cat_name or '')}</b> — сначала удалите все подкатегории!",
+                blocked_subcats_tmpl.format(name=html_escape(cat_name or '')),
                 parent_id
             )
             print(
@@ -921,10 +939,10 @@ async def admin_delete_category(cb: CallbackQuery, state: FSMContext):
             )
         )).scalar_one()
         if listings_count:
+            blocked_listings_tmpl = await get_text("admin_panel_delete_blocked_listings_tmpl", "ru") or "❗️Нельзя удалить <b>{name}</b> — категория используется в {count} объявлениях (включая архивные)."
             await admin_send_success(
                 cb,
-                f"❗️Нельзя удалить <b>{html_escape(cat_name or '')}</b> — категория используется "
-                f"в {listings_count} объявлениях (включая архивные).",
+                blocked_listings_tmpl.format(name=html_escape(cat_name or ''), count=listings_count),
                 parent_id,
             )
             return
@@ -938,13 +956,15 @@ async def admin_delete_category(cb: CallbackQuery, state: FSMContext):
         if items_count or profiles_count:
             refs = []
             if items_count:
-                refs.append(f"анкеты: {items_count}")
+                items_tmpl = await get_text("admin_panel_ref_items_tmpl", "ru") or "анкеты: {count}"
+                refs.append(items_tmpl.format(count=items_count))
             if profiles_count:
-                refs.append(f"профили: {profiles_count}")
+                profiles_tmpl = await get_text("admin_panel_ref_profiles_tmpl", "ru") or "профили: {count}"
+                refs.append(profiles_tmpl.format(count=profiles_count))
+            blocked_refs_tmpl = await get_text("admin_panel_delete_blocked_refs_tmpl", "ru") or "❗️Нельзя удалить <b>{name}</b> — категория используется {refs}."
             await admin_send_success(
                 cb,
-                f"❗️Нельзя удалить <b>{html_escape(cat_name or '')}</b> — категория используется "
-                + ", ".join(refs) + ".",
+                blocked_refs_tmpl.format(name=html_escape(cat_name or ''), refs=", ".join(refs)),
                 parent_id,
             )
             return
@@ -953,9 +973,10 @@ async def admin_delete_category(cb: CallbackQuery, state: FSMContext):
         await session.delete(cat)
         await session.commit()
 
+    deleted_tmpl = await get_text("admin_panel_category_deleted_tmpl", "ru") or "🗑️ Категория <b>{name}</b> удалена."
     await admin_send_success(
         cb,
-        f"🗑️ Категория <b>{html_escape(cat_name or '')}</b> удалена.",
+        deleted_tmpl.format(name=html_escape(cat_name or '')),
         parent_id,
     )
     print(
@@ -981,7 +1002,7 @@ async def admin_send_success(cb_or_msg, text: str, parent_id: int):
 
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="ОК", callback_data=f"admin:success_ok:{parent_id}")]
+            [InlineKeyboardButton(text=(await get_text("admin_panel_btn_ok", "ru") or "ОК"), callback_data=f"admin:success_ok:{parent_id}")]
         ]
     )
     msg = await send_func(
@@ -1092,7 +1113,11 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
 
     # Подстраховка: неотвеченные — отдельным пунктом сразу под сообщением,
     # чтобы не потерять их в общем списке, даже если бегло листать список.
-    unanswered_label = f"🔔 Неотвеченные ({unanswered})" if unanswered else "✅ Неотвеченных нет"
+    if unanswered:
+        unanswered_tmpl = await get_text("admin_panel_btn_unanswered_tmpl", "ru") or "🔔 Неотвеченные ({count})"
+        unanswered_label = unanswered_tmpl.format(count=unanswered)
+    else:
+        unanswered_label = await get_text("admin_panel_btn_unanswered_none", "ru") or "✅ Неотвеченных нет"
     keyboard.append([InlineKeyboardButton(text=unanswered_label, callback_data="admin_feedback_unanswered")])
 
     # Сообщения (нумерация глобальная)
@@ -1100,7 +1125,7 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
     for i, r in enumerate(rows):
         idx = offset + i + 1
         status = _fb_status_marker(r.answered_at, r.needs_reply, r.is_read)
-        uname = f"@{r.username}" if r.username else "Без ника"
+        uname = f"@{r.username}" if r.username else (await get_text("admin_panel_no_username", "ru") or "Без ника")
         dt_str = _fmt_dt_belgrade(r.created_at)
 
         btn_text = f"{idx}. {status} {uname} · {dt_str}"
@@ -1125,12 +1150,13 @@ async def send_admin_feedback_list(cb: CallbackQuery, offset: int = 0):
 
     # Кнопки возврата
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin")])
-    keyboard.append([InlineKeyboardButton(text="🛠️ Админпанель", callback_data="admin")])
+    keyboard.append([InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel_alt", "ru") or "🛠️ Админпанель"), callback_data="admin")])
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     end_no = min(offset + len(rows), total)
-    header = f"📬 <b>Сообщения от пользователей (новые сверху)</b>\nПоказаны {start_no}–{end_no} из {total}"
+    list_header_tmpl = await get_text("admin_panel_feedback_list_header_tmpl", "ru") or "📬 <b>Сообщения от пользователей (новые сверху)</b>\nПоказаны {start}–{end} из {total}"
+    header = list_header_tmpl.format(start=start_no, end=end_no, total=total)
 
     msg = await cb.message.answer(header, reply_markup=markup, parse_mode="HTML")
     last_bot_messages[cb.message.chat.id] = [msg.message_id]
@@ -1186,14 +1212,14 @@ async def send_admin_feedback_unanswered_list(cb: CallbackQuery, offset: int = 0
     keyboard = []
 
     if not rows and offset == 0:
-        keyboard.append([InlineKeyboardButton(text="◀️ К списку сообщений", callback_data="admin_feedback")])
-        keyboard.append([InlineKeyboardButton(text="🛠️ Админпанель", callback_data="admin")])
-        header = "🔔 <b>Неотвеченные сообщения пользователей</b>\n\n✅ Отличная работа — неотвеченных обращений нет."
+        keyboard.append([InlineKeyboardButton(text=(await get_text("admin_panel_btn_back_to_feedback_list", "ru") or "◀️ К списку сообщений"), callback_data="admin_feedback")])
+        keyboard.append([InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel_alt", "ru") or "🛠️ Админпанель"), callback_data="admin")])
+        header = await get_text("admin_panel_feedback_unanswered_empty", "ru") or "🔔 <b>Неотвеченные сообщения пользователей</b>\n\n✅ Отличная работа — неотвеченных обращений нет."
     else:
         start_no = offset + 1
         for i, r in enumerate(rows):
             idx = offset + i + 1
-            uname = f"@{r.username}" if r.username else "Без ника"
+            uname = f"@{r.username}" if r.username else (await get_text("admin_panel_no_username", "ru") or "Без ника")
             dt_str = _fmt_dt_belgrade(r.created_at)
             keyboard.append([InlineKeyboardButton(
                 text=f"{idx}. 🔔 {uname} · {dt_str}",
@@ -1213,11 +1239,12 @@ async def send_admin_feedback_unanswered_list(cb: CallbackQuery, offset: int = 0
                     text="»", callback_data=f"admin_feedback_unanswered_list:{offset + limit}"))
             keyboard.append(pager)
 
-        keyboard.append([InlineKeyboardButton(text="◀️ К списку сообщений", callback_data="admin_feedback")])
-        keyboard.append([InlineKeyboardButton(text="🛠️ Админпанель", callback_data="admin")])
+        keyboard.append([InlineKeyboardButton(text=(await get_text("admin_panel_btn_back_to_feedback_list", "ru") or "◀️ К списку сообщений"), callback_data="admin_feedback")])
+        keyboard.append([InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel_alt", "ru") or "🛠️ Админпанель"), callback_data="admin")])
 
         end_no = min(offset + len(rows), total)
-        header = f"🔔 <b>Неотвеченные сообщения пользователей (старые сверху)</b>\nПоказаны {start_no}–{end_no} из {total}"
+        unanswered_header_tmpl = await get_text("admin_panel_feedback_unanswered_header_tmpl", "ru") or "🔔 <b>Неотвеченные сообщения пользователей (старые сверху)</b>\nПоказаны {start}–{end} из {total}"
+        header = unanswered_header_tmpl.format(start=start_no, end=end_no, total=total)
 
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     msg = await cb.message.answer(header, reply_markup=markup, parse_mode="HTML")
@@ -1261,7 +1288,7 @@ async def admin_feedback_view(cb: CallbackQuery):
         )
         row = res.fetchone()
         if not row:
-            msg = await cb.message.answer("Сообщение не найдено или удалено.")
+            msg = await cb.message.answer(await get_text("admin_panel_feedback_not_found", "ru") or "Сообщение не найдено или удалено.")
             last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
             await register_bot_messages(cb.message.chat.id, [msg.message_id])
             return
@@ -1307,7 +1334,7 @@ async def admin_feedback_view(cb: CallbackQuery):
         next_id = next_row.id if next_row else None
 
     # 3) Текст письма
-    uname = f"@{row.username}" if row.username else "Без ника"
+    uname = f"@{row.username}" if row.username else (await get_text("admin_panel_no_username", "ru") or "Без ника")
     dt_val = row.created_at
     try:
         dt_val = datetime.fromisoformat(dt_val) if isinstance(dt_val, str) else dt_val
@@ -1316,17 +1343,17 @@ async def admin_feedback_view(cb: CallbackQuery):
     dt_str = dt_val.strftime("%H:%M %d:%m:%y")
 
     if row.answered_at:
-        status_line = "✅ <b>Отвечено</b>\n"
+        status_line = await get_text("admin_panel_feedback_status_answered", "ru") or "✅ <b>Отвечено</b>\n"
     elif row.needs_reply:
-        status_line = "🔔 <b>Пользователь запросил ответ</b>\n"
+        status_line = await get_text("admin_panel_feedback_status_needs_reply", "ru") or "🔔 <b>Пользователь запросил ответ</b>\n"
     else:
         status_line = ""
-    header = (
-        f"📨 <b>Обратная связь</b>  <i>[{pos}/{total}]</i>\n"
-        f"{status_line}"
-        f"<b>От:</b> {uname}\n"
-        f"<b>Дата:</b> {dt_str}\n"
+    view_header_tmpl = await get_text("admin_panel_feedback_view_header_tmpl", "ru") or (
+        "📨 <b>Обратная связь</b>  <i>[{pos}/{total}]</i>\n"
+        "{status_line}<b>От:</b> {uname}\n"
+        "<b>Дата:</b> {dt}\n"
     )
+    header = view_header_tmpl.format(pos=pos, total=total, status_line=status_line, uname=uname, dt=dt_str)
     body = row.message or "—"
     msg_text = f"{header}\n{body}"
 
@@ -1339,10 +1366,10 @@ async def admin_feedback_view(cb: CallbackQuery):
         rows.append([InlineKeyboardButton(text="⏫⏫⏫", callback_data=f"admin_feedback_view:{prev_id}")])
     if next_id:
         rows.append([InlineKeyboardButton(text="⏬⏬⏬", callback_data=f"admin_feedback_view:{next_id}")])
-    rows.append([InlineKeyboardButton(text="✍️ Ответить", callback_data=f"fb:reply:{row.id}")])
+    rows.append([InlineKeyboardButton(text=(await get_text("admin_panel_btn_reply", "ru") or "✍️ Ответить"), callback_data=f"fb:reply:{row.id}")])
     rows.append([
-        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_feedback_delete:{row.id}"),
-        InlineKeyboardButton(text="↩️ К списку", callback_data=f"admin_feedback_list:{back_offset}")
+        InlineKeyboardButton(text=(await get_text("btn_delete", "ru") or "🗑 Удалить"), callback_data=f"admin_feedback_delete:{row.id}"),
+        InlineKeyboardButton(text=(await get_text("admin_panel_btn_back_to_list", "ru") or "↩️ К списку"), callback_data=f"admin_feedback_list:{back_offset}")
     ])
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1368,15 +1395,15 @@ async def admin_feedback_delete_confirm(cb: CallbackQuery):
 
     fb_id = int(cb.data.split(":")[1])
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin_feedback_view:{fb_id}")],
-        [InlineKeyboardButton(text="✅ Удалить навсегда", callback_data=f"admin_feedback_delete_yes:{fb_id}")]
+        [InlineKeyboardButton(text=(await get_text("btn_cancel", "ru") or "❌ Отмена"), callback_data=f"admin_feedback_view:{fb_id}")],
+        [InlineKeyboardButton(text=(await get_text("admin_panel_btn_delete_forever", "ru") or "✅ Удалить навсегда"), callback_data=f"admin_feedback_delete_yes:{fb_id}")]
     ])
     try:
         await cb.message.edit_reply_markup(reply_markup=kb)
     except Exception:
         pass
 
-    await cb.answer("Удалить это сообщение?")
+    await cb.answer(await get_text("admin_panel_feedback_delete_confirm_toast", "ru") or "Удалить это сообщение?")
     print(f"FUNC: admin_feedback_delete_confirm | id={fb_id} | chat_id={cb.message.chat.id} | user_id={cb.from_user.id}")
 
 
@@ -1474,10 +1501,11 @@ async def admin_users_list(cb: CallbackQuery):
         users = users_rows.scalars().all()
 
     if not users:
-        await cb.answer("Список пользователей пуст.", show_alert=True)
+        await cb.answer(await get_text("admin_panel_users_empty", "ru") or "Список пользователей пуст.", show_alert=True)
         return
 
-    lines = [f"<b>👥 Пользователи бота</b> (всего: {total})"]
+    users_header_tmpl = await get_text("admin_panel_users_header_tmpl", "ru") or "<b>👥 Пользователи бота</b> (всего: {total})"
+    lines = [users_header_tmpl.format(total=total)]
     for u in users:
         nick = f"@{u.username}" if u.username else (u.full_name or "—")
         dt_belgrade = u.last_seen.replace(tzinfo=pytz.utc).astimezone(SERBIA_TZ)
@@ -1493,11 +1521,11 @@ async def admin_users_list(cb: CallbackQuery):
         )
     if offset + USERS_PAGE_SIZE < total:
         nav_buttons.append(
-            InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"admin:users:{offset + USERS_PAGE_SIZE}")
+            InlineKeyboardButton(text=(await get_text("admin_panel_btn_forward", "ru") or "Вперёд ▶️"), callback_data=f"admin:users:{offset + USERS_PAGE_SIZE}")
         )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[nav_buttons] if nav_buttons else [])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="🛠 Админ-панель", callback_data="admin")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text=(await get_text("admin_panel_btn_admin_panel", "ru") or "🛠 Админ-панель"), callback_data="admin")])
 
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     msg = await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
