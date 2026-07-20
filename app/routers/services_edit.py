@@ -8,7 +8,7 @@ from html import escape
 from app.database import SessionLocal
 from app.models import Listing, City, Category
 from app.keyboards import get_common_menu_button
-from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
+from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages, get_text
 from app.routers.services_edit_overview import _render_overview as _render_services_overview
 
 
@@ -67,7 +67,7 @@ async def service_edit_overview(cb: CallbackQuery, state: FSMContext):
 
     async with SessionLocal() as s:
         if not await _get_owned_service(s, listing_id, cb.from_user.id):
-            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
             return
     await _render_services_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
     await cb.answer()
@@ -82,7 +82,7 @@ async def edit_title_start(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         l = await _get_owned_service(s, listing_id, cb.from_user.id)
         if not l:
-            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
             await state.clear()
             return
         current = l.title or "—"
@@ -110,7 +110,7 @@ async def edit_title_save(msg: Message, state: FSMContext):
     async with SessionLocal() as s:
         l = await _get_owned_service(s, listing_id, msg.from_user.id)
         if not l:
-            await msg.answer("Можно редактировать только свои услуги.")
+            await msg.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             await state.clear()
             return
         l.title = title
@@ -128,7 +128,7 @@ async def edit_descr_start(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         l = await _get_owned_service(s, listing_id, cb.from_user.id)
         if not l:
-            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
             await state.clear()
             return
         current = l.descr or "—"
@@ -151,7 +151,7 @@ async def edit_descr_save(msg: Message, state: FSMContext):
     async with SessionLocal() as s:
         l = await _get_owned_service(s, listing_id, msg.from_user.id)
         if not l:
-            await msg.answer("Можно редактировать только свои услуги.")
+            await msg.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             await state.clear()
             return
         l.descr = descr
@@ -169,7 +169,7 @@ async def edit_price_start(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         l = await _get_owned_service(s, listing_id, cb.from_user.id)
         if not l:
-            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
             await state.clear()
             return
         current = l.price or "—"
@@ -192,7 +192,7 @@ async def edit_price_save(msg: Message, state: FSMContext):
     async with SessionLocal() as s:
         l = await _get_owned_service(s, listing_id, msg.from_user.id)
         if not l:
-            await msg.answer("Можно редактировать только свои услуги.")
+            await msg.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             await state.clear()
             return
         l.price = price or "Договорная"
@@ -215,7 +215,7 @@ async def edit_extras_start(cb: CallbackQuery, state: FSMContext):
 
     async with SessionLocal() as s:
         if not await _get_owned_service(s, listing_id, cb.from_user.id):
-            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
             return
     await state.update_data(listing_id=listing_id)
     # Возврат — в обзор редактирования

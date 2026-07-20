@@ -124,7 +124,7 @@ async def _authorize_service_callback(cb: CallbackQuery, listing_id: int) -> boo
     async with SessionLocal() as s:
         listing = await _owned_service_in_session(s, listing_id, cb.from_user.id)
     if listing is None:
-        await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+        await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
         return False
     return True
 
@@ -641,7 +641,7 @@ async def sef_main_value_entered(message: Message, state: FSMContext):
         l = await _owned_service_in_session(s, listing_id, message.from_user.id)
         if l is None:
             await state.clear()
-            await message.answer("Можно редактировать только свои услуги.")
+            await message.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             return
         val = message.text or message.caption or ""
         if field == "title":
@@ -750,7 +750,7 @@ async def sefx_value_entered(message: Message, state: FSMContext):
         l = await _owned_service_in_session(s, listing_id, message.from_user.id)
         if l is None:
             await state.clear()
-            await message.answer("Можно редактировать только свои услуги.")
+            await message.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             return
         expected_type = str(fdef.get("type") or "text").strip().lower()
         current_def = await _service_extra_field_def(s, l, key)
@@ -853,7 +853,7 @@ async def sefx_video_link(message: Message, state: FSMContext):
         l = await _owned_service_extra_field(s, l_id, message.from_user.id, key, "video")
         if l is None:
             await state.clear()
-            await message.answer("Можно редактировать только свои услуги.")
+            await message.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             return
         try:
             flex = json.loads(l.flex or "{}")
@@ -889,7 +889,7 @@ async def sefx_video_file(message: Message, state: FSMContext):
         l = await _owned_service_extra_field(s, l_id, message.from_user.id, key, "video")
         if l is None:
             await state.clear()
-            await message.answer("Можно редактировать только свои услуги.")
+            await message.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.")
             return
         try:
             flex = json.loads(l.flex or "{}")
@@ -982,7 +982,7 @@ async def extra_open_services(cb: CallbackQuery, state: FSMContext):
                 print(f"[services_edit_overview.py] handler=extra_open_services ERROR no_listing | chat_id={chat_id} listing_id={listing_id}")
                 return
             if listing.owner_id != cb.from_user.id or listing.type != "service":
-                await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+                await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
                 return
 
             category = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one()
@@ -1107,7 +1107,7 @@ async def sextra_del_services(cb: CallbackQuery, state: FSMContext):
             print(f"[services_edit_overview.py] handler=sextra_del_services ERROR no_listing chat_id={chat_id} listing_id={listing_id}")
             return
         if listing.owner_id != cb.from_user.id or listing.type != "service":
-            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
             return
 
         if slot == 1:
@@ -1283,7 +1283,7 @@ async def sextra_pick_services(cb: CallbackQuery, state: FSMContext):
             return
 
         if listing.owner_id != cb.from_user.id or listing.type != "service":
-            await cb.answer("Можно редактировать только свои услуги.", show_alert=True)
+            await cb.answer(await get_text("err_not_owner_service", "ru") or "Можно редактировать только свои услуги.", show_alert=True)
             return
 
         category = await s.get(Category, listing.category_id)
