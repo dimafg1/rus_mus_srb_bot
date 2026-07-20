@@ -245,13 +245,14 @@ async def _start_flex_flow(m_or_cbmsg, state: FSMContext):
     cat_id = int(data.get("cat_id"))
     async with SessionLocal() as s:
         raw_fields = await _load_category_fields(s, cat_id)
+    default_flex_label = await get_text("vac_add_flex_default_label", "ru") or "Поле"
     supported = {"text", "number", "select", "checkbox"}
     fields: List[dict] = []
     for f in raw_fields or []:
         if isinstance(f, dict) and str(f.get("type", "text")).lower() in supported:
             fld = {
                 "type": str(f.get("type", "text")).lower(),
-                "label": (str(f.get("label") or "") or "Поле").strip(),
+                "label": (str(f.get("label") or "") or default_flex_label).strip(),
                 "key": (str(f.get("key") or "field")).strip().lower() or "field",
                 "required": bool(f.get("required", False)),
             }
@@ -283,8 +284,9 @@ async def _ask_current_flex_field(m_or_cbmsg, state: FSMContext):
         await vacancy_preview_and_confirm(m_or_cbmsg, state)
         await state.set_state(VacForm.confirm)
         return
+    default_flex_label = await get_text("vac_add_flex_default_label", "ru") or "Поле"
     f_def = fields[idx]
-    label = f_def.get("label") or "Поле"
+    label = f_def.get("label") or default_flex_label
     ftype = f_def.get("type")
     required = bool(f_def.get("required"))
     rows: List[List[InlineKeyboardButton]] = []
@@ -299,26 +301,30 @@ async def _ask_current_flex_field(m_or_cbmsg, state: FSMContext):
             ])
         if not required:
             rows.append([
-                InlineKeyboardButton(text="Пропустить", callback_data="vac_flex_skip")
+                InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_flex_skip")
             ])
-        prompt = f"({idx+1}/{len(fields)}) <b>{_esc(label)}</b>\n\nВыберите один из вариантов:"
+        select_prompt_tmpl = await get_text("vac_add_flex_select_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВыберите один из вариантов:"
+        prompt = select_prompt_tmpl.format(idx=idx+1, total=len(fields), label=_esc(label))
     elif ftype == "checkbox":
         rows.append([
-            InlineKeyboardButton(text="✅ Да", callback_data="vac_flex_checkbox:1"),
-            InlineKeyboardButton(text="❌ Нет", callback_data="vac_flex_checkbox:0"),
+            InlineKeyboardButton(text=(await get_text("vac_add_checkbox_yes", "ru") or "✅ Да"), callback_data="vac_flex_checkbox:1"),
+            InlineKeyboardButton(text=(await get_text("admin_panel_btn_no", "ru") or "❌ Нет"), callback_data="vac_flex_checkbox:0"),
         ])
         if not required:
             rows.append([
-                InlineKeyboardButton(text="Пропустить", callback_data="vac_flex_skip")
+                InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_flex_skip")
             ])
-        prompt = f"({idx+1}/{len(fields)}) <b>{_esc(label)}</b>\n\nВыберите вариант:"
+        checkbox_prompt_tmpl = await get_text("vac_add_flex_checkbox_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВыберите вариант:"
+        prompt = checkbox_prompt_tmpl.format(idx=idx+1, total=len(fields), label=_esc(label))
     else:
         # text or number
         if not required:
             rows.append([
-                InlineKeyboardButton(text="Пропустить", callback_data="vac_flex_skip")
+                InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_flex_skip")
             ])
-        prompt = f"({idx+1}/{len(fields)}) <b>{_esc(label)}</b>\n\nВведите значение" + (" (число)." if ftype == "number" else ".")
+        number_suffix = await get_text("vac_add_flex_number_suffix", "ru") or " (число)."
+        text_prompt_tmpl = await get_text("vac_add_flex_text_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВведите значение{suffix}"
+        prompt = text_prompt_tmpl.format(idx=idx+1, total=len(fields), label=_esc(label), suffix=number_suffix if ftype == "number" else ".")
     # Append nav buttons
     back_btn = await get_common_menu_button('back')
     main_btn = await get_common_menu_button('main_menu')
@@ -363,18 +369,19 @@ async def vacancy_preview_and_confirm(m_or_cbmsg, state: FSMContext):
     for k, v in flex_vals.items():
         flex_lines.append(f"• {_esc(k.capitalize())}: <i>{_esc(str(v))}</i>")
     flex_block = "\n".join(flex_lines)
-    preview_lines: List[str] = []
-    preview_lines.append(f"<b>Город:</b> {_esc(city_name)}")
-    preview_lines.append(f"<b>Категория:</b> {_esc(cat_name)}")
-    preview_lines.append(f"<b>Заголовок:</b> {_esc(title)}")
-    preview_lines.append(f"<b>Описание:</b> { _esc(descr) }")
-    preview_lines.append(f"<b>Зарплата:</b> {_esc(price)}")
+    preview_tmpl = await get_text("vac_add_preview_tmpl", "ru") or (
+        "<b>Город:</b> {city}\n<b>Категория:</b> {category}\n<b>Заголовок:</b> {title}\n"
+        "<b>Описание:</b> {descr}\n<b>Зарплата:</b> {price}"
+    )
+    preview_text = preview_tmpl.format(
+        city=_esc(city_name), category=_esc(cat_name), title=_esc(title),
+        descr=_esc(descr), price=_esc(price),
+    )
     if flex_block:
-        preview_lines.append(flex_block)
-    preview_text = "\n".join(preview_lines)
+        preview_text += "\n" + flex_block
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Опубликовать", callback_data="vac_publish")],
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="vac_cancel")],
+        [InlineKeyboardButton(text=(await get_text("vac_add_btn_publish", "ru") or "✅ Опубликовать"), callback_data="vac_publish")],
+        [InlineKeyboardButton(text=(await get_text("vac_add_btn_cancel_publish", "ru") or "❌ Отменить"), callback_data="vac_cancel")],
     ])
     msg = await m_or_cbmsg.answer(preview_text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(m_or_cbmsg.chat.id, []).append(msg.message_id)
@@ -442,7 +449,7 @@ async def vacancy_citylist(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    await safe_edit_or_send(cb, "Выберите город для публикации вакансии:", reply_markup=kb, parse_mode="HTML")
+    await safe_edit_or_send(cb, await get_text("vac_add_ask_city_for_publish", "ru") or "Выберите город для публикации вакансии:", reply_markup=kb, parse_mode="HTML")
     await cb.answer()
     print(f"[vacancy_add.py] handler=vacancy_citylist chat_id={chat_id}")
 
@@ -457,7 +464,7 @@ async def vacancy_choose_city(cb: CallbackQuery, state: FSMContext):
     async with SessionLocal() as s:
         city = (await s.execute(select(City).where(City.slug == city_slug))).scalar_one_or_none()
     if city is None:
-        await cb.answer("Город не найден.", show_alert=True)
+        await cb.answer(await get_text("services_add_city_not_found", "ru") or "Город не найден.", show_alert=True)
         return
     await state.update_data(city_id=city.id, city_slug=city.slug, city_name=city.name)
 
@@ -477,9 +484,10 @@ async def vacancy_choose_city(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
+    category_header_tmpl = await get_text("vac_add_choose_category_header_tmpl", "ru") or "Город: <b>{city}</b>\nВыберите категорию:"
     await safe_edit_or_send(
         cb,
-        f"Город: <b>{_esc(city.name or city.slug)}</b>\nВыберите категорию:",
+        category_header_tmpl.format(city=_esc(city.name or city.slug)),
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -525,7 +533,7 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
         _, city_slug, cat_id_s = cb.data.split(":", 2)
         cat_id = int(cat_id_s)
     except (TypeError, ValueError):
-        await cb.answer("Некорректная категория.", show_alert=True)
+        await cb.answer(await get_text("services_add_invalid_category", "ru") or "Некорректная категория.", show_alert=True)
         return
 
     # 4) Грузим детей и родителя
@@ -533,7 +541,7 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
         city = (await s.execute(select(City).where(City.slug == city_slug))).scalar_one_or_none()
         category = await s.get(Category, cat_id)
         if city is None or category is None or not await _is_vacancy_category(s, category):
-            await cb.answer("Город или категория больше недоступны.", show_alert=True)
+            await cb.answer(await get_text("services_add_city_or_cat_gone", "ru") or "Город или категория больше недоступны.", show_alert=True)
             return
         children = (await s.execute(
             select(Category).where(Category.parent_id == cat_id)
@@ -563,7 +571,7 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
         kb_full = InlineKeyboardMarkup(inline_keyboard=rows)
 
         # ВНИМАНИЕ: отправляем НОВОЕ сообщение (старое мы удалили выше)
-        msg = await cb.message.answer("Выберите подкатегорию:", reply_markup=kb_full, parse_mode="HTML")
+        msg = await cb.message.answer(await get_text("vac_choose_subcat", "ru") or "Выберите подкатегорию:", reply_markup=kb_full, parse_mode="HTML")
         print(f"[vacancy_add.py] handler=vacancy_choose_category step=children chat_id={chat_id} cat_id={cat_id} parent_id={parent_id} msg_id={msg.message_id}")
         await cb.answer()
         return
@@ -592,7 +600,7 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
         if main_btn:
             nav_rows.append([main_btn])
         kb_nav = InlineKeyboardMarkup(inline_keyboard=nav_rows)
-        nav_msg = await cb.message.answer("◀️ Возврат", reply_markup=kb_nav, parse_mode="HTML")
+        nav_msg = await cb.message.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=kb_nav, parse_mode="HTML")
         await state.update_data(nav_msg_id=nav_msg.message_id)
     else:
         # даже если «Назад» нет, «Главное меню» всё равно можно показать отдельной кнопкой ниже,
@@ -600,7 +608,7 @@ async def vacancy_choose_category(cb: CallbackQuery, state: FSMContext):
         pass
 
     # 5Б.2) Подсказка на ввод заголовка
-    prompt_msg = await cb.message.answer("✏️ Введите <b>заголовок</b> вакансии:", parse_mode="HTML")
+    prompt_msg = await cb.message.answer((await get_text("vac_ask_title", "ru") or "✏️ Введите <b>заголовок</b> вакансии:"), parse_mode="HTML")
     await state.update_data(prompt_id=prompt_msg.message_id)
 
     # 5Б.3) Ставим состояние
@@ -672,10 +680,10 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
                 buttons.append([main_btn])
             kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-            nav = await cb.message.answer("◀️ Возврат", reply_markup=kb, parse_mode="HTML")
+            nav = await cb.message.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=kb, parse_mode="HTML")
             await state.update_data(nav_msg_id=nav.message_id)
 
-            prompt = await cb.message.answer("✏️ Введите <b>заголовок</b> вакансии:", parse_mode="HTML")
+            prompt = await cb.message.answer((await get_text("vac_ask_title", "ru") or "✏️ Введите <b>заголовок</b> вакансии:"), parse_mode="HTML")
             await state.update_data(prompt_id=prompt.message_id)
 
             await state.set_state(VacForm.title)
@@ -695,7 +703,7 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
                 buttons.append([main_btn])
             kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-            nav = await cb.message.answer("◀️ Возврат", reply_markup=kb, parse_mode="HTML")
+            nav = await cb.message.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=kb, parse_mode="HTML")
             await state.update_data(nav_msg_id=nav.message_id)
 
             st = await state.get_data()
@@ -707,10 +715,10 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
             tmpl = tmpl or "Краткое описание (или нажмите «Пропустить»):"
 
             kb_skip = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Пропустить", callback_data="vac_descr_skip")]
+                [InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_descr_skip")]
             ])
             prompt = await cb.message.answer(
-                f"<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n\n{tmpl}",
+                (await get_text("vac_add_ask_descr_with_title_tmpl", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n\n{tmpl}").format(title=title, tmpl=tmpl),
                 reply_markup=kb_skip,
                 parse_mode="HTML",
             )
@@ -744,7 +752,7 @@ async def vacancy_add_back(cb: CallbackQuery, state: FSMContext):
         ):
             rows.append([main_btn])
 
-        await cb.message.answer("Выберите категорию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+        await cb.message.answer(await get_text("vac_choose_cat", "ru") or "Выберите категорию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
         await cb.answer()
         print(f"[vacancy_add.py] vacancy_add_back -> categories | chat_id={chat_id} city={city_slug} parent_id={parent_id}")
         return
@@ -768,7 +776,7 @@ async def vacancy_input_title(m: Message, state: FSMContext):
 
     title = (m.text or "").strip()
     if not title:
-        msg = await m.answer("Заголовок не может быть пустым. Введите заголовок вакансии:")
+        msg = await m.answer(await get_text("vac_add_title_empty", "ru") or "Заголовок не может быть пустым. Введите заголовок вакансии:")
         await state.update_data(prompt_id=msg.message_id)
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
@@ -825,7 +833,7 @@ async def vacancy_input_title(m: Message, state: FSMContext):
 
     if buttons:
         kb_nav = InlineKeyboardMarkup(inline_keyboard=buttons)
-        nav_msg = await m.answer("◀️ Возврат", reply_markup=kb_nav, parse_mode="HTML")
+        nav_msg = await m.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=kb_nav, parse_mode="HTML")
         await state.update_data(nav_msg_id=nav_msg.message_id)
 
     # 5) подсказка «введите описание»
@@ -834,10 +842,11 @@ async def vacancy_input_title(m: Message, state: FSMContext):
     except Exception:
         tmpl = None
     tmpl = tmpl or "Краткое описание (или нажмите «Пропустить»):"
-    helper = f"<b>Вы уже ввели</b>\n• Заголовок: <i>{_esc(title) or '—'}</i>"
+    already_entered_title_tmpl = await get_text("vac_add_already_ended_for_helper", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>"
+    helper = already_entered_title_tmpl.format(title=_esc(title) or '—')
 
     kb_skip = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить", callback_data="vac_descr_skip")]
+        [InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_descr_skip")]
     ])
     prompt_msg = await m.answer(f"{helper}\n\n{tmpl}", reply_markup=kb_skip, parse_mode="HTML")
     await state.update_data(prompt_id=prompt_msg.message_id)
@@ -893,7 +902,7 @@ async def vacancy_input_descr(m: Message, state: FSMContext):
     if main_btn:
         buttons.append([main_btn])
     kb_nav = InlineKeyboardMarkup(inline_keyboard=buttons)
-    nav_msg = await m.answer("◀️ Возврат", reply_markup=kb_nav, parse_mode="HTML")
+    nav_msg = await m.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=kb_nav, parse_mode="HTML")
     await state.update_data(nav_msg_id=nav_msg.message_id)
 
     # 5) подсказка «укажите цену» + две быстрые кнопки
@@ -906,17 +915,14 @@ async def vacancy_input_descr(m: Message, state: FSMContext):
 
     st = await state.get_data()
     title = _esc(st.get("title") or "—")
-    helper = (
-        f"<b>Вы уже ввели</b>\n"
-        f"• Заголовок: <i>{title}</i>\n"
-        f"• Описание: <i>{_esc(descr) or '—'}</i>"
-    )
+    already_entered_title_descr_tmpl = await get_text("vac_add_already_entered_title_descr_tmpl", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n• Описание: <i>{descr}</i>"
+    helper = already_entered_title_descr_tmpl.format(title=title, descr=_esc(descr) or '—')
 
     kb_quick = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Бесплатно", callback_data="vac_price_choice:free"),
-                InlineKeyboardButton(text="По договоренности", callback_data="vac_price_choice:deal"),
+                InlineKeyboardButton(text=(await get_text("btn_free", "ru") or "Бесплатно"), callback_data="vac_price_choice:free"),
+                InlineKeyboardButton(text=(await get_text("btn_by_agreement", "ru") or "По договоренности"), callback_data="vac_price_choice:deal"),
             ]
         ]
     )
@@ -958,7 +964,7 @@ async def vacancy_descr_skip(cb: CallbackQuery, state: FSMContext):
     main_btn = await get_common_menu_button('main_menu', 'ru')
     if main_btn:
         buttons.append([main_btn])
-    nav_msg = await cb.message.answer("◀️ Возврат", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
+    nav_msg = await cb.message.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
     await state.update_data(nav_msg_id=nav_msg.message_id)
 
     try:
@@ -969,23 +975,20 @@ async def vacancy_descr_skip(cb: CallbackQuery, state: FSMContext):
 
     st = await state.get_data()
     title = _esc(st.get("title") or "—")
-    helper = (
-        f"<b>Вы уже ввели</b>\n"
-        f"• Заголовок: <i>{title}</i>\n"
-        f"• Описание: <i>—</i>"
-    )
+    already_entered_title_descr_tmpl = await get_text("vac_add_already_entered_title_descr_tmpl", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n• Описание: <i>{descr}</i>"
+    helper = already_entered_title_descr_tmpl.format(title=title, descr="—")
     kb_quick = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Бесплатно", callback_data="vac_price_choice:free"),
-                InlineKeyboardButton(text="По договоренности", callback_data="vac_price_choice:deal"),
+                InlineKeyboardButton(text=(await get_text("btn_free", "ru") or "Бесплатно"), callback_data="vac_price_choice:free"),
+                InlineKeyboardButton(text=(await get_text("btn_by_agreement", "ru") or "По договоренности"), callback_data="vac_price_choice:deal"),
             ]
         ]
     )
     prompt_msg = await cb.message.answer(f"{helper}\n\n{tmpl}", reply_markup=kb_quick, parse_mode="HTML")
     await state.update_data(prompt_id=prompt_msg.message_id)
 
-    await cb.answer("Пропущено")
+    await cb.answer(await get_text("vac_add_flex_skipped_toast", "ru") or "Пропущено")
     print(f"[vacancy_add.py] handler=vacancy_descr_skip chat_id={chat_id} user_id={cb.from_user.id}")
 
 
@@ -997,7 +1000,7 @@ async def vacancy_price_choice(cb: CallbackQuery, state: FSMContext):
     chat_id = cb.message.chat.id
 
     if await state.get_state() != VacForm.price.state:
-        await cb.answer("Этот шаг публикации уже завершён.", show_alert=True)
+        await cb.answer(await get_text("vac_add_price_step_done", "ru") or "Этот шаг публикации уже завершён.", show_alert=True)
         return
 
     # 1) удалить сообщение с клавиатурой (то, по которому кликнули)
@@ -1042,7 +1045,7 @@ async def vacancy_price_choice(cb: CallbackQuery, state: FSMContext):
         await fn(_ProxyMsg(cb, price_text), state)
     else:
         # 6) Фолбэк: просто сообщим, что цена установлена (если текстового хендлера нет).
-        await cb.message.answer(f"Оплата установлена: <b>{price_text}</b>.", parse_mode="HTML")
+        await cb.message.answer((await get_text("vac_add_price_paid_tmpl", "ru") or "Оплата установлена: <b>{price}</b>.").format(price=price_text), parse_mode="HTML")
         # тут можете вызвать вашу финализацию, если она есть:
         # end_fn = globals().get("vacancy_publish_finalize") or globals().get("vacancy_publish")
         # if callable(end_fn): await end_fn(cb, state)
@@ -1100,10 +1103,10 @@ async def vac_back_to_title(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     # показать заново шаг заголовка
-    nav = await cb.message.answer("◀️ Возврат", reply_markup=kb, parse_mode="HTML")
+    nav = await cb.message.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=kb, parse_mode="HTML")
     await state.update_data(nav_msg_id=nav.message_id)
 
-    prompt = await cb.message.answer("✏️ Введите <b>заголовок</b> вакансии:", parse_mode="HTML")
+    prompt = await cb.message.answer((await get_text("vac_ask_title", "ru") or "✏️ Введите <b>заголовок</b> вакансии:"), parse_mode="HTML")
     await state.update_data(prompt_id=prompt.message_id)
 
     await state.set_state(VacForm.title)
@@ -1143,7 +1146,7 @@ async def vac_back_to_descr(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     # показать заново шаг описания
-    nav = await cb.message.answer("◀️ Возврат", reply_markup=kb, parse_mode="HTML")
+    nav = await cb.message.answer((await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"), reply_markup=kb, parse_mode="HTML")
     await state.update_data(nav_msg_id=nav.message_id)
 
     st = await state.get_data()
@@ -1154,10 +1157,10 @@ async def vac_back_to_descr(cb: CallbackQuery, state: FSMContext):
         tmpl = None
     tmpl = tmpl or "Краткое описание (или нажмите «Пропустить»):"
     kb_skip = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить", callback_data="vac_descr_skip")]
+        [InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_descr_skip")]
     ])
     prompt = await cb.message.answer(
-        f"<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n\n{tmpl}",
+        (await get_text("vac_add_ask_descr_with_title_tmpl", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n\n{tmpl}").format(title=title, tmpl=tmpl),
         reply_markup=kb_skip,
         parse_mode="HTML",
     )
@@ -1179,7 +1182,7 @@ async def vacancy_input_price(m: Message, state: FSMContext):
     """Финализировать публикацию ровно один раз даже при повторной отправке."""
     lock = _vacancy_publish_locks.setdefault(m.from_user.id, asyncio.Lock())
     if lock.locked():
-        await m.answer("Публикуем, пожалуйста, подождите.")
+        await m.answer(await get_text("services_add_publishing_wait", "ru") or "Публикуем, пожалуйста, подождите.")
         return
     async with lock:
         if await state.get_state() != VacForm.price.state:
@@ -1192,7 +1195,7 @@ async def _vacancy_input_price_locked(m: Message, state: FSMContext):
 
     price_text = (m.text or "").strip()
     if not price_text:
-        msg = await m.answer("Введите стоимость оплаты или воспользуйтесь кнопкой быстрого выбора.")
+        msg = await m.answer(await get_text("vac_add_price_empty", "ru") or "Введите стоимость оплаты или воспользуйтесь кнопкой быстрого выбора.")
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         return
@@ -1223,11 +1226,11 @@ async def _vacancy_input_price_locked(m: Message, state: FSMContext):
         city_id = int(data["city_id"])
         cat_id = int(data["category_id"])
     except (KeyError, TypeError, ValueError):
-        await m.answer("Не хватает данных города или категории. Начните публикацию заново.")
+        await m.answer(await get_text("vac_add_missing_city_cat", "ru") or "Не хватает данных города или категории. Начните публикацию заново.")
         await state.clear()
         return
     if not title or not price_text:
-        await m.answer("Заголовок и стоимость не могут быть пустыми. Начните публикацию заново.")
+        await m.answer(await get_text("vac_add_title_price_empty", "ru") or "Заголовок и стоимость не могут быть пустыми. Начните публикацию заново.")
         await state.clear()
         return
 
@@ -1242,7 +1245,7 @@ async def _vacancy_input_price_locked(m: Message, state: FSMContext):
             city = await s.get(City, city_id)
             cat  = await s.get(Category, cat_id)
             if city is None or cat is None or not await _is_vacancy_category(s, cat):
-                await m.answer("Город или категория больше не существует. Начните публикацию заново.")
+                await m.answer(await get_text("vac_add_city_or_cat_gone_restart", "ru") or "Город или категория больше не существует. Начните публикацию заново.")
                 await state.clear()
                 return
 
@@ -1268,7 +1271,7 @@ async def _vacancy_input_price_locked(m: Message, state: FSMContext):
             listing_id = l.id
             await s.commit()
     except Exception as e:
-        await m.answer("Не удалось сохранить вакансию. Попробуйте ещё раз.")
+        await m.answer(await get_text("vac_add_save_failed", "ru") or "Не удалось сохранить вакансию. Попробуйте ещё раз.")
         print(f"[vacancy_add.py] vacancy_input_price DB error: {e}")
         return
 
@@ -1351,11 +1354,11 @@ async def vacancy_flex_skip(cb: CallbackQuery, state: FSMContext):
 async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
     lock = _vacancy_publish_locks.setdefault(cb.from_user.id, asyncio.Lock())
     if lock.locked():
-        await cb.answer("Публикуем, пожалуйста, подождите.")
+        await cb.answer(await get_text("services_add_publishing_wait", "ru") or "Публикуем, пожалуйста, подождите.")
         return
     async with lock:
         if await state.get_state() != VacForm.confirm.state:
-            await cb.answer("Объявление уже опубликовано.")
+            await cb.answer(await get_text("services_add_already_published", "ru") or "Объявление уже опубликовано.")
             return
         await _vacancy_publish_locked(cb, state)
 
@@ -1386,13 +1389,13 @@ async def _vacancy_publish_locked(cb: CallbackQuery, state: FSMContext):
     flex_dict = data.get("flex") or {}
 
     if not city_slug or not cat_id or not title:
-        await cb.answer("Не хватает данных для публикации. Вернитесь и заполните поля.", show_alert=True)
+        await cb.answer(await get_text("vac_err_no_data", "ru") or "Не хватает данных для публикации. Вернитесь и заполните поля.", show_alert=True)
         print("[vacancy_add.py] handler=vacancy_publish missing city/title/cat", data)
         return
 
     city_id = await _city_id_by_slug(city_slug)
     if not city_id:
-        await cb.answer("Город не найден. Выберите город заново.", show_alert=True)
+        await cb.answer(await get_text("vac_err_no_city", "ru") or "Город не найден. Выберите город заново.", show_alert=True)
         print("[vacancy_add.py] handler=vacancy_publish bad city_slug=", city_slug)
         return
 
@@ -1436,16 +1439,16 @@ async def _vacancy_publish_locked(cb: CallbackQuery, state: FSMContext):
 
     # 4) Пост-публикационное меню (аналог других разделов)
     buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="✏️ Редактировать объявление", callback_data=f"vacancy_edit_overview:{listing_id}")],
-        [InlineKeyboardButton(text="🔎 Посмотреть", callback_data=f"vac_view:{listing_id}:::my")],
-        [InlineKeyboardButton(text="≡ Меню вакансий", callback_data="go_isk")],
+        [InlineKeyboardButton(text=(await get_text("vac_add_btn_edit_listing", "ru") or "✏️ Редактировать объявление"), callback_data=f"vacancy_edit_overview:{listing_id}")],
+        [InlineKeyboardButton(text=(await get_text("vac_add_btn_view", "ru") or "🔎 Посмотреть"), callback_data=f"vac_view:{listing_id}:::my")],
+        [InlineKeyboardButton(text=(await get_text("vac_to_menu", "ru") or "≡ Меню вакансий"), callback_data="go_isk")],
     ]
     main_btn = await get_common_menu_button("main_menu")
     if main_btn:
         buttons.append([main_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    msg = await cb.message.answer("✅ Объявление опубликовано.", reply_markup=kb, parse_mode="HTML")
+    msg = await cb.message.answer(await get_text("vac_published", "ru") or "✅ Объявление опубликовано.", reply_markup=kb, parse_mode="HTML")
     last_bot_messages[chat_id] = [msg.message_id]
     await register_bot_messages(chat_id, [msg.message_id])
     await cb.answer()
@@ -1458,7 +1461,7 @@ async def vacancy_cancel(cb: CallbackQuery, state: FSMContext):
     """Cancel the vacancy posting and reset the state."""
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     await state.clear()
-    msg = await cb.message.answer("Публикация вакансии отменена.", reply_markup=await _vacancy_nav_keyboard())
+    msg = await cb.message.answer(await get_text("vac_cancelled", "ru") or "Публикация вакансии отменена.", reply_markup=await _vacancy_nav_keyboard())
     last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
     await register_bot_messages(cb.message.chat.id, [msg.message_id])
     await cb.answer()

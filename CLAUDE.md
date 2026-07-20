@@ -327,9 +327,20 @@ path = await render_category_path(session, category_id)
      «доп.категории вкл/выкл», все связанные кнопки и шаблоны текстов),
      плюс переиспользованы `btn_cancel`/`btn_delete`/`admin_panel_btn_ok`
      (точное совпадение текста кнопок).
+     `vacancy_add.py`(62) — **готово (2026-07-20)**: 26 новых кодов
+     `vac_add_*` (мастер публикации вакансии — шаги город/категория/
+     заголовок/описание/цена/доп.поля/предпросмотр/публикация, плашка
+     «◀️ Возврат», ошибки и подтверждения), плюс переиспользованы
+     `services_add_city_not_found`/`services_add_invalid_category`/
+     `services_add_city_or_cat_gone`/`services_add_publishing_wait`/
+     `services_add_already_published`/`btn_skip`/`btn_free`/
+     `btn_by_agreement`/`admin_panel_btn_no`/`vac_choose_subcat`/
+     `vac_choose_cat`/`vac_err_no_data`/`vac_err_no_city`/`vac_cancelled`/
+     `vac_published`/`vac_to_menu`/`vac_ask_title` (точное совпадение
+     текста — хорошая находка межфайловых дублей с шагом 2 и другими
+     файлами шага 3).
      > **▶ ПРОДОЛЖИТЬ ОТСЮДА:** следующий файл —
-     > `vacancy_add.py`(62). Дальше по списку —
-     > `services_view.py`(70),
+     > `services_view.py`(70). Дальше по списку —
      > `services_edit_overview.py`(73), `market_edit_overview.py`(78),
      > `events_view.py`(86), `market_view.py`(89), `releases.py`(110,
      > частично уже задет — 8 мест кодами `music_*` из шага `artists.py`),
