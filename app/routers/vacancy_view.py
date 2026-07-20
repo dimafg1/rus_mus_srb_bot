@@ -484,10 +484,11 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
             )])
 
     # Назад — строго по источнику открытия карточки
-    if from_search:
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_search_results")])
-    elif city_slug and cat_id:
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{cat_id}")])
+    if from_search or (city_slug and cat_id):
+        back_btn = await get_common_menu_button('back')
+        if back_btn:
+            back_btn.callback_data = "vac_search_results" if from_search else f"vlist:{city_slug}:{cat_id}"
+            buttons.append([back_btn])
     else:
         buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
 
@@ -603,10 +604,11 @@ async def vac_extend_listing(cb: CallbackQuery):
             callback_data=f"vac_extend:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
         )])
 
-    if source == "search":
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_search_results")])
-    elif source == "catalog" and city_slug and cat_id:
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{cat_id}")])
+    if source == "search" or (source == "catalog" and city_slug and cat_id):
+        back_btn = await get_common_menu_button('back')
+        if back_btn:
+            back_btn.callback_data = "vac_search_results" if source == "search" else f"vlist:{city_slug}:{cat_id}"
+            buttons.append([back_btn])
     else:
         buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
 
@@ -705,10 +707,11 @@ async def vac_close_listing(cb: CallbackQuery):
     )])
     buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
 
-    if source == "search":
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="vac_search_results")])
-    elif source == "catalog" and city_slug and cat_id:
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"vlist:{city_slug}:{cat_id}")])
+    if source == "search" or (source == "catalog" and city_slug and cat_id):
+        back_btn = await get_common_menu_button('back')
+        if back_btn:
+            back_btn.callback_data = "vac_search_results" if source == "search" else f"vlist:{city_slug}:{cat_id}"
+            buttons.append([back_btn])
     else:
         buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
 
