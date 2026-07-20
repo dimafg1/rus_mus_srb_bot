@@ -395,11 +395,33 @@ path = await render_category_path(session, category_id)
      будет и в `market_view.py`/`services_view.py`), `search_results_found`
      (шаблон с 3 плейсхолдерами), `vacancy_search_unavailable`; плюс
      переиспользованы `err_no_rights`/`feedback_deleted`).
-     **НЕ тронуто:** текст самих карточек вакансий (заголовки, лейблы
-     полей, breadcrumbs категорий) — собираются в объёмные f-string/
-     list-join блоки глубже в файле, ещё ~97 строк с кириллицей не
-     являющихся комментариями. Это самый крупный оставшийся кусок
-     файла — трогать отдельным заходом, не второпях.
+     **Добито (2026-07-20, второй заход по тому же файлу):** карточки,
+     breadcrumbs, кнопки — ещё ~28 новых кодов `vacancy_*`
+     (`vacancy_no_title`, `vacancy_card_city`/`_category_path`/
+     `_category_root`/`_payment`, `vacancy_contacts_mgmt_label`,
+     `vacancy_closed_hidden`/`_closed_restore_hint`, `vacancy_no_city_set`,
+     `vacancy_breadcrumb_city`/`_subcat`, `vacancy_choose_listing`,
+     `vacancy_category_empty`, `vacancy_my_empty`/`_my_title`,
+     `vacancy_delete_confirm_question`, кнопки `vacancy_btn_*` — 11 штук).
+     **Важный архитектурный момент, зафиксирован в коде комментарием:**
+     `vac_extend_listing`/`vac_close_listing` не просто показывают
+     карточку — они ПЕРЕПАРСИВАЮТ уже отрисованный `cb.message.text`
+     построчным сравнением с меткой «Контакты/Управление:» (и парой
+     других), чтобы вырезать старый блок и вставить новый. Раньше эта
+     метка была захардкожена в двух местах на функцию (рендер + проверка)
+     — теперь обе стороны берут значение из ОДНОЙ переменной
+     (`contacts_mgmt_label = await get_text(...)`), чтобы не разойтись.
+     Но сам паттерн (парсинг уже отправленного текста вместо хранения
+     состояния) при будущем переключении языка всё равно потребует
+     ревизии: если пользователь сменит язык между показом карточки и
+     кликом «Продлить», разбор по метке текущего (нового) языка не найдёт
+     метку старого языка в уже отрисованном тексте. Не чинили сейчас —
+     вне рамок текстового переноса, но это нужно будет учесть при
+     реализации переключения языка.
+     `⏳ До архивации:` — метка НЕ отсюда, а из `app/lifecycle.py`
+     (`days_left_text()`), этот файл вне текущего аудита
+     (`app/routers/*.py`) — отдельная будущая задача.
+     `vacancy_view.py` теперь **полностью** переведён.
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

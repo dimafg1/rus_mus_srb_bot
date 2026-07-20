@@ -148,7 +148,7 @@ async def _vacancy_categories_kb(city_slug: str | None, parent_id: int | None) -
         rows.append([InlineKeyboardButton(text=title, callback_data=f"vlist:{city_slug}:{c.id}")])
 
     # ↓↓↓ вернуть навигацию как просили ↓↓↓
-    rows.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+    rows.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")])
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
         rows.append([main_btn])
@@ -172,7 +172,7 @@ async def vacancy_view_city(cb: CallbackQuery):
     kb = await _vacancy_categories_kb(city_slug, parent_id=None)
 
     # Имя города вместо slug
-    city_name = city_slug or "(город не задан)"
+    city_name = city_slug or (await get_text("vacancy_no_city_set", "ru") or "(город не задан)")
     if city_slug:
         try:
             city = await city_by_slug(city_slug)
@@ -181,9 +181,10 @@ async def vacancy_view_city(cb: CallbackQuery):
         except Exception:
             pass
 
+    tmpl = await get_text("vacancy_breadcrumb_city", "ru") or "🤝 Вакансии → <b>{city}</b>\nВыберите категорию:"
     await safe_edit_or_send(
         cb,
-        f"🤝 Вакансии → <b>{escape_html(city_name)}</b>\nВыберите категорию:",
+        tmpl.format(city=escape_html(city_name)),
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -219,9 +220,10 @@ async def vacancy_list(cb: CallbackQuery):
     children = await _category_children(cat_id)
     if children:
         kb = await _vacancy_categories_kb(city_slug, parent_id=cat_id)
+        tmpl = await get_text("vacancy_breadcrumb_subcat", "ru") or "{crumbs}\nВыберите подкатегорию:"
         await safe_edit_or_send(
             cb,
-            f"{crumbs}\nВыберите подкатегорию:",
+            tmpl.format(crumbs=crumbs),
             reply_markup=kb,
             parse_mode="HTML",
         )
@@ -247,7 +249,10 @@ async def vacancy_list(cb: CallbackQuery):
         listings = (await s.execute(q)).scalars().all()
 
     kb = await vacancy_listings_inline(city_slug, cat_id, listings, offset=offset)
-    tail = "Выберите объявление:" if listings else "Пока пусто в этой категории."
+    if listings:
+        tail = await get_text("vacancy_choose_listing", "ru") or "Выберите объявление:"
+    else:
+        tail = await get_text("vacancy_category_empty", "ru") or "Пока пусто в этой категории."
     await safe_edit_or_send(cb, f"{crumbs}\n{tail}", reply_markup=kb, parse_mode="HTML")
     await cb.answer()
     _dbg("vacancy_list.listings", city_slug=city_slug, cat_id=cat_id, found=len(listings))
@@ -294,11 +299,12 @@ async def _render_my_vacancies(cb: CallbackQuery, offset: int = 0):
     main_btn = await get_common_menu_button("main_menu")
 
     if not listings:
-        rows = [[InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")]]
+        menu_btn_text = await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"
+        rows = [[InlineKeyboardButton(text=menu_btn_text, callback_data="go_isk")]]
         if main_btn:
             rows.append([main_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
-        await safe_edit_or_send(cb, "У вас пока нет вакансий.", reply_markup=kb, parse_mode="HTML")
+        await safe_edit_or_send(cb, await get_text("vacancy_my_empty", "ru") or "У вас пока нет вакансий.", reply_markup=kb, parse_mode="HTML")
         await cb.answer()
         _dbg("vac_my_listings.empty", user_id=cb.from_user.id, count=0)
         return
@@ -311,9 +317,10 @@ async def _render_my_vacancies(cb: CallbackQuery, offset: int = 0):
         offset = 0
     page = offset // MY_VACANCIES_PAGE_SIZE + 1
 
+    no_title = await get_text("vacancy_no_title", "ru") or "(без заголовка)"
     rows = []
     for l in listings[offset:offset + MY_VACANCIES_PAGE_SIZE]:
-        title = (l.title or "(без заголовка)").strip()
+        title = (l.title or no_title).strip()
         price = f" — {l.price}" if getattr(l, "price", None) else ""
         marker = "📦 " if l.status == "archived" else ""
         rows.append([InlineKeyboardButton(
@@ -332,13 +339,14 @@ async def _render_my_vacancies(cb: CallbackQuery, offset: int = 0):
                 text="»", callback_data=f"vac_my_page:{offset + MY_VACANCIES_PAGE_SIZE}"))
         rows.append(pager)
 
-    rows.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+    rows.append([InlineKeyboardButton(text=await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий", callback_data="go_isk")])
     if main_btn:
         rows.append([main_btn])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     suffix = f" ({total})" if pages > 1 else ""
-    await safe_edit_or_send(cb, f"<b>Ваши вакансии{suffix}:</b>", reply_markup=kb, parse_mode="HTML")
+    title_tmpl = await get_text("vacancy_my_title", "ru") or "<b>Ваши вакансии{suffix}:</b>"
+    await safe_edit_or_send(cb, title_tmpl.format(suffix=suffix), reply_markup=kb, parse_mode="HTML")
     await cb.answer()
     _dbg("vac_my_listings", user_id=cb.from_user.id, count=total, offset=offset)
 
@@ -420,13 +428,20 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
     _esc = escape_html
     lines = []
 
+    city_tmpl = await get_text("vacancy_card_city", "ru") or "Город: <b>{name}</b>"
+    cat_path_tmpl = await get_text("vacancy_card_category_path", "ru") or "Категория: <b>Вакансии → {path}</b>"
+    cat_root_tmpl = await get_text("vacancy_card_category_root", "ru") or "Категория: <b>Вакансии</b>"
+    no_title = await get_text("vacancy_no_title", "ru") or "(без заголовка)"
+    payment_tmpl = await get_text("vacancy_card_payment", "ru") or "Оплата: <b>{price}</b>"
+    contacts_mgmt_label = await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:"
+
     # Сразу под заголовком — город и категория
-    lines.append(f"Город: <b>{_esc(city.name if city else '—')}</b>")
-    lines.append(f"Категория: <b>Вакансии → {cat_path}</b>" if cat_path else "Категория: <b>Вакансии</b>")
+    lines.append(city_tmpl.format(name=_esc(city.name if city else '—')))
+    lines.append(cat_path_tmpl.format(path=cat_path) if cat_path else cat_root_tmpl)
     lines.append("")
 
     # Заголовок
-    lines.append(f"<b>{_esc(listing.title or '(без заголовка)')}</b>")
+    lines.append(f"<b>{_esc(listing.title or no_title)}</b>")
 
     lines.append("")
     if listing.descr:
@@ -434,7 +449,7 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
 
     lines.append("")
     if listing.price:
-        lines.append(f"Оплата: <b>{_esc(str(listing.price))}</b>")
+        lines.append(payment_tmpl.format(price=_esc(str(listing.price))))
 
     if flex_block:
         lines.append("")
@@ -446,7 +461,7 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
         left_line = days_left_text(listing)
         if left_line:
             lines.append("")
-            lines.append("Контакты/Управление:")
+            lines.append(contacts_mgmt_label)
             lines.append(left_line)
 
     # Кнопки
@@ -461,25 +476,25 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
             owner_source = "catalog"
 
         buttons.append([InlineKeyboardButton(
-            text="✏️ Редактировать все поля",
+            text=(await get_text("vacancy_btn_edit_all", "ru") or "✏️ Редактировать все поля"),
             callback_data=f"vacancy_edit_overview:{listing.id}:{owner_source}:{city_slug or '-'}:{cat_id or 0}"
         )])
         if is_active(listing):
             buttons.append([InlineKeyboardButton(
-                text="📦 Закрыть (в архив)",
+                text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
                 callback_data=f"vac_close:{listing.id}:{owner_source}:{city_slug or '-'}:{cat_id or 0}"
             )])
-        buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
+        buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_delete", "ru") or "🗑 Удалить"), callback_data=f"vac_delete_confirm:{listing.id}")])
 
         if should_show_extend_button(listing):
             buttons.append([InlineKeyboardButton(
-                text="🔄 Продлить на 30 дней",
+                text=(await get_text("vacancy_btn_extend", "ru") or "🔄 Продлить на 30 дней"),
                 callback_data=f"vac_extend:{listing.id}:{owner_source}:{city_slug or '-'}:{cat_id or 0}"
             )])
     else:
         if contact and contact.startswith("@"):
             buttons.append([InlineKeyboardButton(
-                text="💬 Связаться",
+                text=(await get_text("vacancy_btn_contact", "ru") or "💬 Связаться"),
                 url=build_contact_url(listing.id, contact, cb.from_user.id, source),
             )])
 
@@ -490,7 +505,7 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
             back_btn.callback_data = "vac_search_results" if from_search else f"vlist:{city_slug}:{cat_id}"
             buttons.append([back_btn])
     else:
-        buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+        buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")])
 
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
@@ -562,19 +577,25 @@ async def vac_extend_listing(cb: CallbackQuery):
                     section="vacancy", entity_type="listing", entity_id=listing.id)
 
     # Обновляем нижний блок управления в уже открытой карточке.
+    # ВАЖНО: метки ниже — не только текст для показа, но и маркеры парсинга
+    # уже отрисованной карточки (мы вырезаем старый блок управления из
+    # cb.message.text). Оба использования берут значение из ОДНОЙ переменной,
+    # чтобы не разойтись между собой при будущем переключении языка.
+    contacts_mgmt_label = await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:"
+    closed_hidden_label = await get_text("vacancy_closed_hidden", "ru") or "🔴 Вакансия закрыта и скрыта из каталога."
+    closed_restore_hint = await get_text("vacancy_closed_restore_hint", "ru") or "Вернуть её можно кнопкой ниже — текст сохранён."
+
     base_text = cb.message.html_text or cb.message.text or ""
     raw_lines = base_text.splitlines()
     cleaned = []
-    skip_management_label = False
     for line in raw_lines:
         stripped = line.strip()
-        if stripped == "Контакты/Управление:":
-            skip_management_label = True
+        if stripped == contacts_mgmt_label:
             continue
         if stripped.startswith("⏳ До архивации:"):
             continue
         # Строки экрана «Закрыть (в архив)» — не тащим их в реактивированную карточку
-        if stripped.startswith("🔴 Вакансия закрыта") or stripped.startswith("Вернуть её можно"):
+        if stripped == closed_hidden_label or stripped == closed_restore_hint:
             continue
         cleaned.append(line)
 
@@ -584,23 +605,23 @@ async def vac_extend_listing(cb: CallbackQuery):
 
     left_line = days_left_text(listing)
     if left_line:
-        cleaned.extend(["", "Контакты/Управление:", left_line])
+        cleaned.extend(["", contacts_mgmt_label, left_line])
 
     buttons: List[List[InlineKeyboardButton]] = []
     buttons.append([InlineKeyboardButton(
-        text="✏️ Редактировать все поля",
+        text=(await get_text("vacancy_btn_edit_all", "ru") or "✏️ Редактировать все поля"),
         callback_data=f"vacancy_edit_overview:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
     )])
     if is_active(listing):
         buttons.append([InlineKeyboardButton(
-            text="📦 Закрыть (в архив)",
+            text=(await get_text("vacancy_btn_archive", "ru") or "📦 Закрыть (в архив)"),
             callback_data=f"vac_close:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
         )])
-    buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_delete", "ru") or "🗑 Удалить"), callback_data=f"vac_delete_confirm:{listing.id}")])
 
     if should_show_extend_button(listing):
         buttons.append([InlineKeyboardButton(
-            text="🔄 Продлить на 30 дней",
+            text=(await get_text("vacancy_btn_extend", "ru") or "🔄 Продлить на 30 дней"),
             callback_data=f"vac_extend:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
         )])
 
@@ -610,7 +631,7 @@ async def vac_extend_listing(cb: CallbackQuery):
             back_btn.callback_data = "vac_search_results" if source == "search" else f"vlist:{city_slug}:{cat_id}"
             buttons.append([back_btn])
     else:
-        buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+        buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")])
 
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
@@ -676,11 +697,17 @@ async def vac_close_listing(cb: CallbackQuery):
     # Сохраняем текст карточки на экране (как делает продление): убираем только
     # старый блок управления и добавляем строки о закрытии. Иначе после
     # «вернуть» карточка восстановилась бы пустой.
+    # Метки — и текст для показа, и маркеры парсинга; берём из одной
+    # переменной (см. комментарий в vac_extend_listing выше).
+    contacts_mgmt_label = await get_text("vacancy_contacts_mgmt_label", "ru") or "Контакты/Управление:"
+    closed_hidden_label = await get_text("vacancy_closed_hidden", "ru") or "🔴 Вакансия закрыта и скрыта из каталога."
+    closed_restore_hint = await get_text("vacancy_closed_restore_hint", "ru") or "Вернуть её можно кнопкой ниже — текст сохранён."
+
     base_text = cb.message.html_text or cb.message.text or ""
     cleaned_lines = []
     for line in base_text.splitlines():
         stripped = line.strip()
-        if stripped == "Контакты/Управление:":
+        if stripped == contacts_mgmt_label:
             continue
         if stripped.startswith("⏳ До архивации:"):
             continue
@@ -690,22 +717,22 @@ async def vac_close_listing(cb: CallbackQuery):
 
     cleaned_lines.extend([
         "",
-        "Контакты/Управление:",
-        "🔴 Вакансия закрыта и скрыта из каталога.",
-        "Вернуть её можно кнопкой ниже — текст сохранён.",
+        contacts_mgmt_label,
+        closed_hidden_label,
+        closed_restore_hint,
     ])
     text = "\n".join(cleaned_lines)
 
     buttons: List[List[InlineKeyboardButton]] = []
     buttons.append([InlineKeyboardButton(
-        text="↩️ Вернуть в каталог (на 30 дней)",
+        text=(await get_text("vacancy_btn_restore", "ru") or "↩️ Вернуть в каталог (на 30 дней)"),
         callback_data=f"vac_extend:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
     )])
     buttons.append([InlineKeyboardButton(
-        text="✏️ Редактировать все поля",
+        text=(await get_text("vacancy_btn_edit_all", "ru") or "✏️ Редактировать все поля"),
         callback_data=f"vacancy_edit_overview:{listing.id}:{source}:{city_slug or '-'}:{cat_id or 0}"
     )])
-    buttons.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"vac_delete_confirm:{listing.id}")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_delete", "ru") or "🗑 Удалить"), callback_data=f"vac_delete_confirm:{listing.id}")])
 
     if source == "search" or (source == "catalog" and city_slug and cat_id):
         back_btn = await get_common_menu_button('back')
@@ -713,7 +740,7 @@ async def vac_close_listing(cb: CallbackQuery):
             back_btn.callback_data = "vac_search_results" if source == "search" else f"vlist:{city_slug}:{cat_id}"
             buttons.append([back_btn])
     else:
-        buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+        buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")])
 
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
@@ -737,8 +764,8 @@ async def vac_delete_confirm(cb: CallbackQuery):
 
     # Кнопки подтверждения
     rows = [
-        [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"vac_delete_yes:{lid}")],
-        [InlineKeyboardButton(text="⬅️ Нет, вернуться", callback_data=f"vac_view:{lid}:::my")],
+        [InlineKeyboardButton(text=(await get_text("vacancy_btn_delete_yes", "ru") or "✅ Да, удалить"), callback_data=f"vac_delete_yes:{lid}")],
+        [InlineKeyboardButton(text=(await get_text("vacancy_btn_delete_no", "ru") or "⬅️ Нет, вернуться"), callback_data=f"vac_view:{lid}:::my")],
     ]
     main_btn = await get_common_menu_button("main_menu")
     if main_btn:
@@ -747,7 +774,7 @@ async def vac_delete_confirm(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     # Редактируем текущую карточку — без создания новых сообщений
-    await safe_edit_or_send(cb, "Вы действительно хотите удалить объявление?", kb, parse_mode="HTML")
+    await safe_edit_or_send(cb, await get_text("vacancy_delete_confirm_question", "ru") or "Вы действительно хотите удалить объявление?", kb, parse_mode="HTML")
     await cb.answer()
     print(f"[vacancy_view.py] handler=vac_delete_confirm listing_id={lid} chat_id={chat_id}")
 
@@ -783,8 +810,8 @@ async def vac_delete_yes(cb: CallbackQuery):
         await s.commit()
 
     rows = [
-        [InlineKeyboardButton(text="📄 Мои вакансии", callback_data="vac:my")],
-        [InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")],
+        [InlineKeyboardButton(text=(await get_text("vacancy_btn_my_vacancies", "ru") or "📄 Мои вакансии"), callback_data="vac:my")],
+        [InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")],
     ]
     main_btn = await get_common_menu_button("main_menu")
     if main_btn:
@@ -936,8 +963,8 @@ async def vac_search_do(m: Message, state: FSMContext):
 
     if len(q) < 2:
         buttons: List[List[InlineKeyboardButton]] = [
-            [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")],
-            [InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")],
+            [InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="vac_search")],
+            [InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")],
         ]
         main_btn = await get_common_menu_button("main_menu")
         if main_btn:
@@ -1018,7 +1045,7 @@ async def vac_search_do(m: Message, state: FSMContext):
     buttons: List[List[InlineKeyboardButton]] = []
 
     for l in rows_page:
-        title = (l.title or "(без заголовка)").strip()
+        title = (l.title or (await get_text("vacancy_no_title", "ru") or "(без заголовка)")).strip()
         price = f" — {l.price}" if getattr(l, "price", None) else ""
         buttons.append([
             InlineKeyboardButton(
@@ -1037,8 +1064,8 @@ async def vac_search_do(m: Message, state: FSMContext):
         ]
         buttons.append(pager)
 
-    buttons.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")])
-    buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="vac_search")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")])
 
     main_btn = await get_common_menu_button("main_menu")
     if main_btn:
@@ -1098,8 +1125,8 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
 
     if not ids:
         buttons: List[List[InlineKeyboardButton]] = [
-            [InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")],
-            [InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")],
+            [InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="vac_search")],
+            [InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")],
         ]
         main_btn = await get_common_menu_button('main_menu')
         if main_btn:
@@ -1141,7 +1168,7 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
     buttons: List[List[InlineKeyboardButton]] = []
 
     for l in rows:
-        title = (l.title or "(без заголовка)").strip()
+        title = (l.title or (await get_text("vacancy_no_title", "ru") or "(без заголовка)")).strip()
         price = f" — {l.price}" if getattr(l, "price", None) else ""
         buttons.append([
             InlineKeyboardButton(
@@ -1162,8 +1189,8 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
                 text="»", callback_data=f"vac_search_page:{offset + VACANCY_SEARCH_PAGE_SIZE}"))
         buttons.append(pager)
 
-    buttons.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")])
-    buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="vac_search")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")])
 
     main_btn = await get_common_menu_button('main_menu')
     if main_btn:
@@ -1292,7 +1319,7 @@ async def vac_search_page(cb: CallbackQuery, state: FSMContext):
     buttons: List[List[InlineKeyboardButton]] = []
 
     for l in rows:
-        title = (l.title or "(без заголовка)").strip()
+        title = (l.title or (await get_text("vacancy_no_title", "ru") or "(без заголовка)")).strip()
         price = f" — {l.price}" if getattr(l, "price", None) else ""
         buttons.append([
             InlineKeyboardButton(
@@ -1329,8 +1356,8 @@ async def vac_search_page(cb: CallbackQuery, state: FSMContext):
 
         buttons.append(pager)
 
-    buttons.append([InlineKeyboardButton(text="🔄 Новый поиск", callback_data="vac_search")])
-    buttons.append([InlineKeyboardButton(text="⬅️ В меню вакансий", callback_data="go_isk")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_new_search", "ru") or "🔄 Новый поиск"), callback_data="vac_search")])
+    buttons.append([InlineKeyboardButton(text=(await get_text("vacancy_btn_menu", "ru") or "⬅️ В меню вакансий"), callback_data="go_isk")])
 
     main_btn = await get_common_menu_button("main_menu")
     if main_btn:
