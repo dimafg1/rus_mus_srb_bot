@@ -386,6 +386,20 @@ path = await render_category_path(session, category_id)
      `_save_failed`/`_applied`). Два шаблона с плейсхолдером —
      `.format(count=...)`/`.format(idx=...)`, по тому же паттерну, что
      `services_edit_*_prompt` в `services_edit.py`.
+     `vacancy_view.py`(37) — **частично готово**: все toast/простые
+     сообщения и поиск (18 новых кодов: `vacancy_unavailable_archived`,
+     `vacancy_extend_*` (4), `vacancy_close_*` (3), `vacancy_not_found`,
+     `vacancy_invalid_id`, `vacancy_already_deleted`, `vacancy_deleted`,
+     `vacancy_search_title`, `search_min_2_chars`,
+     `search_typo_correction_note` (переиспользуемый — тот же текст
+     будет и в `market_view.py`/`services_view.py`), `search_results_found`
+     (шаблон с 3 плейсхолдерами), `vacancy_search_unavailable`; плюс
+     переиспользованы `err_no_rights`/`feedback_deleted`).
+     **НЕ тронуто:** текст самих карточек вакансий (заголовки, лейблы
+     полей, breadcrumbs категорий) — собираются в объёмные f-string/
+     list-join блоки глубже в файле, ещё ~97 строк с кириллицей не
+     являющихся комментариями. Это самый крупный оставшийся кусок
+     файла — трогать отдельным заходом, не второпях.
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

@@ -389,7 +389,7 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
             stmt = stmt.where(Listing.status == "active", Listing.is_sold.is_(False))
         listing = (await s.execute(stmt)).scalar_one_or_none()
         if not listing or (is_my_suffix and listing.owner_id != cb.from_user.id):
-            await cb.answer("Вакансия недоступна или перенесена в архив.", show_alert=True)
+            await cb.answer(await get_text("vacancy_unavailable_archived", "ru") or "Вакансия недоступна или перенесена в архив.", show_alert=True)
             return
         city = (await s.execute(select(City).where(City.id == listing.city_id))).scalar_one_or_none()
         cat = (await s.execute(select(Category).where(Category.id == listing.category_id))).scalar_one_or_none()
@@ -517,13 +517,13 @@ async def vacancy_view_detail(cb: CallbackQuery, state: FSMContext):
 async def vac_extend_listing(cb: CallbackQuery):
     parts = cb.data.split(":", 4)
     if len(parts) < 5:
-        await cb.answer("Ошибка данных продления.", show_alert=True)
+        await cb.answer(await get_text("vacancy_extend_data_error", "ru") or "Ошибка данных продления.", show_alert=True)
         return
 
     try:
         listing_id = int(parts[1])
     except ValueError:
-        await cb.answer("Неверный идентификатор вакансии.", show_alert=True)
+        await cb.answer(await get_text("vacancy_invalid_id", "ru") or "Неверный идентификатор вакансии.", show_alert=True)
         return
 
     source = parts[2]
@@ -538,17 +538,17 @@ async def vac_extend_listing(cb: CallbackQuery):
             select(Listing).where(Listing.id == listing_id, Listing.type == "vacancy")
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Вакансия не найдена.", show_alert=True)
+            await cb.answer(await get_text("vacancy_not_found", "ru") or "Вакансия не найдена.", show_alert=True)
             return
         if listing.owner_id != cb.from_user.id:
-            await cb.answer("Продлить может только автор вакансии.", show_alert=True)
+            await cb.answer(await get_text("vacancy_extend_owner_only", "ru") or "Продлить может только автор вакансии.", show_alert=True)
             return
 
         if not should_show_extend_button(listing):
             # Либо снято с публикации (admin_removed/unpublished), либо до
             # истечения ещё далеко — старый callback не должен накручивать срок.
             await cb.answer(
-                "Продление сейчас недоступно. Кнопка появится за 5 дней до истечения срока.",
+                await get_text("vacancy_extend_unavailable", "ru") or "Продление сейчас недоступно. Кнопка появится за 5 дней до истечения срока.",
                 show_alert=True,
             )
             return
@@ -619,7 +619,7 @@ async def vac_extend_listing(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await safe_edit_or_send(cb, "\n".join(cleaned), reply_markup=kb, parse_mode="HTML")
-    await cb.answer("Вакансия продлена на 30 дней.")
+    await cb.answer(await get_text("vacancy_extended", "ru") or "Вакансия продлена на 30 дней.")
     print(
         f"[vacancy_view.py] handler=vac_extend_listing | "
         f"listing_id={listing.id} source={source} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
@@ -632,13 +632,13 @@ async def vac_extend_listing(cb: CallbackQuery):
 async def vac_close_listing(cb: CallbackQuery):
     parts = cb.data.split(":", 4)
     if len(parts) < 5:
-        await cb.answer("Ошибка данных закрытия.", show_alert=True)
+        await cb.answer(await get_text("vacancy_close_data_error", "ru") or "Ошибка данных закрытия.", show_alert=True)
         return
 
     try:
         listing_id = int(parts[1])
     except ValueError:
-        await cb.answer("Неверный идентификатор вакансии.", show_alert=True)
+        await cb.answer(await get_text("vacancy_invalid_id", "ru") or "Неверный идентификатор вакансии.", show_alert=True)
         return
 
     source = parts[2]
@@ -653,13 +653,13 @@ async def vac_close_listing(cb: CallbackQuery):
             select(Listing).where(Listing.id == listing_id, Listing.type == "vacancy")
         )).scalar_one_or_none()
         if not listing:
-            await cb.answer("Вакансия не найдена.", show_alert=True)
+            await cb.answer(await get_text("vacancy_not_found", "ru") or "Вакансия не найдена.", show_alert=True)
             return
         if listing.owner_id != cb.from_user.id:
-            await cb.answer("Закрыть может только автор вакансии.", show_alert=True)
+            await cb.answer(await get_text("vacancy_close_owner_only", "ru") or "Закрыть может только автор вакансии.", show_alert=True)
             return
         if not is_active(listing):
-            await cb.answer("Вакансия уже закрыта или в архиве.", show_alert=True)
+            await cb.answer(await get_text("vacancy_already_closed", "ru") or "Вакансия уже закрыта или в архиве.", show_alert=True)
             return
 
         archive_as_closed(listing, user_id=cb.from_user.id)
@@ -722,7 +722,7 @@ async def vac_close_listing(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await safe_edit_or_send(cb, text, reply_markup=kb, parse_mode="HTML")
-    await cb.answer("Вакансия закрыта.")
+    await cb.answer(await get_text("vacancy_closed", "ru") or "Вакансия закрыта.")
     print(
         f"[vacancy_view.py] handler=vac_close_listing | "
         f"listing_id={listing.id} source={source} chat_id={cb.message.chat.id} user_id={cb.from_user.id}"
@@ -771,11 +771,11 @@ async def vac_delete_yes(cb: CallbackQuery):
     async with SessionLocal() as s:
         obj = await s.get(Listing, lid)
         if not obj:
-            await cb.answer("Объявление уже удалено.", show_alert=True)
+            await cb.answer(await get_text("vacancy_already_deleted", "ru") or "Объявление уже удалено.", show_alert=True)
             print(f"[vacancy_view.py] handler=vac_delete_yes listing_id={lid} status=not_found")
             return
         if obj.owner_id != cb.from_user.id:
-            await cb.answer("⛔️ Недостаточно прав.", show_alert=True)
+            await cb.answer(await get_text("err_no_rights", "ru") or "⛔️ Недостаточно прав.", show_alert=True)
             print(f"[vacancy_view.py] handler=vac_delete_yes listing_id={lid} status=forbidden user_id={cb.from_user.id}")
             return
 
@@ -791,9 +791,9 @@ async def vac_delete_yes(cb: CallbackQuery):
         rows.append([main_btn])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    msg = await cb.message.answer("✅ Объявление удалено.", reply_markup=kb, parse_mode="HTML")
+    msg = await cb.message.answer(await get_text("vacancy_deleted", "ru") or "✅ Объявление удалено.", reply_markup=kb, parse_mode="HTML")
     await register_bot_messages(chat_id, [msg.message_id])
-    await cb.answer("Удалено.")
+    await cb.answer(await get_text("feedback_deleted", "ru") or "Удалено.")
     print(f"[vacancy_view.py] handler=vac_delete_yes listing_id={lid} status=ok user_id={cb.from_user.id}")
 class VacSearch(StatesGroup):
     """
@@ -847,9 +847,11 @@ async def vac_search_start(cb: CallbackQuery, state: FSMContext):
 
     # Промпт «Введите запрос…»
     msg = await cb.message.answer(
-        "🔎 <b>Поиск вакансий</b>\n\n"
-        "Введите запрос (например: «барабанщик», «вокалист», «звукорежиссёр»). "
-        "Ищем по заголовку и описанию.",
+        await get_text("vacancy_search_title", "ru") or (
+            "🔎 <b>Поиск вакансий</b>\n\n"
+            "Введите запрос (например: «барабанщик», «вокалист», «звукорежиссёр»). "
+            "Ищем по заголовку и описанию."
+        ),
         parse_mode="HTML",
     )
     ids_to_register = [msg.message_id]
@@ -943,7 +945,7 @@ async def vac_search_do(m: Message, state: FSMContext):
 
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         msg = await m.answer(
-            "Минимум 2 символа. Введите запрос ещё раз:",
+            await get_text("search_min_2_chars", "ru") or "Минимум 2 символа. Введите запрос ещё раз:",
             reply_markup=kb,
             parse_mode="HTML",
         )
@@ -1046,14 +1048,13 @@ async def vac_search_do(m: Message, state: FSMContext):
 
     correction_note = ""
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
-        correction_note = (
-            f"🧠 Показаны результаты по запросу: "
-            f"<b>{escape_html(search_query_effective)}</b> "
-            f"(учтена возможная опечатка).\n\n"
+        note_tmpl = await get_text("search_typo_correction_note", "ru") or (
+            "🧠 Показаны результаты по запросу: <b>{query}</b> (учтена возможная опечатка).\n\n"
         )
+        correction_note = note_tmpl.format(query=escape_html(search_query_effective))
 
     msg = await m.answer(
-        f"{correction_note}Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {total_count}",
+        (await get_text("search_results_found", "ru") or "{correction_note}Результаты по запросу: <b>{query}</b>\nНайдено: {count}").format(correction_note=correction_note, query=escape_html(q), count=total_count),
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -1108,7 +1109,7 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
 
         msg = await cb.bot.send_message(
             chat_id,
-            "Результаты поиска недоступны.",
+            (await get_text("vacancy_search_unavailable", "ru") or "Результаты поиска недоступны."),
             reply_markup=kb,
             parse_mode="HTML",
         )
@@ -1172,7 +1173,7 @@ async def vac_search_results(cb: CallbackQuery, state: FSMContext):
 
     msg = await cb.bot.send_message(
         chat_id,
-        f"Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {total_count}",
+        (await get_text("search_results_found", "ru") or "{correction_note}Результаты по запросу: <b>{query}</b>\nНайдено: {count}").format(correction_note="", query=escape_html(q), count=total_count),
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -1339,15 +1340,14 @@ async def vac_search_page(cb: CallbackQuery, state: FSMContext):
 
     correction_note = ""
     if search_match_mode == "corrected" and search_query_effective != search_query_normalized:
-        correction_note = (
-            f"🧠 Показаны результаты по запросу: "
-            f"<b>{escape_html(search_query_effective)}</b> "
-            f"(учтена возможная опечатка).\n\n"
+        note_tmpl = await get_text("search_typo_correction_note", "ru") or (
+            "🧠 Показаны результаты по запросу: <b>{query}</b> (учтена возможная опечатка).\n\n"
         )
+        correction_note = note_tmpl.format(query=escape_html(search_query_effective))
 
     msg = await cb.bot.send_message(
         chat_id,
-        f"{correction_note}Результаты по запросу: <b>{escape_html(q)}</b>\nНайдено: {total_count}",
+        (await get_text("search_results_found", "ru") or "{correction_note}Результаты по запросу: <b>{query}</b>\nНайдено: {count}").format(correction_note=correction_note, query=escape_html(q), count=total_count),
         reply_markup=kb,
         parse_mode="HTML",
     )
