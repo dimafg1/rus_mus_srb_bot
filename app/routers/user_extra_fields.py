@@ -123,7 +123,7 @@ async def _controls_row():
     """Нижняя панель управления: Пропустить / Завершить / Назад.
     ВНИМАНИЕ: эти callback-и обрабатывает market_edit.py (edit:skip / edit:finish / edit:back)
     """
-    back_btn = await get_common_menu_button('back')
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data="edit:back")
     back_btn.callback_data = "edit:back"
     return [
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data="edit:skip")],

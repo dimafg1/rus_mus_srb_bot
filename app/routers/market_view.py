@@ -297,14 +297,15 @@ async def market_list(cb: CallbackQuery):
             ).scalar_one_or_none()
 
     back_btn = await get_common_menu_button('back')
-    if parent_cat is not None and parent_cat.parent_id is not None:
-        # обычная подкатегория — назад на страницу родителя
-        back_btn.callback_data = f"mlist:{city_slug}:{parent_cat.slug}"
-    else:
-        # родитель — корень раздела (или его нет): назад на городской список,
-        # иначе корень рисуется как «категория» с крошками «… → Барахолка»
-        back_btn.callback_data = f"mcity:{city_slug}"
-    keyboard.append([back_btn])
+    if back_btn:
+        if parent_cat is not None and parent_cat.parent_id is not None:
+            # обычная подкатегория — назад на страницу родителя
+            back_btn.callback_data = f"mlist:{city_slug}:{parent_cat.slug}"
+        else:
+            # родитель — корень раздела (или его нет): назад на городской список,
+            # иначе корень рисуется как «категория» с крошками «… → Барахолка»
+            back_btn.callback_data = f"mcity:{city_slug}"
+        keyboard.append([back_btn])
 
     # 4) Главное меню
     main_menu_btn = await get_common_menu_button('main_menu')

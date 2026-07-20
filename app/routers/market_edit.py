@@ -38,7 +38,7 @@ async def _slugs_for_listing(s, listing: Listing):
 
 async def _nav_row(city_slug: str, cat_slug: str, listing_id: int):
     # Кнопки: Пропустить, Завершить, Назад (унифицировано)
-    back_btn = await get_common_menu_button('back')
+    back_btn = await get_common_menu_button('back') or InlineKeyboardButton(text="⬅️ Назад", callback_data="edit:back")
     back_btn.callback_data = "edit:back"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data="edit:skip")],

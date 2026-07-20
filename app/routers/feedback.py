@@ -47,7 +47,11 @@ async def fb_write(cb: CallbackQuery, state: FSMContext):
     await state.set_state(FeedbackStates.waiting_for_feedback_message)
 
     # Панель навигации: Назад (в меню обратной связи) + Главное меню
-    nav_buttons = [InlineKeyboardButton(text="⬅️ Назад", callback_data="feedback")]
+    back_btn = await get_common_menu_button('back')
+    nav_buttons = []
+    if back_btn:
+        back_btn.callback_data = "feedback"
+        nav_buttons.append(back_btn)
     main_menu_btn = await get_common_menu_button('main_menu')
     if main_menu_btn:
         nav_buttons.append(InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data))
@@ -544,7 +548,11 @@ async def _render_fb_mine(cb: CallbackQuery, offset: int = 0):
     main_menu_btn = await get_common_menu_button('main_menu')
 
     if not total:
-        kb_rows = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="feedback")]]
+        back_btn = await get_common_menu_button('back')
+        kb_rows = []
+        if back_btn:
+            back_btn.callback_data = "feedback"
+            kb_rows.append([back_btn])
         if main_menu_btn:
             kb_rows.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
         msg = await cb.bot.send_message(
@@ -575,7 +583,10 @@ async def _render_fb_mine(cb: CallbackQuery, offset: int = 0):
             pager.append(InlineKeyboardButton(text="»", callback_data=f"fb:mine:{offset + FB_MINE_PAGE_SIZE}"))
         kb_rows.append(pager)
 
-    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="feedback")])
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = "feedback"
+        kb_rows.append([back_btn])
     if main_menu_btn:
         kb_rows.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
 

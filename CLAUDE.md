@@ -248,11 +248,17 @@ path = await render_category_path(session, category_id)
      вызовы уже находятся в async-контексте — были случаи, где это так).
      **Прогресс:** готово и протестировано — `app/routers/user_extra_fields.py`
      (`_controls_row` → async), `app/routers/market_edit.py` (`_nav_row` →
-     async), `app/routers/vacancy_utils.py`, `app/routers/market_view.py`
-     (обе функции уже были async — просто заменена подстановка кнопки).
+     async), `app/routers/vacancy_utils.py`, `app/routers/market_view.py`,
+     `app/routers/services_edit_photos.py` (`_photo_editor_kb` → async),
+     `app/routers/market_edit_photos.py` (`_photo_editor_kb` → async),
+     `app/routers/feedback.py` (3 места). Паттерн `get_common_menu_button`
+     может вернуть `None` (нет строки в `menu`) — везде, где кнопка
+     необязательна, добавлен `if back_btn:`; в двух местах мастера
+     редактирования (`market_edit.py`/`user_extra_fields.py`), где кнопка
+     «Назад» обязательна по правилу навигации, добавлен хардкод-фолбэк
+     `or InlineKeyboardButton(...)`.
      **Осталось** (файл: число мест с `text="⬅️ Назад"`):
-     `services_edit_photos.py`(1),
-     `market_edit_photos.py`(1), `feedback.py`(3), `artists.py`(4),
+     `artists.py`(4),
      `services_add.py`(4), `vacancy_view.py`(6), `admin_panel.py`(8),
      `admin_fields.py`(8), `releases.py`(9), `vacancy_add.py`(10),
      `market_edit_overview.py`(13), `services_edit_overview.py`(13),

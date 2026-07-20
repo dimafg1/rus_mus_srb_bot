@@ -18,6 +18,7 @@ from app.database import SessionLocal
 from app.models import Listing
 from app.routers.utils import clear_bot_messages, last_bot_messages, register_bot_messages
 from app.routers.services_edit_overview import _render_overview
+from app.keyboards import get_common_menu_button
 
 
 router = Router(name="services_edit_photos")
@@ -114,7 +115,7 @@ def _draft_from_listing(listing: Listing) -> list[str]:
     return [x.strip() for x in listing.photo_file_id.split(",") if x.strip()]
 
 
-def _photo_editor_kb(listing_id: int, draft: list[str]) -> InlineKeyboardMarkup:
+async def _photo_editor_kb(listing_id: int, draft: list[str]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
     if len(draft) < 3:
@@ -137,12 +138,10 @@ def _photo_editor_kb(listing_id: int, draft: list[str]) -> InlineKeyboardMarkup:
             ),
         ])
 
-    rows.append([
-        InlineKeyboardButton(
-            text="⬅️ Назад",
-            callback_data=f"sphoto:back:{listing_id}"
-        )
-    ])
+    back_btn = await get_common_menu_button('back')
+    if back_btn:
+        back_btn.callback_data = f"sphoto:back:{listing_id}"
+        rows.append([back_btn])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -216,7 +215,7 @@ async def _render_photo_editor(chat_id: int, bot, send, listing_id: int, state: 
 
     msg = await send(
         text,
-        reply_markup=_photo_editor_kb(listing_id, draft),
+        reply_markup=await _photo_editor_kb(listing_id, draft),
         parse_mode="HTML"
     )
     message_ids.append(msg.message_id)
