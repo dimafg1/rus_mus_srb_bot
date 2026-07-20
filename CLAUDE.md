@@ -367,6 +367,17 @@ path = await render_category_path(session, category_id)
      `music_save_failed_no_rights`, `music_admin_only`, `music_not_found`).
      Заодно частично продвинули `releases.py` (8 мест этими же кодами) —
      он всё равно следующий в очереди.
+     `feedback.py`(34) — **готово (пользовательская часть)**: 12 новых
+     кодов (`feedback_removed`/`_thanks_will_answer`/`_thanks`/
+     `_unavailable`/`_not_found`/`_reply_later`/`_reply_text_only`/
+     `_delete_confirm`/`_deleted`/`_need_reply_thanks`/`_noneed_thanks`/
+     `_mine_empty`). **Сознательно отложено:** уведомления АДМИНАМ
+     (`_format_admin_notif`, `prompt` в `fb_reply_start`, короткие
+     status_line вроде «🔔 Пользователь запросил ответ.») — сложные
+     многоместные f-string шаблоны с несколькими `{переменными}`,
+     видны только владельцу/админам, не пользователям. Перенос
+     потребует продумать формат плейсхолдеров в BotText — вернуться
+     отдельным заходом, не блокирует остальной прогресс.
      `vacancy_edit_overview.py`(27), `artists.py`(29), `feedback.py`(34),
      `market_edit_photos.py`/`services_edit_photos.py`(35),
      `vacancy_view.py`(37), `services_add.py`(40), `admin_panel.py`(49),

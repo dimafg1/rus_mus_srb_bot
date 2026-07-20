@@ -249,7 +249,7 @@ async def fb_dismiss(cb: CallbackQuery):
         _fb_admin_notifs.pop(int(cb.data.split(":")[2]), None)
     except (ValueError, IndexError):
         pass
-    await cb.answer("Убрано.")
+    await cb.answer(await get_text("feedback_removed", "ru") or "Убрано.")
 
 
 # «Активное обращение» на админа: последнее, на которое можно ответить,
@@ -357,8 +357,10 @@ async def fb_need(cb: CallbackQuery):
 
     await _show_user_note(
         cb,
-        "🔔 <b>Спасибо!</b> Мы передали администратору, что Вам нужен ответ.\n"
-        "Он придёт сюда же, в этот чат, в ближайшее время.",
+        await get_text("feedback_need_reply_thanks", "ru") or (
+            "🔔 <b>Спасибо!</b> Мы передали администратору, что Вам нужен ответ.\n"
+            "Он придёт сюда же, в этот чат, в ближайшее время."
+        ),
     )
 
     # Обновляем то же уведомление админам (не плодим новое)
@@ -369,7 +371,7 @@ async def fb_need(cb: CallbackQuery):
     # «Вооружаем» админов на быстрый ответ именно этому обращению
     _entry = _fb_admin_notifs.get(feedback_id)
     _arm_admin_reply(feedback_id, user_id, _entry.get("body", "") if _entry else "")
-    await cb.answer("Спасибо! Ответим Вам здесь.")
+    await cb.answer(await get_text("feedback_thanks_will_answer", "ru") or "Спасибо! Ответим Вам здесь.")
     print(f"FUNC: fb_need | feedback_id={feedback_id} | user_id={user_id}")
 
 
@@ -381,7 +383,7 @@ async def fb_noneed(cb: CallbackQuery):
         feedback_id = 0
     await _show_user_note(
         cb,
-        "🙏 <b>Спасибо за участие!</b>\nБудем рады видеть Вас снова.",
+        await get_text("feedback_noneed_thanks", "ru") or "🙏 <b>Спасибо за участие!</b>\nБудем рады видеть Вас снова.",
     )
     # Обновляем то же уведомление админам (без нового сообщения)
     if feedback_id:
@@ -390,7 +392,7 @@ async def fb_noneed(cb: CallbackQuery):
             with_reply=False, create_if_missing=False,
             who=_who(cb.from_user.username, cb.from_user.id), user_id=cb.from_user.id)
         _fb_admin_notifs.pop(feedback_id, None)
-    await cb.answer("Спасибо!")
+    await cb.answer(await get_text("feedback_thanks", "ru") or "Спасибо!")
     print(f"FUNC: fb_noneed | user_id={cb.from_user.id} | feedback_id={feedback_id}")
 
 
@@ -399,7 +401,7 @@ async def fb_noneed(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("fb:reply:"))
 async def fb_reply_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Недоступно.", show_alert=True)
+        await cb.answer(await get_text("feedback_unavailable", "ru") or "Недоступно.", show_alert=True)
         return
     try:
         feedback_id = int(cb.data.split(":")[2])
@@ -413,7 +415,7 @@ async def fb_reply_start(cb: CallbackQuery, state: FSMContext):
             {"id": feedback_id},
         )).first()
     if not row:
-        await cb.answer("Обращение не найдено.", show_alert=True)
+        await cb.answer(await get_text("feedback_not_found", "ru") or "Обращение не найдено.", show_alert=True)
         return
     target_user_id, target_username, original = int(row[0]), row[1], row[2]
 
@@ -470,7 +472,7 @@ async def fb_reply_later(cb: CallbackQuery, state: FSMContext):
     )
     last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
     await register_bot_messages(chat_id, [msg.message_id])
-    await cb.answer("Ответите позже.")
+    await cb.answer(await get_text("feedback_reply_later", "ru") or "Ответите позже.")
     print(f"FUNC: fb_reply_later | feedback_id={fb_id} | admin={cb.from_user.id}")
 
 
@@ -480,7 +482,7 @@ async def fb_reply_send(message: Message, state: FSMContext):
         return
     reply_text = (message.text or "").strip()
     if not reply_text:
-        await message.answer("Пожалуйста, отправьте ответ текстом одним сообщением.")
+        await message.answer(await get_text("feedback_reply_text_only", "ru") or "Пожалуйста, отправьте ответ текстом одним сообщением.")
         return
 
     data = await state.get_data()
@@ -556,7 +558,7 @@ async def _render_fb_mine(cb: CallbackQuery, offset: int = 0):
         if main_menu_btn:
             kb_rows.append([InlineKeyboardButton(text=main_menu_btn.text, callback_data=main_menu_btn.callback_data)])
         msg = await cb.bot.send_message(
-            chat_id, "У Вас пока нет обращений.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            chat_id, await get_text("feedback_mine_empty", "ru") or "У Вас пока нет обращений.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
         last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
         await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()
@@ -640,7 +642,7 @@ async def fb_mine_view(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
     if not row:
-        body = "Обращение не найдено."
+        body = await get_text("feedback_not_found", "ru") or "Обращение не найдено."
     else:
         question, answer, answered, needs = row[0], row[1], row[2], row[3]
         lines = [
@@ -678,7 +680,7 @@ async def fb_mine_delete_confirm(cb: CallbackQuery):
         await cb.message.edit_reply_markup(reply_markup=kb)
     except Exception:
         pass
-    await cb.answer("Удалить это обращение?")
+    await cb.answer(await get_text("feedback_delete_confirm", "ru") or "Удалить это обращение?")
 
 
 @router.callback_query(F.data.startswith("fb:minedel_yes:"))
@@ -704,6 +706,6 @@ async def fb_mine_delete_yes(cb: CallbackQuery):
         if tgt.get("fb_id") == fid:
             _admin_reply_target.pop(admin_id, None)
 
-    await cb.answer("Удалено.")
+    await cb.answer(await get_text("feedback_deleted", "ru") or "Удалено.")
     await _render_fb_mine(cb, offset=0)
     print(f"FUNC: fb_mine_delete_yes | fid={fid} | user_id={user_id}")
