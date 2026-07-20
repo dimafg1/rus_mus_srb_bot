@@ -251,14 +251,14 @@ path = await render_category_path(session, category_id)
      async), `app/routers/vacancy_utils.py`, `app/routers/market_view.py`,
      `app/routers/services_edit_photos.py` (`_photo_editor_kb` → async),
      `app/routers/market_edit_photos.py` (`_photo_editor_kb` → async),
-     `app/routers/feedback.py` (3 места). Паттерн `get_common_menu_button`
-     может вернуть `None` (нет строки в `menu`) — везде, где кнопка
-     необязательна, добавлен `if back_btn:`; в двух местах мастера
-     редактирования (`market_edit.py`/`user_extra_fields.py`), где кнопка
-     «Назад» обязательна по правилу навигации, добавлен хардкод-фолбэк
-     `or InlineKeyboardButton(...)`.
+     `app/routers/feedback.py` (3 места), `app/routers/artists.py`
+     (добавлен локальный хелпер `_back_btn(callback_data)` — паттерн
+     повторялся 4 раза). Паттерн `get_common_menu_button` может вернуть
+     `None` (нет строки в `menu`) — везде, где кнопка необязательна,
+     добавлен `if back_btn:`; там, где «Назад» обязательна по правилу
+     навигации (мастера редактирования, `artists.py`), добавлен
+     хардкод-фолбэк `or InlineKeyboardButton(...)`.
      **Осталось** (файл: число мест с `text="⬅️ Назад"`):
-     `artists.py`(4),
      `services_add.py`(4), `vacancy_view.py`(6), `admin_panel.py`(8),
      `admin_fields.py`(8), `releases.py`(9), `vacancy_add.py`(10),
      `market_edit_overview.py`(13), `services_edit_overview.py`(13),
