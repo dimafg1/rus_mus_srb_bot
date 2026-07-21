@@ -2825,9 +2825,7 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 </div>
 
 <div class="tabs">
-  <button class="tab active" onclick="switchTab('market')" data-i18n="tab_market">Барахолка</button>
-  <button class="tab" onclick="switchTab('services')" data-i18n="tab_services">Услуги</button>
-  <button class="tab" onclick="switchTab('vacancy')" data-i18n="tab_vacancy">Вакансии</button>
+  <button class="tab active" onclick="switchTab('categories')">🗂 Категории</button>
   <button class="tab" onclick="switchTab('analytics')" data-i18n="tab_analytics">📊 Аналитика</button>
   <button class="tab" onclick="switchTab('catalog')" data-i18n="tab_catalog">📦 Объявления</button>
   <button class="tab" onclick="switchTab('releases')">🎵 Релизы</button>
@@ -2836,32 +2834,40 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
   <button class="tab" onclick="switchTab('texts')">📝 Тексты</button>
 </div>
 
-<div id="panel-market"  class="panel active"><div class="toolbar">
-  <button class="btn btn-primary" onclick="openAdd(null,'market')" data-i18n="add_top">+ Добавить корневую</button>
-  <button class="btn btn-ghost"   onclick="clearSelection()" data-i18n="clear_sel">Снять выделение</button>
-</div><div class="batch-bar" id="batch-market">
-  <span class="batch-count" id="batch-count-market">0 выбрано</span>
-  <button class="btn btn-fields" onclick="openBatchField('market')" data-i18n="add_field_sel">Добавить поле к выбранным</button>
-  <button class="btn btn-ghost"  onclick="clearSelection()">✕</button>
-</div><div class="tree" id="tree-market"></div></div>
+<div id="panel-categories" class="panel active">
+  <div class="toolbar">
+    <button class="btn btn-ghost btn-sm" id="cat-subtab-market" onclick="catSetSubtab('market')" data-i18n="tab_market">Барахолка</button>
+    <button class="btn btn-ghost btn-sm" id="cat-subtab-services" onclick="catSetSubtab('services')" data-i18n="tab_services">Услуги</button>
+    <button class="btn btn-ghost btn-sm" id="cat-subtab-vacancy" onclick="catSetSubtab('vacancy')" data-i18n="tab_vacancy">Вакансии</button>
+  </div>
 
-<div id="panel-services" class="panel"><div class="toolbar">
-  <button class="btn btn-primary" onclick="openAdd(null,'services')" data-i18n="add_top">+ Добавить корневую</button>
-  <button class="btn btn-ghost"   onclick="clearSelection()" data-i18n="clear_sel">Снять выделение</button>
-</div><div class="batch-bar" id="batch-services">
-  <span class="batch-count" id="batch-count-services">0 выбрано</span>
-  <button class="btn btn-fields" onclick="openBatchField('services')" data-i18n="add_field_sel">Добавить поле к выбранным</button>
-  <button class="btn btn-ghost"  onclick="clearSelection()">✕</button>
-</div><div class="tree" id="tree-services"></div></div>
+  <div id="catview-market"><div class="toolbar">
+    <button class="btn btn-primary" onclick="openAdd(null,'market')" data-i18n="add_top">+ Добавить корневую</button>
+    <button class="btn btn-ghost"   onclick="clearSelection()" data-i18n="clear_sel">Снять выделение</button>
+  </div><div class="batch-bar" id="batch-market">
+    <span class="batch-count" id="batch-count-market">0 выбрано</span>
+    <button class="btn btn-fields" onclick="openBatchField('market')" data-i18n="add_field_sel">Добавить поле к выбранным</button>
+    <button class="btn btn-ghost"  onclick="clearSelection()">✕</button>
+  </div><div class="tree" id="tree-market"></div></div>
 
-<div id="panel-vacancy" class="panel"><div class="toolbar">
-  <button class="btn btn-primary" onclick="openAdd(null,'vacancy')" data-i18n="add_top">+ Добавить корневую</button>
-  <button class="btn btn-ghost"   onclick="clearSelection()" data-i18n="clear_sel">Снять выделение</button>
-</div><div class="batch-bar" id="batch-vacancy">
-  <span class="batch-count" id="batch-count-vacancy">0 выбрано</span>
-  <button class="btn btn-fields" onclick="openBatchField('vacancy')" data-i18n="add_field_sel">Добавить поле к выбранным</button>
-  <button class="btn btn-ghost"  onclick="clearSelection()">✕</button>
-</div><div class="tree" id="tree-vacancy"></div></div>
+  <div id="catview-services" style="display:none"><div class="toolbar">
+    <button class="btn btn-primary" onclick="openAdd(null,'services')" data-i18n="add_top">+ Добавить корневую</button>
+    <button class="btn btn-ghost"   onclick="clearSelection()" data-i18n="clear_sel">Снять выделение</button>
+  </div><div class="batch-bar" id="batch-services">
+    <span class="batch-count" id="batch-count-services">0 выбрано</span>
+    <button class="btn btn-fields" onclick="openBatchField('services')" data-i18n="add_field_sel">Добавить поле к выбранным</button>
+    <button class="btn btn-ghost"  onclick="clearSelection()">✕</button>
+  </div><div class="tree" id="tree-services"></div></div>
+
+  <div id="catview-vacancy" style="display:none"><div class="toolbar">
+    <button class="btn btn-primary" onclick="openAdd(null,'vacancy')" data-i18n="add_top">+ Добавить корневую</button>
+    <button class="btn btn-ghost"   onclick="clearSelection()" data-i18n="clear_sel">Снять выделение</button>
+  </div><div class="batch-bar" id="batch-vacancy">
+    <span class="batch-count" id="batch-count-vacancy">0 выбрано</span>
+    <button class="btn btn-fields" onclick="openBatchField('vacancy')" data-i18n="add_field_sel">Добавить поле к выбранным</button>
+    <button class="btn btn-ghost"  onclick="clearSelection()">✕</button>
+  </div><div class="tree" id="tree-vacancy"></div></div>
+</div>
 
 <div id="panel-analytics" class="panel">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
@@ -3576,7 +3582,7 @@ document.querySelectorAll('.overlay').forEach(o=>{
 });
 
 // ── tabs ──
-const ALL_TABS = ['market','services','vacancy','analytics','catalog','releases','artists','feedback','texts'];
+const ALL_TABS = ['categories','analytics','catalog','releases','artists','feedback','texts'];
 function switchTab(section) {
   currentTab=section;
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ALL_TABS[i]===section));
@@ -3588,7 +3594,18 @@ function switchTab(section) {
   else if (section==='releases') loadReleases();
   else if (section==='feedback') loadFeedback();
   else if (section==='texts') txtSetSubtab(txtSubtab);
-  else loadTree(section);
+  else if (section==='categories') catSetSubtab(catSubtab);
+}
+
+// ── Категории: под-вкладки Барахолка/Услуги/Вакансии внутри одной вкладки ──
+let catSubtab = 'market';
+function catSetSubtab(name) {
+  catSubtab = name;
+  ['market','services','vacancy'].forEach(s => {
+    document.getElementById(`cat-subtab-${s}`).classList.toggle('btn-primary', s===name);
+    document.getElementById(`catview-${s}`).style.display = s===name ? '' : 'none';
+  });
+  loadTree(name);
 }
 
 // ── Релизы (отдельная вкладка: это не объявления) ──
@@ -5432,7 +5449,7 @@ async function loadAnalytics() {
 }
 
 // ── init ──
-(async()=>{ applyLang(); setupDnD(); await loadAll(); await loadTree('market'); })();
+(async()=>{ applyLang(); setupDnD(); await loadAll(); catSetSubtab('market'); })();
 </script>
 </body>
 </html>
