@@ -3,6 +3,7 @@
 Запуск: python category_admin.py   (или двойной клик на category_admin.command)
 Открыть: http://localhost:8001
 """
+import asyncio
 import base64
 import html
 import secrets
@@ -18,6 +19,7 @@ from typing import Optional, List, Any
 import httpx, uvicorn
 
 from app.db_path import config_value, resolve_sqlite_path
+from app.admin_ids import ADMIN_IDS
 
 # Load bot token for Telegram media proxy
 _ROOT = Path(__file__).resolve().parent
@@ -210,6 +212,20 @@ def migrate():
         if "is_muted" not in botuser_cols:
             conn.execute('ALTER TABLE "BotUser" ADD COLUMN is_muted BOOLEAN NOT NULL DEFAULT 0')
             conn.commit()
+
+        # Журнал рассылок — только веб-админка пишет и читает эту таблицу,
+        # боту она не нужна (нет соответствующей SQLModel-модели).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS broadcast_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text_ru TEXT NOT NULL,
+                sent_at DATETIME NOT NULL,
+                total INTEGER NOT NULL DEFAULT 0,
+                success INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.commit()
 
 
 @app.on_event("startup")
@@ -2379,6 +2395,102 @@ def user_mute_update(user_id: int, body: UserMuteBody):
     return {"ok": True}
 
 
+# ─────────────────────────── Рассылка (broadcast) ───────────────────────────
+# Идёт напрямую через Telegram Bot API (category_admin.py — отдельный процесс
+# от бота, не может воспользоваться его aiogram-объектом), с троттлингом
+# ~20 сообщений/сек — с запасом от официального лимита Telegram (~30/сек для
+# разных чатов). Одна рассылка за раз (не позволяем запустить вторую поверх
+# ещё не завершённой) — простое ограничение через in-memory-флаг процесса.
+
+_broadcast_state: dict = {"running": False, "sent": 0, "failed": 0, "total": 0}
+
+
+@app.get("/api/broadcast/audience")
+def broadcast_audience():
+    with db() as conn:
+        total = conn.execute('SELECT COUNT(*) FROM "BotUser"').fetchone()[0] or 0
+    return {"total": total, "default_test_id": ADMIN_IDS[0] if ADMIN_IDS else None}
+
+
+class BroadcastTestBody(BaseModel):
+    text_ru: str
+    target_id: int
+
+
+@app.post("/api/broadcast/test")
+async def broadcast_test(body: BroadcastTestBody):
+    text_ru = (body.text_ru or "").strip()
+    if not text_ru:
+        raise HTTPException(400, "Пустой текст")
+    resp = await _send_telegram_message(body.target_id, text_ru, None)
+    if not resp.get("ok"):
+        return {"ok": False, "detail": resp.get("description") or "Не удалось отправить"}
+    return {"ok": True}
+
+
+class BroadcastSendBody(BaseModel):
+    text_ru: str
+    user_ids: list[int] = []
+
+
+async def _run_broadcast(text_ru: str, user_ids: list[int]) -> None:
+    success = 0
+    failed = 0
+    for uid in user_ids:
+        try:
+            resp = await _send_telegram_message(uid, text_ru, None)
+            if resp.get("ok"):
+                success += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+        _broadcast_state["sent"] = success
+        _broadcast_state["failed"] = failed
+        await asyncio.sleep(0.05)  # ~20 сообщений/сек — с запасом от лимита Telegram
+    _broadcast_state["running"] = False
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO broadcast_log (text_ru, sent_at, total, success, failed) VALUES (?, datetime('now'), ?, ?, ?)",
+            (text_ru, len(user_ids), success, failed),
+        )
+
+
+@app.post("/api/broadcast/send")
+def broadcast_send(body: BroadcastSendBody):
+    if _broadcast_state["running"]:
+        raise HTTPException(409, "Рассылка уже выполняется")
+    text_ru = (body.text_ru or "").strip()
+    if not text_ru:
+        raise HTTPException(400, "Пустой текст")
+    # Получателей выбирает фронтенд (режим "всем" / "только отмеченным" /
+    # "всем, кроме отмеченных") — бэкенд просто рассылает по присланному
+    # списку ID, не пересчитывает аудиторию заново.
+    user_ids = list(dict.fromkeys(body.user_ids))  # без дублей, порядок сохранён
+    if not user_ids:
+        raise HTTPException(400, "Нет получателей")
+    _broadcast_state.update({"running": True, "sent": 0, "failed": 0, "total": len(user_ids)})
+    asyncio.create_task(_run_broadcast(text_ru, user_ids))
+    return {"ok": True, "total": len(user_ids)}
+
+
+@app.get("/api/broadcast/status")
+def broadcast_status():
+    return dict(_broadcast_state)
+
+
+@app.get("/api/broadcast/history")
+def broadcast_history():
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, text_ru, sent_at, total, success, failed FROM broadcast_log ORDER BY sent_at DESC LIMIT 20"
+        ).fetchall()
+    return {"rows": [{
+        "id": r[0], "text_ru": r[1], "sent_at": r[2],
+        "total": r[3], "success": r[4], "failed": r[5],
+    } for r in rows]}
+
+
 @app.get("/api/catalog/sections")
 def catalog_sections():
     with db() as conn:
@@ -3166,16 +3278,63 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 
 <div id="panel-users" class="panel">
   <div class="toolbar">
-    <input type="text" id="user-search" placeholder="Поиск по ID, username или имени…"
-      style="flex:1;min-width:220px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:7px 10px;font:inherit"
-      oninput="userSearchDebounced()">
-    <button class="btn btn-ghost btn-sm" onclick="loadUsers()">↻ Обновить</button>
+    <button class="btn btn-ghost btn-sm" id="user-subtab-list" onclick="userSetSubtab('list')">Список</button>
+    <button class="btn btn-ghost btn-sm" id="user-subtab-broadcast" onclick="userSetSubtab('broadcast')">📣 Рассылка</button>
   </div>
-  <div style="font-size:11px;color:#556;margin-bottom:12px">
-    «Ограничить» запрещает публикацию нового контента (Барахолка/Услуги/Вакансии/Афиша/Исполнители/Релизы).
-    Просмотр разделов и обратная связь остаются доступны — это не полная блокировка.
+
+  <div id="users-list-view">
+    <div class="toolbar">
+      <input type="text" id="user-search" placeholder="Поиск по ID, username или имени…"
+        style="flex:1;min-width:220px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:7px 10px;font:inherit"
+        oninput="userSearchDebounced()">
+      <button class="btn btn-ghost btn-sm" onclick="loadUsers()">↻ Обновить</button>
+    </div>
+    <div style="font-size:11px;color:#556;margin-bottom:12px">
+      «Ограничить» запрещает публикацию нового контента (Барахолка/Услуги/Вакансии/Афиша/Исполнители/Релизы).
+      Просмотр разделов и обратная связь остаются доступны — это не полная блокировка.
+    </div>
+    <div id="users-content"></div>
   </div>
-  <div id="users-content"></div>
+
+  <div id="users-broadcast-view" style="display:none">
+    <div style="margin-bottom:10px">
+      <label style="display:block;font-size:12px;color:#889;margin-bottom:4px">Текст рассылки (RU)</label>
+      <div class="rte-toolbar">
+        <button type="button" title="Жирный" onmousedown="event.preventDefault()" onclick="txtExecCmd('bc-text-edit','bold')"><b>B</b></button>
+        <button type="button" title="Курсив" onmousedown="event.preventDefault()" onclick="txtExecCmd('bc-text-edit','italic')"><i>I</i></button>
+        <button type="button" title="Подчёркнутый" onmousedown="event.preventDefault()" onclick="txtExecCmd('bc-text-edit','underline')"><u>U</u></button>
+      </div>
+      <div id="bc-text-edit" class="rte-edit" contenteditable="true" onkeydown="txtEditorKeydown(event)" style="min-height:120px"></div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <label style="font-size:12px;color:#889">Тестовый ID:
+        <input type="text" id="bc-test-id" style="width:130px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:6px 8px;font:inherit;margin-left:6px">
+      </label>
+      <button class="btn btn-ghost btn-sm" onclick="broadcastTest()">📨 Отправить тест себе</button>
+      <span id="bc-test-status" style="font-size:12px"></span>
+    </div>
+
+    <div style="margin-bottom:10px">
+      <label style="display:block;font-size:12px;color:#889;margin-bottom:6px">Получатели</label>
+      <div style="display:flex;gap:16px;margin-bottom:8px;font-size:13px">
+        <label><input type="radio" name="bc-mode" value="all" checked onchange="broadcastModeChange()"> Всем</label>
+        <label><input type="radio" name="bc-mode" value="only" onchange="broadcastModeChange()"> Только отмеченным</label>
+        <label><input type="radio" name="bc-mode" value="except" onchange="broadcastModeChange()"> Всем, кроме отмеченных</label>
+      </div>
+      <div id="bc-user-checklist" style="display:none;max-height:200px;overflow-y:auto;background:#0d1424;border:1px solid #223;border-radius:6px;padding:8px 10px;margin-bottom:8px"></div>
+    </div>
+    <div style="margin-bottom:14px">
+      <button class="btn btn-primary" onclick="broadcastSend()">🚀 Отправить (<span id="bc-audience-count">…</span>)</button>
+    </div>
+    <div id="bc-progress" style="display:none;margin-bottom:16px">
+      <div style="font-size:12px;color:#889;margin-bottom:6px" id="bc-progress-text"></div>
+      <div style="background:#1a2050;border-radius:6px;height:8px;overflow:hidden">
+        <div id="bc-progress-bar" style="background:#5a9cf5;height:100%;width:0%;transition:.2s"></div>
+      </div>
+    </div>
+    <div style="font-size:12px;color:#556;margin-bottom:8px">История рассылок</div>
+    <div id="bc-history-content"></div>
+  </div>
 </div>
 
 <!-- Text edit modal -->
@@ -3757,7 +3916,7 @@ function switchTab(section) {
   else if (section==='texts') txtSetSubtab(txtSubtab);
   else if (section==='categories') catSetSubtab(catSubtab);
   else if (section==='settings') loadFeatureFlags();
-  else if (section==='users') loadUsers();
+  else if (section==='users') userSetSubtab(userSubtab);
 }
 
 // ── Категории: под-вкладки Барахолка/Услуги/Вакансии внутри одной вкладки ──
@@ -4585,6 +4744,165 @@ async function userMuteToggle(userId) {
     statusEl.style.color = '#f66';
     statusEl.textContent = '⚠️';
   }
+}
+
+// ── Пользователи: под-вкладки Список/Рассылка ──
+let userSubtab = 'list';
+function userSetSubtab(name) {
+  userSubtab = name;
+  document.getElementById('user-subtab-list').classList.toggle('btn-primary', name==='list');
+  document.getElementById('user-subtab-broadcast').classList.toggle('btn-primary', name==='broadcast');
+  document.getElementById('users-list-view').style.display = name==='list' ? '' : 'none';
+  document.getElementById('users-broadcast-view').style.display = name==='broadcast' ? '' : 'none';
+  if (name==='list') loadUsers();
+  else broadcastInit();
+}
+
+// ── Рассылка (broadcast) ──
+let _bcPollTimer = null;
+
+let bcUsers = [];
+let bcMode = 'all';
+
+async function broadcastInit() {
+  const data = await fetch('/api/broadcast/audience').then(r=>r.json());
+  const testInput = document.getElementById('bc-test-id');
+  if (!testInput.value && data.default_test_id) testInput.value = data.default_test_id;
+  await broadcastLoadUserChecklist();
+  await broadcastLoadHistory();
+  await broadcastCheckStatus();
+}
+
+async function broadcastLoadUserChecklist() {
+  const data = await fetch('/api/users?limit=1000').then(r=>r.json());
+  bcUsers = data.rows || [];
+  const el = document.getElementById('bc-user-checklist');
+  el.innerHTML = bcUsers.length ? bcUsers.map(u => `
+      <label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px">
+        <input type="checkbox" class="bc-user-chk" value="${u.user_id}" onchange="updateBcRecipientCount()">
+        <span style="font-family:monospace;color:#9bc">${u.user_id}</span>
+        <span style="color:#ccd">${u.username ? '@'+esc(u.username) : ''}</span>
+        <span style="color:#556">${esc(u.full_name||'')}</span>
+      </label>`).join('') : '<div class="empty">Пользователей нет</div>';
+  updateBcRecipientCount();
+}
+
+function broadcastModeChange() {
+  bcMode = document.querySelector('input[name="bc-mode"]:checked').value;
+  document.getElementById('bc-user-checklist').style.display = bcMode==='all' ? 'none' : '';
+  updateBcRecipientCount();
+}
+
+function bcSelectedIds() {
+  return Array.from(document.querySelectorAll('.bc-user-chk:checked')).map(c => parseInt(c.value, 10));
+}
+
+function bcRecipientIds() {
+  const selected = new Set(bcSelectedIds());
+  if (bcMode === 'all') return bcUsers.map(u => u.user_id);
+  if (bcMode === 'only') return bcUsers.filter(u => selected.has(u.user_id)).map(u => u.user_id);
+  return bcUsers.filter(u => !selected.has(u.user_id)).map(u => u.user_id);  // except
+}
+
+function updateBcRecipientCount() {
+  document.getElementById('bc-audience-count').textContent = bcRecipientIds().length;
+}
+
+async function broadcastTest() {
+  const text_ru = sanitizeTelegramHtml(document.getElementById('bc-text-edit'));
+  const target_id = parseInt(document.getElementById('bc-test-id').value, 10);
+  const statusEl = document.getElementById('bc-test-status');
+  if (!text_ru.trim()) { statusEl.style.color = '#f66'; statusEl.textContent = 'Пустой текст'; return; }
+  if (!target_id) { statusEl.style.color = '#f66'; statusEl.textContent = 'Укажите тестовый ID'; return; }
+  statusEl.style.color = '#889';
+  statusEl.textContent = 'Отправка…';
+  try {
+    const r = await fetch('/api/broadcast/test', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text_ru, target_id})
+    }).then(x=>x.json());
+    statusEl.style.color = r.ok ? '#7c9' : '#f66';
+    statusEl.textContent = r.ok ? '✅ Отправлено' : '⚠️ ' + (r.detail || 'ошибка');
+  } catch(e) {
+    statusEl.style.color = '#f66';
+    statusEl.textContent = 'Ошибка: ' + e.message;
+  }
+}
+
+async function broadcastSend() {
+  const text_ru = sanitizeTelegramHtml(document.getElementById('bc-text-edit'));
+  if (!text_ru.trim()) { alert('Пустой текст рассылки.'); return; }
+  const ids = bcRecipientIds();
+  if (!ids.length) { alert('Нет получателей для отправки — проверьте режим и отметки.'); return; }
+  if (!confirm(`Отправить это сообщение ${ids.length} получателям? Действие необратимо.`)) return;
+  try {
+    const r = await fetch('/api/broadcast/send', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text_ru, user_ids: ids})
+    }).then(x=>x.json());
+    if (!r.ok && r.detail) { alert(r.detail); return; }
+    document.getElementById('bc-progress').style.display = '';
+    broadcastPoll();
+  } catch(e) {
+    alert('Ошибка: ' + e.message);
+  }
+}
+
+async function broadcastCheckStatus() {
+  const s = await fetch('/api/broadcast/status').then(r=>r.json());
+  if (s.running || s.total > 0) {
+    document.getElementById('bc-progress').style.display = '';
+    _updateBcProgress(s);
+  }
+  if (s.running) broadcastPoll();
+}
+
+function _updateBcProgress(s) {
+  const done = s.sent + s.failed;
+  const pct = s.total ? Math.round(done / s.total * 100) : 0;
+  document.getElementById('bc-progress-bar').style.width = pct + '%';
+  document.getElementById('bc-progress-text').textContent =
+    `Отправлено: ${s.sent} · Ошибок: ${s.failed} · Всего: ${s.total}${s.running ? ' — идёт рассылка…' : ' — завершено'}`;
+}
+
+function broadcastPoll() {
+  clearTimeout(_bcPollTimer);
+  _bcPollTimer = setTimeout(async () => {
+    const s = await fetch('/api/broadcast/status').then(r=>r.json());
+    _updateBcProgress(s);
+    if (s.running) {
+      broadcastPoll();
+    } else {
+      broadcastLoadHistory();
+    }
+  }, 1000);
+}
+
+async function broadcastLoadHistory() {
+  const el = document.getElementById('bc-history-content');
+  const data = await fetch('/api/broadcast/history').then(r=>r.json());
+  const rows = data.rows || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:14px 0">Рассылок ещё не было</div>';
+    return;
+  }
+  el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="color:#556;font-size:11px;text-align:left">
+      <th style="padding:5px 8px">Когда</th>
+      <th style="padding:5px 8px">Текст</th>
+      <th style="padding:5px 8px">Всего</th>
+      <th style="padding:5px 8px">Успешно</th>
+      <th style="padding:5px 8px">Ошибок</th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr style="border-top:1px solid #0d1628">
+        <td style="padding:5px 8px;color:#556;white-space:nowrap">${esc((r.sent_at||'').slice(0,16))}</td>
+        <td style="padding:5px 8px;color:#ccd">${esc(r.text_ru.slice(0,80).replace(/\n/g,' '))}${r.text_ru.length>80?'…':''}</td>
+        <td style="padding:5px 8px;color:#889">${r.total}</td>
+        <td style="padding:5px 8px;color:#7c9">${r.success}</td>
+        <td style="padding:5px 8px;color:${r.failed?'#f66':'#556'}">${r.failed}</td>
+      </tr>`).join('')}</tbody>
+  </table>`;
 }
 
 // Своя подсказка (вместо нативной title) — можно управлять размером шрифта
