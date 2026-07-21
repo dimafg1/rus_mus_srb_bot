@@ -2422,9 +2422,13 @@ async def broadcast_test(body: BroadcastTestBody):
     text_ru = (body.text_ru or "").strip()
     if not text_ru:
         raise HTTPException(400, "Пустой текст")
-    resp = await _send_telegram_message(body.target_id, text_ru, None)
+    resp = await _send_telegram_message(body.target_id, text_ru, _HIDE_MESSAGE_MARKUP)
     if not resp.get("ok"):
         return {"ok": False, "detail": resp.get("description") or "Не удалось отправить"}
+    msg_id = (resp.get("result") or {}).get("message_id")
+    if msg_id:
+        with db() as conn:
+            _register_bot_message_sync(conn, body.target_id, msg_id)
     return {"ok": True}
 
 
@@ -2433,14 +2437,36 @@ class BroadcastSendBody(BaseModel):
     user_ids: list[int] = []
 
 
+# Кнопка «Скрыть сообщение» под каждой рассылкой — переиспользует уже
+# существующий в боте обработчик delmsg: (app/routers/market_add.py,
+# delete_msg_cb): он удаляет cb.message независимо от числа после
+# двоеточия, поэтому плейсхолдер "0" достаточен — не нужно знать
+# message_id заранее и делать второй API-вызов (editMessageReplyMarkup).
+_HIDE_MESSAGE_MARKUP = {"inline_keyboard": [[{"text": "🗑 Скрыть сообщение", "callback_data": "delmsg:0"}]]}
+
+
+def _register_bot_message_sync(conn, chat_id: int, message_id: int) -> None:
+    """Гигиена чата: сообщение попадёт под обычную зачистку бота при
+    следующей навигации пользователя — тот же приём, что и для ответов
+    в обратной связи (см. feedback_reply)."""
+    conn.execute(
+        "INSERT INTO botmessage (chat_id, message_id, created_at) VALUES (?, ?, ?)",
+        (chat_id, message_id, datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()),
+    )
+
+
 async def _run_broadcast(text_ru: str, user_ids: list[int]) -> None:
     success = 0
     failed = 0
     for uid in user_ids:
         try:
-            resp = await _send_telegram_message(uid, text_ru, None)
+            resp = await _send_telegram_message(uid, text_ru, _HIDE_MESSAGE_MARKUP)
             if resp.get("ok"):
                 success += 1
+                msg_id = (resp.get("result") or {}).get("message_id")
+                if msg_id:
+                    with db() as conn:
+                        _register_bot_message_sync(conn, uid, msg_id)
             else:
                 failed += 1
         except Exception:
@@ -4886,10 +4912,11 @@ async function broadcastLoadHistory() {
     el.innerHTML = '<div class="empty" style="padding:14px 0">Рассылок ещё не было</div>';
     return;
   }
-  el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+  el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+    <colgroup><col style="width:110px"><col><col style="width:60px"><col style="width:70px"><col style="width:60px"></colgroup>
     <thead><tr style="color:#556;font-size:11px;text-align:left">
       <th style="padding:5px 8px">Когда</th>
-      <th style="padding:5px 8px">Текст</th>
+      <th style="padding:5px 8px">Текст (как в Telegram)</th>
       <th style="padding:5px 8px">Всего</th>
       <th style="padding:5px 8px">Успешно</th>
       <th style="padding:5px 8px">Ошибок</th>
@@ -4897,7 +4924,7 @@ async function broadcastLoadHistory() {
     <tbody>${rows.map(r => `
       <tr style="border-top:1px solid #0d1628">
         <td style="padding:5px 8px;color:#556;white-space:nowrap">${esc((r.sent_at||'').slice(0,16))}</td>
-        <td style="padding:5px 8px;color:#ccd">${esc(r.text_ru.slice(0,80).replace(/\n/g,' '))}${r.text_ru.length>80?'…':''}</td>
+        <td style="padding:5px 8px;color:#ccd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.text_ru}</td>
         <td style="padding:5px 8px;color:#889">${r.total}</td>
         <td style="padding:5px 8px;color:#7c9">${r.success}</td>
         <td style="padding:5px 8px;color:${r.failed?'#f66':'#556'}">${r.failed}</td>
