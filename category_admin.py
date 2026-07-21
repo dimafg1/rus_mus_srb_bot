@@ -2546,6 +2546,16 @@ h1{font-size:18px;color:#fff;letter-spacing:-.3px}
 .col-resize:hover{background:#3a5a9c}
 th.txt-th{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 td.txt-td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rte-toolbar{display:flex;gap:4px;margin-bottom:4px}
+.rte-toolbar button{width:28px;height:24px;padding:0;border-radius:5px;border:none;
+  background:#252540;color:#99a;cursor:pointer;font-size:12px}
+.rte-toolbar button:hover{background:#2f2f55;color:#dde}
+.rte-edit{width:100%;min-height:100px;background:#0d1424;color:#dde;border:1px solid #223;
+  border-radius:6px;padding:8px;font:13px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;
+  box-sizing:border-box;white-space:pre-wrap;outline:none}
+.rte-edit:focus{border-color:#5a9cf5}
+.rte-edit code{background:#1a2340;padding:1px 4px;border-radius:3px;font-family:monospace}
+.rte-edit a{color:#7eb8f7}
 .btn{padding:6px 13px;border-radius:7px;border:none;cursor:pointer;
      font-size:12px;font-weight:500;transition:opacity .15s;white-space:nowrap}
 .btn:hover{opacity:.82}
@@ -3881,7 +3891,13 @@ function closeFeedbackModal() {
 let txtSubtab = 'bottext';
 let txtQuery = '';
 let txtOffset = 0;
-const TXT_LIMIT = 50;
+let txtPageSize = parseInt(localStorage.getItem('admin_txt_page_size') || '50', 10) || 50;
+function txtSetPageSize(val) {
+  txtPageSize = parseInt(val, 10) || 50;
+  localStorage.setItem('admin_txt_page_size', String(txtPageSize));
+  txtOffset = 0;
+  loadTexts();
+}
 let _txtSearchTimer = null;
 
 function txtSetSubtab(name) {
@@ -4016,14 +4032,14 @@ function txtCellHtml(row, key) {
 async function loadTexts() {
   const el = document.getElementById('texts-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
-  const data = await fetch(`/api/texts?q=${encodeURIComponent(txtQuery)}&offset=${txtOffset}&limit=${TXT_LIMIT}`).then(r=>r.json());
+  const data = await fetch(`/api/texts?q=${encodeURIComponent(txtQuery)}&offset=${txtOffset}&limit=${txtPageSize}`).then(r=>r.json());
   const rows = data.rows || [];
   if (!rows.length) {
     el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Ничего не найдено</div>';
     return;
   }
-  const pages = Math.max(1, Math.ceil(data.total / TXT_LIMIT));
-  const page = Math.floor(txtOffset / TXT_LIMIT) + 1;
+  const pages = Math.max(1, Math.ceil(data.total / txtPageSize));
+  const page = Math.floor(txtOffset / txtPageSize) + 1;
   const cols = txtVisibleColumns();
   const colgroup = cols.map(c => `<col style="width:${txtCols.widths[c.key]}px">`).join('') + '<col style="width:90px">';
   const thead = cols.map(c => `
@@ -4042,6 +4058,8 @@ async function loadTexts() {
         <input type="checkbox" ${txtCols.visible[c.key]!==false?'checked':''} ${c.locked?'disabled':''}
           onchange="txtToggleColumn('${c.key}', this.checked)"> ${esc(c.label)}
       </label>`).join('');
+  const pageSizeOptions = [10, 20, 50, 100].map(n =>
+    `<option value="${n}" ${txtPageSize===n?'selected':''}>${n}</option>`).join('');
   el.innerHTML = `
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
     <div style="font-size:12px;color:#556">${data.total} текстов</div>
@@ -4056,11 +4074,16 @@ async function loadTexts() {
     <thead><tr style="color:#556;font-size:11px;text-align:left">${thead}</tr></thead>
     <tbody>${tbody}</tbody>
   </table>
-  ${pages > 1 ? `<div class="an-pagination">
-    <button onclick="txtPage(${Math.max(0, txtOffset - TXT_LIMIT)})" ${txtOffset===0?'disabled':''}>◀</button>
+  <div class="an-pagination">
+    <label style="display:flex;align-items:center;gap:6px">на странице
+      <select onchange="txtSetPageSize(this.value)" style="background:#1a2050;color:#aab;border:none;border-radius:5px;padding:4px 6px;font:inherit">${pageSizeOptions}</select>
+    </label>
+    ${pages > 1 ? `
+    <button onclick="txtPage(${Math.max(0, txtOffset - txtPageSize)})" ${txtOffset===0?'disabled':''}>◀</button>
     <span>стр. ${page} из ${pages}</span>
-    <button onclick="txtPage(${txtOffset + TXT_LIMIT})" ${txtOffset + TXT_LIMIT >= data.total?'disabled':''}>▶</button>
-  </div>` : ''}`;
+    <button onclick="txtPage(${txtOffset + txtPageSize})" ${txtOffset + txtPageSize >= data.total?'disabled':''}>▶</button>
+    ` : ''}
+  </div>`;
 }
 
 function txtPage(offset) {
@@ -4079,10 +4102,110 @@ async function openText(code) {
   }
 }
 
+// ── Форматированный редактор (B/I/U) ──
+// contenteditable показывает текст ТАК, КАК ОН БУДЕТ ВЫГЛЯДЕТЬ в Telegram
+// (реальные жирный/курсив/подчёркнутый), вместо того чтобы вручную писать
+// <b>/<i>/<u>. Но при сохранении содержимое ВСЕГДА прогоняется через
+// sanitizeTelegramHtml() — она оставляет только теги, которые понимает
+// Telegram (b/i/u, плюс то, что уже было в тексте: code/a), и превращает
+// любой браузерный мусор (div/span/style от вставки, переносы строк) в
+// обычный текст с переносами \n. Это и есть защита от «бот упал с ошибкой
+// парсинга» — риск, о котором предупреждали при выборе WYSIWYG-подхода.
+function txtRteToolbar(editId) {
+  return `<div class="rte-toolbar">
+    <button type="button" title="Жирный" onmousedown="event.preventDefault()" onclick="txtExecCmd('${editId}','bold')"><b>B</b></button>
+    <button type="button" title="Курсив" onmousedown="event.preventDefault()" onclick="txtExecCmd('${editId}','italic')"><i>I</i></button>
+    <button type="button" title="Подчёркнутый" onmousedown="event.preventDefault()" onclick="txtExecCmd('${editId}','underline')"><u>U</u></button>
+  </div>`;
+}
+
+function txtExecCmd(editId, cmd) {
+  document.getElementById(editId).focus();
+  document.execCommand(cmd, false, null);
+}
+
+// Enter не должен создавать <div>/<p> (обычное поведение contenteditable) —
+// иначе на сохранении санитайзер получит блочную разметку вместо простого
+// текста. Вставляем обычный символ переноса строки в текстовый узел.
+function txtEditorKeydown(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+  const node = document.createTextNode('\n');
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.setEndAfter(node);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function _rteEscText(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function _rteEscAttr(s) {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Строгий белый список: контенту из contenteditable нельзя доверять как есть
+// (браузер/паста может принести что угодно) — на выходе только теги,
+// которые Telegram parse_mode="HTML" реально понимает.
+const RTE_TAG_MAP = {b:'b', strong:'b', i:'i', em:'i', u:'u', ins:'u', s:'s', strike:'s', del:'s', code:'code', pre:'pre', a:'a'};
+
+function sanitizeTelegramHtml(container) {
+  let out = '';
+  function walk(n) {
+    if (n.nodeType === Node.TEXT_NODE) {
+      out += _rteEscText(n.nodeValue);
+      return;
+    }
+    if (n.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = n.tagName.toLowerCase();
+    if (tag === 'script' || tag === 'style' || tag === 'noscript') {
+      // Не унаследованный мусор от вставки — целиком выбрасываем (и тег,
+      // и содержимое), в отличие от span/font, у которых снимаем только тег.
+      return;
+    }
+    if (tag === 'br') { out += '\n'; return; }
+    if (tag === 'div' || tag === 'p') {
+      // Блочные теги (обычно из вставки чужого HTML) — не переносим как есть,
+      // Telegram их не поддерживает; вместо этого просто добавляем перенос строки.
+      if (out.length && !out.endsWith('\n')) out += '\n';
+      Array.from(n.childNodes).forEach(walk);
+      return;
+    }
+    const mapped = RTE_TAG_MAP[tag];
+    if (mapped === 'a') {
+      const href = n.getAttribute('href') || '';
+      // Разрешаем только http(s)-ссылки — javascript:/data: и подобные схемы
+      // не поддерживаются Telegram и не должны просачиваться в текст.
+      if (/^https?:\/\//i.test(href.trim())) {
+        out += `<a href="${_rteEscAttr(href.trim())}">`;
+        Array.from(n.childNodes).forEach(walk);
+        out += '</a>';
+      } else {
+        Array.from(n.childNodes).forEach(walk);
+      }
+      return;
+    }
+    if (mapped) {
+      out += `<${mapped}>`;
+      Array.from(n.childNodes).forEach(walk);
+      out += `</${mapped}>`;
+      return;
+    }
+    // Неизвестный тег (span со стилями от браузера, font и т.п.) — снимаем
+    // тег, оставляя только его содержимое.
+    Array.from(n.childNodes).forEach(walk);
+  }
+  Array.from(container.childNodes).forEach(walk);
+  return out;
+}
+
 function renderTextModal(d) {
   const el = document.getElementById('text-modal-content');
-  const taStyle = 'width:100%;min-height:100px;background:#0d1424;color:#dde;border:1px solid #223;' +
-    'border-radius:6px;padding:8px;font:13px/1.5 monospace;box-sizing:border-box;white-space:pre-wrap';
   el.innerHTML = `
     <div style="font-size:12px;color:#778;margin-bottom:4px">Код: <span style="font-family:monospace;color:#9bc">${esc(d.code)}</span></div>
     <div style="margin-bottom:10px">
@@ -4092,17 +4215,20 @@ function renderTextModal(d) {
     </div>
     <div style="margin-bottom:10px">
       <label style="display:block;font-size:12px;color:#889;margin-bottom:4px">Текст RU</label>
-      <textarea id="txt-ru-input" style="${taStyle}">${esc(d.text_ru||'')}</textarea>
+      ${txtRteToolbar('txt-ru-edit')}
+      <div id="txt-ru-edit" class="rte-edit" contenteditable="true" onkeydown="txtEditorKeydown(event)">${d.text_ru||''}</div>
     </div>
     <div style="margin-bottom:10px">
       <label style="display:block;font-size:12px;color:#889;margin-bottom:4px">Текст EN</label>
-      <textarea id="txt-en-input" style="${taStyle}">${esc(d.text_en||'')}</textarea>
+      ${txtRteToolbar('txt-en-edit')}
+      <div id="txt-en-edit" class="rte-edit" contenteditable="true" onkeydown="txtEditorKeydown(event)">${d.text_en||''}</div>
     </div>
     <div style="margin-bottom:10px">
       <label style="display:block;font-size:12px;color:#889;margin-bottom:4px">Текст KK</label>
-      <textarea id="txt-kk-input" style="${taStyle}">${esc(d.text_kk||'')}</textarea>
+      ${txtRteToolbar('txt-kk-edit')}
+      <div id="txt-kk-edit" class="rte-edit" contenteditable="true" onkeydown="txtEditorKeydown(event)">${d.text_kk||''}</div>
     </div>
-    <div style="font-size:11px;color:#556;margin-bottom:12px">Поддерживается Telegram-разметка: &lt;b&gt;, &lt;i&gt;, &lt;code&gt;, &lt;a href&gt;. Обычный текст — без визуального редактора, чтобы не поломать теги.</div>
+    <div style="font-size:11px;color:#556;margin-bottom:12px">Показано так, как будет выглядеть в Telegram. Выделите текст и нажмите B/I/U для форматирования.</div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-primary" onclick="txtSave(${jsArg(d.code)})">💾 Сохранить</button>
     </div>
@@ -4111,9 +4237,9 @@ function renderTextModal(d) {
 
 async function txtSave(code) {
   const title = document.getElementById('txt-title-input').value;
-  const text_ru = document.getElementById('txt-ru-input').value;
-  const text_en = document.getElementById('txt-en-input').value;
-  const text_kk = document.getElementById('txt-kk-input').value;
+  const text_ru = sanitizeTelegramHtml(document.getElementById('txt-ru-edit'));
+  const text_en = sanitizeTelegramHtml(document.getElementById('txt-en-edit'));
+  const text_kk = sanitizeTelegramHtml(document.getElementById('txt-kk-edit'));
   const statusEl = document.getElementById('txt-save-status');
   statusEl.style.color = '#889';
   statusEl.textContent = 'Сохранение…';
