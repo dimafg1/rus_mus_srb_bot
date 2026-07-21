@@ -134,7 +134,7 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
         rows.append(nav)
     rows.append([InlineKeyboardButton(text=await get_text("releases_btn_search", "ru") or "🔍 Поиск", callback_data="art:search"),
                  InlineKeyboardButton(text=await get_text("artist_btn_add", "ru") or "➕ Добавить исполнителя", callback_data="art:add")])
-    rows.append([InlineKeyboardButton(text=await get_text("artist_btn_go_releases", "ru") or "🎵 Релизы", callback_data="go_releases"), _menu_btn()])
+    rows.append([InlineKeyboardButton(text=await get_text("artist_btn_go_releases", "ru") or "🎵 Релизы", callback_data="go_releases"), await _menu_btn()])
 
     text = await get_text("artist_feed_header", "ru") or "🎤 <b>Исполнители сообщества</b>\n\nСольные артисты, группы и музыкальные проекты."
     if total == 0:
@@ -279,7 +279,7 @@ async def _show_artist_card(cb: CallbackQuery, artist_id: int, src: str = "list"
                    if listing_ref.isdigit() else "go_artists")
     else:
         back_cb = "go_artists"
-    rows.append([await _back_btn(back_cb), _menu_btn()])
+    rows.append([await _back_btn(back_cb), await _menu_btn()])
 
     await _send_screen(cb.bot, cb.message.chat.id, caption,
                        InlineKeyboardMarkup(inline_keyboard=rows),
@@ -334,7 +334,7 @@ async def _render_edit_overview(bot, chat_id: int, user_id: int, artist_id: int)
     rows = [[InlineKeyboardButton(text=field_btn_tmpl.format(label=label),
                                   callback_data=f"art:ef:{code}:{artist_id}")]
             for code, (label, _) in edit_fields.items()]
-    rows.append([await _back_btn(f"art:view:{artist_id}:list"), _menu_btn()])
+    rows.append([await _back_btn(f"art:view:{artist_id}:list"), await _menu_btn()])
     await _send_screen(bot, chat_id, "\n".join(lines),
                        InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -366,7 +366,7 @@ async def artist_edit_field(cb: CallbackQuery, state: FSMContext):
     if field == "type":  # тип — кнопками
         rows = [[InlineKeyboardButton(text=t, callback_data=f"art:etype:{artist_id}:{i}")]
                 for i, t in enumerate(ARTIST_TYPES)]
-        rows.append([await _back_btn(f"art:edit:{artist_id}"), _menu_btn()])
+        rows.append([await _back_btn(f"art:edit:{artist_id}"), await _menu_btn()])
         await _replace_prompt(state, cb.bot, cb.message.chat.id, await get_text("releases_choose_type", "ru") or "Выберите тип:",
                               InlineKeyboardMarkup(inline_keyboard=rows))
         return
@@ -377,7 +377,7 @@ async def artist_edit_field(cb: CallbackQuery, state: FSMContext):
     if field in CLEARABLE:
         rows.append([InlineKeyboardButton(text=await get_text("releases_btn_clear_field", "ru") or "🗑 Очистить поле",
                                           callback_data=f"art:eclr:{artist_id}:{field}")])
-    rows.append([await _back_btn(f"art:edit:{artist_id}"), _menu_btn()])
+    rows.append([await _back_btn(f"art:edit:{artist_id}"), await _menu_btn()])
     await _replace_prompt(state, cb.bot, cb.message.chat.id, hint,
                           InlineKeyboardMarkup(inline_keyboard=rows))
 
