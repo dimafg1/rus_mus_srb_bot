@@ -40,6 +40,7 @@ from app.routers.releases import (
     _send_screen,
 )
 from app.routers.utils import clear_bot_messages, get_text
+from app.moderation import is_muted
 
 router = Router(name="artists")
 router.callback_query.middleware(_MusicEnabledMiddleware())
@@ -147,6 +148,9 @@ async def artists_feed(cb: CallbackQuery, state: FSMContext):
 async def artist_add(cb: CallbackQuery, state: FSMContext):
     """Создание исполнителя без релиза: та же мини-анкета из мастера релизов,
     но финал — карточка исполнителя (artist_flow='standalone')."""
+    if await is_muted(cb.from_user.id):
+        await cb.answer(await get_text("err_user_muted", "ru") or "⛔️ Ваш аккаунт временно ограничен в публикации нового контента. Вы можете написать администратору через «Обратную связь».", show_alert=True)
+        return
     await cb.answer()
     await state.clear()
     await state.update_data(artist_flow="standalone", new_artist=None, created_artist_id=None)

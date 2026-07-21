@@ -47,6 +47,8 @@ from app.keyboards import (
 
 from app.routers.user_extra_fields import start_extra_fields_for_category
 
+from app.moderation import is_muted
+
 from app.routers.utils_category_title import format_category_title
 
 from app.routers.utils_kb import grid3
@@ -190,6 +192,9 @@ async def _photo_skip_kb() -> InlineKeyboardMarkup:
 @router.callback_query(F.data == "service_start")
 async def service_start(cb: CallbackQuery, state: FSMContext):
     """Старт публикации услуги: выбор города (как в Барахолке)."""
+    if await is_muted(cb.from_user.id):
+        await cb.answer(await get_text("err_user_muted", "ru") or "⛔️ Ваш аккаунт временно ограничен в публикации нового контента. Вы можете написать администратору через «Обратную связь».", show_alert=True)
+        return
     await clear_bot_messages(cb.message.chat.id, cb.bot)
     await _clear_album_cache(cb.message.chat.id, cb.bot)
     try: await cb.message.delete()

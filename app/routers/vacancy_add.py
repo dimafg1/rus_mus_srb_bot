@@ -72,6 +72,7 @@ from app.routers.utils_category_title import format_category_title
 # Note: we don't use start_extra_fields_for_category here since vacancy
 # extra fields are handled internally via _start_flex_flow.
 from app.routers.utils import get_text
+from app.moderation import is_muted
 
 from app.routers.vacancy_utils import (
     vacancy_categories_inline_add,
@@ -394,6 +395,9 @@ async def vacancy_preview_and_confirm(m_or_cbmsg, state: FSMContext):
 @router.callback_query(F.data == "vac:new")
 async def vacancy_start(cb: CallbackQuery, state: FSMContext):
     """Entry point for posting a new vacancy."""
+    if await is_muted(cb.from_user.id):
+        await cb.answer(await get_text("err_user_muted", "ru") or "⛔️ Ваш аккаунт временно ограничен в публикации нового контента. Вы можете написать администратору через «Обратную связь».", show_alert=True)
+        return
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.bot)
     try:

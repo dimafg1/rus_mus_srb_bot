@@ -20,6 +20,7 @@ from app.models import City, Category, Listing
 from aiogram.types.input_file import FSInputFile
 
 from app.routers.utils import clear_bot_messages, last_bot_messages, sent_photo_messages, my_listing_messages, delete_photo_prompts, get_text, register_bot_messages
+from app.moderation import is_muted
 # --- Доп. поля категории (универсальный опрос) ---
 # Импортируем функцию запуска мастера доп. полей и константу VAL_KEY
 from app.routers.user_extra_fields import start_extra_fields_for_category, VAL_KEY
@@ -404,6 +405,9 @@ async def send_photo_prompt(m: Message, photo_count: int, state: FSMContext, lan
 # ─────────────────── /sell start ───────────
 @router.message(Command(commands=["sell"]))
 async def cmd_sell(m: Message, state: FSMContext):
+    if await is_muted(m.from_user.id):
+        await m.answer(await get_text("err_user_muted", "ru") or "⛔️ Ваш аккаунт временно ограничен в публикации нового контента. Вы можете написать администратору через «Обратную связь».")
+        return
     await clear_bot_messages(m.chat.id, m.bot)
     await _clear_market_album_cache(m.chat.id, m.bot)
     await state.clear()
@@ -421,6 +425,9 @@ async def cmd_sell(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == "sell_start")
 async def sell_start_button(cb: CallbackQuery, state: FSMContext):
+    if await is_muted(cb.from_user.id):
+        await cb.answer(await get_text("err_user_muted", "ru") or "⛔️ Ваш аккаунт временно ограничен в публикации нового контента. Вы можете написать администратору через «Обратную связь».", show_alert=True)
+        return
     chat_id = cb.message.chat.id
     try:
         await cb.message.delete()

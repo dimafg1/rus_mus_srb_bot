@@ -148,3 +148,10 @@ async def init_db() -> None:
             except Exception as e:
                 if not _is_duplicate_column(e):
                     raise  # колонка уже есть — нормально; остальное — громко наружу
+        # Миграция: ограничение на запись (mute) — бан только на публикацию
+        # нового контента, просмотр разделов остаётся доступен
+        try:
+            await conn.execute(text('ALTER TABLE "BotUser" ADD COLUMN is_muted BOOLEAN NOT NULL DEFAULT 0'))
+        except Exception as e:
+            if not _is_duplicate_column(e):
+                raise  # колонка уже есть — нормально; остальное — громко наружу

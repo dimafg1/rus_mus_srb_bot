@@ -42,6 +42,7 @@ from app.routers.utils import (
     last_bot_messages,
     get_text,
 )
+from app.moderation import is_muted
 
 router = Router(name="releases")
 
@@ -1043,6 +1044,9 @@ async def release_delete(cb: CallbackQuery):
 
 @router.callback_query(F.data == "rel:add")
 async def add_start(cb: CallbackQuery, state: FSMContext):
+    if await is_muted(cb.from_user.id):
+        await cb.answer(await get_text("err_user_muted", "ru") or "⛔️ Ваш аккаунт временно ограничен в публикации нового контента. Вы можете написать администратору через «Обратную связь».", show_alert=True)
+        return
     await cb.answer()
     await state.clear()
     async with SessionLocal() as s:

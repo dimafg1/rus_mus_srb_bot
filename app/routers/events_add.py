@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import re
 
 from app.routers.utils import clear_bot_messages, last_bot_messages, get_text, register_bot_messages, escape_html
+from app.moderation import is_muted
 from app.database import SessionLocal
 from app.events_meta import ensure_events_meta
 from sqlalchemy import text as sql
@@ -584,6 +585,9 @@ async def _render_afisha_edit_overview(chat_id: int, bot, state: FSMContext) -> 
 # Публикация Афиши: вход по кнопке «Разместить»
 @router.callback_query(F.data == "event_new")
 async def afisha_add_entry(cb: CallbackQuery, state: FSMContext):
+    if await is_muted(cb.from_user.id):
+        await cb.answer(await get_text("err_user_muted", "ru") or "⛔️ Ваш аккаунт временно ограничен в публикации нового контента. Вы можете написать администратору через «Обратную связь».", show_alert=True)
+        return
     chat_id = cb.message.chat.id
     print(f"[AFISHA][ENTRY] afisha_add_entry | chat_id={chat_id}")
     try:

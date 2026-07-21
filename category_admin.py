@@ -204,6 +204,13 @@ def migrate():
             conn.execute("ALTER TABLE menu ADD COLUMN text_kk TEXT NOT NULL DEFAULT ''")
             conn.commit()
 
+        # Ограничение на запись (mute) — бан только на публикацию нового
+        # контента, просмотр разделов бота остаётся доступен.
+        botuser_cols = [r[1] for r in conn.execute('PRAGMA table_info("BotUser")').fetchall()]
+        if "is_muted" not in botuser_cols:
+            conn.execute('ALTER TABLE "BotUser" ADD COLUMN is_muted BOOLEAN NOT NULL DEFAULT 0')
+            conn.commit()
+
 
 @app.on_event("startup")
 def _startup_migrate() -> None:
@@ -2317,6 +2324,61 @@ def feature_flags_update(flag_id: int, body: FeatureFlagUpdateBody):
     return {"ok": True}
 
 
+# ─────────────────────────── Пользователи (BotUser) ───────────────────────────
+# is_muted — ограничение ТОЛЬКО на публикацию нового контента (Барахолка/
+# Услуги/Вакансии/Афиша/Исполнители/Релизы), просмотр разделов остаётся
+# доступен. Обратная связь не блокируется — канал апелляции.
+
+@app.get("/api/users")
+def users_list(q: str = Query(""), offset: int = Query(0), limit: int = Query(50)):
+    # SQLite LIKE регистронезависим только для ASCII — кириллицу не сворачивает
+    # (нужно ICU-расширение, которого нет). Поэтому фильтруем в Python через
+    # casefold(), а не SQL LIKE: таблица пользователей небольшая, полная
+    # выборка с фильтрацией — простой и корректный для любого языка вариант.
+    q = (q or "").strip()
+    with db() as conn:
+        all_rows = conn.execute(
+            'SELECT id, user_id, username, full_name, first_seen, last_seen, is_muted '
+            'FROM "BotUser" ORDER BY last_seen DESC'
+        ).fetchall()
+    if q:
+        qcf = q.casefold()
+        q_digits = q.lstrip("-")
+        def matches(r):
+            if q_digits.isdigit() and str(r[1]) == q_digits:
+                return True
+            return qcf in (r[2] or "").casefold() or qcf in (r[3] or "").casefold()
+        filtered = [r for r in all_rows if matches(r)]
+    else:
+        filtered = all_rows
+    total = len(filtered)
+    rows = filtered[offset:offset + limit]
+    return {
+        "total": total,
+        "rows": [{
+            "id": r[0], "user_id": r[1], "username": r[2] or "",
+            "full_name": r[3] or "", "first_seen": r[4] or "", "last_seen": r[5] or "",
+            "is_muted": bool(r[6]),
+        } for r in rows],
+    }
+
+
+class UserMuteBody(BaseModel):
+    is_muted: bool = False
+
+
+@app.post("/api/users/{user_id}/mute")
+def user_mute_update(user_id: int, body: UserMuteBody):
+    with db() as conn:
+        cur = conn.execute(
+            'UPDATE "BotUser" SET is_muted=? WHERE user_id=?',
+            (1 if body.is_muted else 0, user_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Пользователь не найден")
+    return {"ok": True}
+
+
 @app.get("/api/catalog/sections")
 def catalog_sections():
     with db() as conn:
@@ -2906,6 +2968,7 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
   <button class="tab" onclick="switchTab('feedback')">✉️ Обратная связь</button>
   <button class="tab" onclick="switchTab('texts')">📝 Тексты</button>
   <button class="tab" onclick="switchTab('settings')">⚡ Настройки</button>
+  <button class="tab" onclick="switchTab('users')">👤 Пользователи</button>
 </div>
 
 <div id="panel-categories" class="panel active">
@@ -3099,6 +3162,20 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
     Изменение применяется в боте не мгновенно — до 30 секунд (кэш выключателей в отдельном процессе бота).
   </div>
   <div id="feature-flags-content"></div>
+</div>
+
+<div id="panel-users" class="panel">
+  <div class="toolbar">
+    <input type="text" id="user-search" placeholder="Поиск по ID, username или имени…"
+      style="flex:1;min-width:220px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:7px 10px;font:inherit"
+      oninput="userSearchDebounced()">
+    <button class="btn btn-ghost btn-sm" onclick="loadUsers()">↻ Обновить</button>
+  </div>
+  <div style="font-size:11px;color:#556;margin-bottom:12px">
+    «Ограничить» запрещает публикацию нового контента (Барахолка/Услуги/Вакансии/Афиша/Исполнители/Релизы).
+    Просмотр разделов и обратная связь остаются доступны — это не полная блокировка.
+  </div>
+  <div id="users-content"></div>
 </div>
 
 <!-- Text edit modal -->
@@ -3666,7 +3743,7 @@ document.querySelectorAll('.overlay').forEach(o=>{
 });
 
 // ── tabs ──
-const ALL_TABS = ['categories','analytics','catalog','releases','artists','feedback','texts','settings'];
+const ALL_TABS = ['categories','analytics','catalog','releases','artists','feedback','texts','settings','users'];
 function switchTab(section) {
   currentTab=section;
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ALL_TABS[i]===section));
@@ -3680,6 +3757,7 @@ function switchTab(section) {
   else if (section==='texts') txtSetSubtab(txtSubtab);
   else if (section==='categories') catSetSubtab(catSubtab);
   else if (section==='settings') loadFeatureFlags();
+  else if (section==='users') loadUsers();
 }
 
 // ── Категории: под-вкладки Барахолка/Услуги/Вакансии внутри одной вкладки ──
@@ -4436,6 +4514,73 @@ async function featureFlagSave(id) {
     statusEl.style.color = r.ok ? '#7c9' : '#f66';
     statusEl.textContent = r.ok ? '✅' : '⚠️';
     if (r.ok) loadFeatureFlags();
+  } catch(e) {
+    statusEl.style.color = '#f66';
+    statusEl.textContent = '⚠️';
+  }
+}
+
+// ── Пользователи (BotUser) ──
+let userQuery = '';
+let _userSearchTimer = null;
+function userSearchDebounced() {
+  clearTimeout(_userSearchTimer);
+  _userSearchTimer = setTimeout(() => {
+    userQuery = document.getElementById('user-search').value;
+    loadUsers();
+  }, 300);
+}
+
+async function loadUsers() {
+  const el = document.getElementById('users-content');
+  el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  const data = await fetch(`/api/users?q=${encodeURIComponent(userQuery)}&limit=100`).then(r=>r.json());
+  const rows = data.rows || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Пользователи не найдены</div>';
+    return;
+  }
+  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${data.total} пользователей</div>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:#556;font-size:11px;text-align:left">
+      <th style="padding:6px 8px">ID</th>
+      <th style="padding:6px 8px">Username</th>
+      <th style="padding:6px 8px">Имя</th>
+      <th style="padding:6px 8px">Первый визит</th>
+      <th style="padding:6px 8px">Последний визит</th>
+      <th style="padding:6px 8px;text-align:center">Ограничен</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr style="border-top:1px solid #0d1628" id="user-row-${r.user_id}">
+        <td style="padding:7px 8px;font-family:monospace;color:#9bc">${r.user_id}</td>
+        <td style="padding:7px 8px;color:#ccd">${r.username ? '@'+esc(r.username) : '—'}</td>
+        <td style="padding:7px 8px;color:#889">${esc(r.full_name)}</td>
+        <td style="padding:7px 8px;color:#556;font-size:11px;white-space:nowrap">${esc((r.first_seen||'').slice(0,16))}</td>
+        <td style="padding:7px 8px;color:#556;font-size:11px;white-space:nowrap">${esc((r.last_seen||'').slice(0,16))}</td>
+        <td style="padding:7px 8px;text-align:center">
+          <label class="ff-switch">
+            <input type="checkbox" id="user-muted-${r.user_id}" ${r.is_muted?'checked':''} onchange="userMuteToggle(${r.user_id})">
+            <span class="ff-switch-track"></span>
+          </label>
+        </td>
+        <td style="padding:7px 8px"><span id="user-status-${r.user_id}" style="font-size:11px"></span></td>
+      </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+async function userMuteToggle(userId) {
+  const is_muted = document.getElementById(`user-muted-${userId}`).checked;
+  const statusEl = document.getElementById(`user-status-${userId}`);
+  statusEl.style.color = '#889';
+  statusEl.textContent = '…';
+  try {
+    const r = await fetch(`/api/users/${userId}/mute`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({is_muted})
+    }).then(x=>x.json());
+    statusEl.style.color = r.ok ? '#7c9' : '#f66';
+    statusEl.textContent = r.ok ? '✅' : '⚠️';
   } catch(e) {
     statusEl.style.color = '#f66';
     statusEl.textContent = '⚠️';

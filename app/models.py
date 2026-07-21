@@ -272,6 +272,12 @@ class BotUser(SQLModel, table=True):
     first_source: Optional[str] = Field(
         default=None, sa_column=Column(String(64))
     )
+    # Ограничение только на запись (публикация нового контента) — просмотр
+    # разделов бота остаётся доступен. Обратная связь НЕ блокируется этим
+    # полем — это единственный канал апелляции для замьюченного пользователя.
+    is_muted: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default="0")
+    )
 
 
 # ─────────────────────────────────────────────────────────
