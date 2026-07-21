@@ -155,11 +155,21 @@ def photo_keyboard(photo_count: int):
         [InlineKeyboardButton(text="Отмена", callback_data="sell_cancel")]
     ])
 
-def confirm_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
+async def confirm_keyboard(back_callback: str):
+    """Экран подтверждения публикации. back_callback — свой для каждого мастера
+    (сама логика возврата на шаг фото уже реализована в его обработчике «Назад»)."""
+    rows = [
         [InlineKeyboardButton(text="✅ Опубликовать", callback_data="sell_ok")],
         [InlineKeyboardButton(text="❌ Отменить", callback_data="sell_cancel")],
-    ])
+    ]
+    back_btn = await get_common_menu_button('back', 'ru')
+    if back_btn:
+        back_btn.callback_data = back_callback
+        rows.insert(0, [back_btn])
+    main_btn = await get_common_menu_button('main_menu', 'ru')
+    if main_btn:
+        rows.append([main_btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def sold_keyboard(listing_id: int):
     return InlineKeyboardMarkup(

@@ -958,7 +958,7 @@ async def preview_and_confirm(m: Message, state: FSMContext):
         if lines:
             header += "\n\n" + "\n".join(lines)
 
-    kb = confirm_keyboard()
+    kb = await confirm_keyboard("sell_back")
     sent_ids = []
     if photos:
         if len(photos) == 1:

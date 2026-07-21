@@ -380,13 +380,74 @@ async def vacancy_preview_and_confirm(m_or_cbmsg, state: FSMContext):
     )
     if flex_block:
         preview_text += "\n" + flex_block
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    rows = [
         [InlineKeyboardButton(text=(await get_text("vac_add_btn_publish", "ru") or "✅ Опубликовать"), callback_data="vac_publish")],
         [InlineKeyboardButton(text=(await get_text("vac_add_btn_cancel_publish", "ru") or "❌ Отменить"), callback_data="vac_cancel")],
-    ])
+    ]
+    back_btn = await get_common_menu_button('back', 'ru')
+    if back_btn:
+        back_btn.callback_data = "vac_confirm_back"
+        rows.insert(0, [back_btn])
+    main_btn = await get_common_menu_button('main_menu', 'ru')
+    if main_btn:
+        rows.append([main_btn])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     msg = await m_or_cbmsg.answer(preview_text, reply_markup=kb, parse_mode="HTML")
     last_bot_messages.setdefault(m_or_cbmsg.chat.id, []).append(msg.message_id)
     await register_bot_messages(m_or_cbmsg.chat.id, [msg.message_id])
+
+
+# RU: «Назад» с экрана подтверждения — к последнему доп.полю, если они были
+#     у категории, иначе — к шагу цены (тот же экран, что и после описания).
+@router.callback_query(VacForm.confirm, F.data == "vac_confirm_back")
+async def vacancy_confirm_back(cb: CallbackQuery, state: FSMContext):
+    from html import escape as _esc
+
+    chat_id = cb.message.chat.id
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await clear_bot_messages(chat_id, cb.bot)
+
+    data = await state.get_data()
+    fields = data.get("flex_fields") or []
+    if fields:
+        await state.update_data(flex_idx=len(fields) - 1)
+        await _ask_current_flex_field(cb.message, state)
+        await cb.answer()
+        print(f"[vacancy_add.py] vacancy_confirm_back -> flex ✓ | chat_id={chat_id}")
+        return
+
+    await state.set_state(VacForm.price)
+    descr = data.get("descr")
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    back_btn = await get_common_menu_button('back', 'ru')
+    if back_btn:
+        back_btn.callback_data = "vac_add_back:descr"
+        buttons.append([back_btn])
+    main_btn = await get_common_menu_button('main_menu', 'ru')
+    if main_btn:
+        buttons.append([main_btn])
+    nav_msg = await cb.message.answer(
+        (await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML",
+    )
+    await state.update_data(nav_msg_id=nav_msg.message_id)
+
+    tmpl = await get_text('vac_ask_price', 'ru') or "Укажите стоимость оплаты или нажмите на нужную кнопку:"
+    title = _esc(data.get("title") or "—")
+    already_entered_title_descr_tmpl = await get_text("vac_add_already_entered_title_descr_tmpl", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n• Описание: <i>{descr}</i>"
+    helper = already_entered_title_descr_tmpl.format(title=title, descr=_esc(descr) if descr else "—")
+    kb_quick = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=(await get_text("btn_free", "ru") or "Бесплатно"), callback_data="vac_price_choice:free"),
+        InlineKeyboardButton(text=(await get_text("btn_by_agreement", "ru") or "По договоренности"), callback_data="vac_price_choice:deal"),
+    ]])
+    prompt_msg = await cb.message.answer(f"{helper}\n\n{tmpl}", reply_markup=kb_quick, parse_mode="HTML")
+    await state.update_data(prompt_id=prompt_msg.message_id)
+    await cb.answer()
+    print(f"[vacancy_add.py] vacancy_confirm_back -> price ✓ | chat_id={chat_id}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

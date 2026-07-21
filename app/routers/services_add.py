@@ -747,7 +747,7 @@ async def _preview_and_confirm(m: Message, state: FSMContext):
     if lines:
         header += "\n".join(lines)
 
-    kb = confirm_keyboard()
+    kb = await confirm_keyboard("services:back")
     sent_ids = []
     if photos:
         if len(photos) == 1:

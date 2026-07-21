@@ -144,28 +144,35 @@ async def _photo_editor_kb(listing_id: int, draft: list[str]) -> InlineKeyboardM
     if back_btn:
         back_btn.callback_data = f"sphoto:back:{listing_id}"
         rows.append([back_btn])
+    main_btn = await get_common_menu_button('main_menu')
+    if main_btn:
+        rows.append([main_btn])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _cancel_kb(listing_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=await get_text("photo_edit_btn_cancel", "ru") or "⬅️ Отмена", callback_data=f"sphoto:cancel:{listing_id}")]
-        ]
-    )
+    rows = [
+        [InlineKeyboardButton(text=await get_text("photo_edit_btn_cancel", "ru") or "⬅️ Отмена", callback_data=f"sphoto:cancel:{listing_id}")]
+    ]
+    main_btn = await get_common_menu_button('main_menu')
+    if main_btn:
+        rows.append([main_btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _confirm_kb(listing_id: int) -> InlineKeyboardMarkup:
     cancel_text = await get_text("photo_edit_btn_cancel", "ru") or "⬅️ Отмена"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=await get_text("photo_edit_btn_confirm", "ru") or "✅ Подтвердить", callback_data=f"sphoto:apply:{listing_id}"),
-                InlineKeyboardButton(text=cancel_text, callback_data=f"sphoto:cancel:{listing_id}")
-            ]
+    rows = [
+        [
+            InlineKeyboardButton(text=await get_text("photo_edit_btn_confirm", "ru") or "✅ Подтвердить", callback_data=f"sphoto:apply:{listing_id}"),
+            InlineKeyboardButton(text=cancel_text, callback_data=f"sphoto:cancel:{listing_id}")
         ]
-    )
+    ]
+    main_btn = await get_common_menu_button('main_menu')
+    if main_btn:
+        rows.append([main_btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _clear_pending_action(state: FSMContext):

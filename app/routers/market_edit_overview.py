@@ -140,13 +140,38 @@ async def _get_city_cat(s, listing: Listing):
     return city, cat
 
 async def _load_category_fields(s, cat_id: int) -> list[dict]:
-    cat = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
-    try:
-        raw = (cat.fields or "").strip()
-        data = json.loads(raw) if raw else []
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+    """Собрать flex-поля по цепочке parent_id снизу вверх (как utils._flex_labels_for_category,
+    но с полными определениями полей, не только лейблами) — дочерняя категория
+    переопределяет родительскую при совпадении key."""
+    chain = []
+    cur_id = cat_id
+    guard = 0
+    while cur_id and guard < 10:
+        guard += 1
+        cat = await s.get(Category, cur_id)
+        if not cat:
+            break
+        chain.append(cat)
+        cur_id = cat.parent_id
+
+    merged: dict[str, dict] = {}
+    for cat in reversed(chain):
+        if not cat.fields:
+            continue
+        try:
+            defs = json.loads(cat.fields)
+        except Exception:
+            continue
+        if not isinstance(defs, list):
+            continue
+        for f in defs:
+            if not isinstance(f, dict):
+                continue
+            key = str(f.get("key", "")).strip().lower()
+            if not key:
+                continue
+            merged[key] = f
+    return list(merged.values())
 
 
 async def _extra_field_def(s, listing: Listing, key: str) -> dict | None:
@@ -215,10 +240,14 @@ async def _fmt(val):
     return html_escape(str(val))
 
 async def _controls_cancel(listing_id: int):
-    # Только «Отменить» (возврат к списку полей)
-    return InlineKeyboardMarkup(inline_keyboard=[
+    # «Отменить» (возврат к списку полей) + «Главное меню»
+    rows = [
         [InlineKeyboardButton(text=(await get_text("market_edit_btn_cancel", "ru") or "❎ Отменить"), callback_data=f"ef:cancel:{listing_id}")],
-    ])
+    ]
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        rows.append([main_menu_btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _ctx(ev):
     if isinstance(ev, CallbackQuery):
@@ -655,6 +684,9 @@ async def ef_edit_extra(cb: CallbackQuery, state: FSMContext):
         ], [
             InlineKeyboardButton(text=(await get_text("market_edit_btn_cancel", "ru") or "❎ Отменить"), callback_data=f"ef:cancel:{listing_id}")
         ]]
+        main_menu_btn = await get_common_menu_button('main_menu')
+        if main_menu_btn:
+            rows.append([main_menu_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         choice_prompt_tmpl = await get_text("market_edit_extra_prompt_choice_tmpl", "ru") or "{title}\n\n{cur_line}\n\nВыберите вариант:"
         msg = await cb.message.answer(choice_prompt_tmpl.format(title=title, cur_line=cur_line), reply_markup=kb, parse_mode="HTML")
@@ -700,6 +732,9 @@ async def ef_edit_extra(cb: CallbackQuery, state: FSMContext):
         row_len = 3 if len(buttons) > 6 else 2
         rows = [buttons[i:i+row_len] for i in range(0, len(buttons), row_len)] if buttons else []
         rows.append([InlineKeyboardButton(text=(await get_text("market_edit_btn_cancel", "ru") or "❎ Отменить"), callback_data=f"ef:cancel:{listing_id}")])
+        main_menu_btn = await get_common_menu_button('main_menu')
+        if main_menu_btn:
+            rows.append([main_menu_btn])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         choice_prompt_tmpl = await get_text("market_edit_extra_prompt_choice_tmpl", "ru") or "{title}\n\n{cur_line}\n\nВыберите вариант:"
         msg = await cb.message.answer(choice_prompt_tmpl.format(title=title, cur_line=cur_line), reply_markup=kb, parse_mode="HTML")
@@ -1060,7 +1095,9 @@ async def extra_open_market(cb: CallbackQuery, state: FSMContext):
     if cat2:
         kb_rows.append([InlineKeyboardButton(text=del_extra_tmpl.format(name=cat2.name), callback_data=f"mextra:del:{listing_id}:2")])
     kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
-
+    main_menu_btn = await get_common_menu_button('main_menu')
+    if main_menu_btn:
+        kb_rows.append([main_menu_btn])
 
     msg = await cb.message.answer(
         extra_menu_tmpl.format(title=html_escape(listing.title or ''), used=used),
@@ -1171,6 +1208,9 @@ async def mextra_del_market(cb: CallbackQuery, state: FSMContext):
         if cat2:
             kb_rows.append([InlineKeyboardButton(text=del_extra_tmpl.format(name=cat2.name), callback_data=f"mextra:del:{listing_id}:2")])
         kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
+        main_menu_btn = await get_common_menu_button('main_menu')
+        if main_menu_btn:
+            kb_rows.append([main_menu_btn])
 
     # Показ обновлённого мини-меню (остаёмся на месте)
     extra_menu_tmpl = await get_text("services_edit_extra_menu_tmpl", "ru") or "Доп. категории для «{title}»\nЗанято слотов: {used}/2"
@@ -1246,6 +1286,9 @@ async def mextra_add_market(cb: CallbackQuery, state: FSMContext):
         cats = (await s.execute(select(Category).where(Category.parent_id == 30))).scalars().all()
         rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in cats]
         rows.append(await _back_row(f"mextra:back:{listing_id}"))
+        main_menu_btn = await get_common_menu_button('main_menu')
+        if main_menu_btn:
+            rows.append([main_menu_btn])
 
     msg = await cb.message.answer(
         (await get_text("market_edit_choose_extra_category", "ru") or "Выберите категорию (Барахолка):"),
@@ -1308,6 +1351,9 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
                 rows.append(await _back_row(f"mextra:up:{listing_id}:{cat.parent_id}"))
             else:
                 rows.append(await _back_row(f"mextra:add:{listing_id}"))
+            main_menu_btn = await get_common_menu_button('main_menu')
+            if main_menu_btn:
+                rows.append([main_menu_btn])
 
             msg = await cb.message.answer(
                 subcat_tmpl.format(name=html_escape(cat.name or '')),
@@ -1337,9 +1383,11 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
             await cb.answer(await get_text("market_edit_extra_wrong_branch", "ru") or "Можно выбирать только категории Барахолки.", show_alert=True)
             print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT branch chat_id={chat_id} cat_id={cat_id}")
             back_cb = f"mextra:up:{listing_id}:{cat.parent_id}" if (cat.parent_id and cat.parent_id != 30) else f"mextra:add:{listing_id}"
-            back_msg = await cb.message.answer((await get_text("market_edit_choose_extra_category", "ru") or "Выберите категорию (Барахолка):"), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                await _back_row(back_cb)
-            ]))
+            _reject_rows = [await _back_row(back_cb)]
+            _main_menu_btn = await get_common_menu_button('main_menu')
+            if _main_menu_btn:
+                _reject_rows.append([_main_menu_btn])
+            back_msg = await cb.message.answer((await get_text("market_edit_choose_extra_category", "ru") or "Выберите категорию (Барахолка):"), reply_markup=InlineKeyboardMarkup(inline_keyboard=_reject_rows))
             last_bot_messages[chat_id] = [back_msg.message_id]
             await register_bot_messages(chat_id, [back_msg.message_id])
             await cb.answer()
@@ -1348,10 +1396,12 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
         if cat_id == listing.category_id:
             await cb.answer(await get_text("services_edit_extra_same_as_main", "ru") or "Нельзя выбирать основную категорию объявления.", show_alert=True)
             print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT base chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
+            _reject_rows = [await _back_row(f"mextra:add:{listing_id}")]
+            _main_menu_btn = await get_common_menu_button('main_menu')
+            if _main_menu_btn:
+                _reject_rows.append([_main_menu_btn])
             back_msg = await cb.message.answer(await get_text("market_edit_choose_another_extra_category", "ru") or "Выберите другую категорию (Барахолка):",
-                                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                                   await _back_row(f"mextra:add:{listing_id}")
-                                               ]),
+                                               reply_markup=InlineKeyboardMarkup(inline_keyboard=_reject_rows),
                                                parse_mode="HTML")
             last_bot_messages[chat_id] = [back_msg.message_id]
             await register_bot_messages(chat_id, [back_msg.message_id])
@@ -1361,10 +1411,12 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
         if listing.extra_category_id1 == cat_id or listing.extra_category_id2 == cat_id:
             await cb.answer(await get_text("services_edit_extra_duplicate", "ru") or "Такая доп. категория уже выбрана.", show_alert=True)
             print(f"[market_edit_overview.py] handler=mextra_pick_market REJECT dup chat_id={chat_id} listing_id={listing_id} cat_id={cat_id}")
+            _reject_rows = [await _back_row(f"mextra:add:{listing_id}")]
+            _main_menu_btn = await get_common_menu_button('main_menu')
+            if _main_menu_btn:
+                _reject_rows.append([_main_menu_btn])
             back_msg = await cb.message.answer(await get_text("market_edit_choose_another_extra_category", "ru") or "Выберите другую категорию (Барахолка):",
-                                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                                   await _back_row(f"mextra:add:{listing_id}")
-                                               ]),
+                                               reply_markup=InlineKeyboardMarkup(inline_keyboard=_reject_rows),
                                                parse_mode="HTML")
             last_bot_messages[chat_id] = [back_msg.message_id]
             await register_bot_messages(chat_id, [back_msg.message_id])
@@ -1382,6 +1434,9 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
             if cat2:
                 kb_rows.append([InlineKeyboardButton(text=del_extra_tmpl.format(name=cat2.name), callback_data=f"mextra:del:{listing_id}:2")])
             kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
+            main_menu_btn = await get_common_menu_button('main_menu')
+            if main_menu_btn:
+                kb_rows.append([main_menu_btn])
             msg = await cb.message.answer(
                 extra_menu_tmpl.format(title=html_escape(listing.title or ''), used=2),
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
@@ -1413,6 +1468,9 @@ async def mextra_pick_market(cb: CallbackQuery, state: FSMContext):
         if cat2:
             kb_rows.append([InlineKeyboardButton(text=del_extra_tmpl.format(name=cat2.name), callback_data=f"mextra:del:{listing_id}:2")])
         kb_rows.append(await _back_row(f"mextra:back:{listing_id}"))
+        main_menu_btn = await get_common_menu_button('main_menu')
+        if main_menu_btn:
+            kb_rows.append([main_menu_btn])
 
     msg = await cb.message.answer(
         extra_menu_tmpl.format(title=html_escape(listing.title or ''), used=used),
@@ -1463,6 +1521,9 @@ async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
             cats = (await s.execute(select(Category).where(Category.parent_id == 30))).scalars().all()
             rows = [[InlineKeyboardButton(text=c.name, callback_data=f"mextra:pick:{listing_id}:{c.id}")] for c in cats]
             rows.append(await _back_row(f"mextra:back:{listing_id}"))
+            main_menu_btn = await get_common_menu_button('main_menu')
+            if main_menu_btn:
+                rows.append([main_menu_btn])
             msg = await cb.message.answer(
                 (await get_text("market_edit_choose_extra_category", "ru") or "Выберите категорию (Барахолка):"),
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -1480,6 +1541,9 @@ async def mextra_up_market(cb: CallbackQuery, state: FSMContext):
             rows.append(await _back_row(f"mextra:up:{listing_id}:{parent.parent_id}"))
         else:
             rows.append(await _back_row(f"mextra:add:{listing_id}"))
+        main_menu_btn = await get_common_menu_button('main_menu')
+        if main_menu_btn:
+            rows.append([main_menu_btn])
 
     msg = await cb.message.answer(
         subcat_tmpl.format(name=html_escape(parent.name or '')),
