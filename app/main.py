@@ -33,7 +33,6 @@ from app.routers.market_edit_photos import router as market_edit_photos_router
 from app.routers.services_add import router as services_add_router
 from app.routers.services_view import router as services_view_router
 from app.routers.services_edit_overview import router as services_edit_overview_router
-from app.routers.services_edit import router as services_edit_router
 from app.routers.services_edit_photos import router as services_edit_photos_router
 
 
@@ -312,7 +311,6 @@ dp.include_router(admin_panel_router)
 dp.include_router(admin_analytics_router)
 dp.include_router(admin_fields_router)
 dp.include_router(market_edit_overview_router)
-dp.include_router(services_edit_router)
 dp.include_router(market_edit_photos_router)
 dp.include_router(vacancy_add_router)
 dp.include_router(vacancy_view_router)
@@ -714,6 +712,10 @@ async def main():
     from app.lifecycle_worker import lifecycle_worker
     lifecycle_task = asyncio.create_task(lifecycle_worker(bot))
 
+    # Чистка брошенных черновиков fsmstate (раз в сутки, TTL 30 дней)
+    from app.fsm_cleanup_worker import fsm_cleanup_worker
+    fsm_cleanup_task = asyncio.create_task(fsm_cleanup_worker())
+
     # Тихая и корректная остановка по Ctrl+C / SIGTERM
     try:
 
@@ -731,6 +733,15 @@ async def main():
             logging.getLogger("app.main").exception(
                 "Lifecycle worker stopped with an error", exc_info=exc
             )
+        fsm_cleanup_task.cancel()
+        try:
+            await fsm_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logging.getLogger("app.main").exception(
+                "FSM cleanup worker stopped with an error", exc_info=exc
+            )
         # Закрываем HTTP-сессию бота и прочие ресурсы
         try:
             await bot.session.close()
@@ -740,6 +751,8 @@ async def main():
         print("Bot stopped gracefully.")
 
 if __name__ == "__main__":
+    from app.single_instance import acquire_or_exit
+    acquire_or_exit()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

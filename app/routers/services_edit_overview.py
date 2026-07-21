@@ -244,12 +244,6 @@ def _pp(file, fn, chat_id=None, user_id=None, listing_id=None, field=None, msg_i
     if extra is not None:     tail.append(f"extra={extra}")
     print(f"[{file}] {fn} ✓ | " + " ".join(tail))
 
-# Короткое RU-пояснение: достать первый int из callback_data (для алиасов).
-def _extract_first_int(text: str):
-    """Извлечь первый целочисленный id из callback_data."""
-    m = re.search(r"(\d+)", text or "")
-    return int(m.group(1)) if m else None
-
 # -----------------------------------------------------------------------------
 # Рендер обзора «как в Барахолке»
 # -----------------------------------------------------------------------------
@@ -326,23 +320,6 @@ async def _build_overview_text(listing: Listing, city: City | None, cat: Categor
 #     dummy = _DummyCb(bot, chat_id)
 #     msg = await _sv_send_yt_button(dummy, video_url, listing_id)
 #     return getattr(msg, "message_id", None)
-
-
-# Короткое RU-пояснение: извлечь значение видео из flex по схеме полей.
-def _extract_video_value(defs: list[dict], flex_vals: dict):
-    """Вернуть (video_key, video_value) если найдено; иначе (None, None)."""
-    if not defs: return (None, None)
-    video_key = None
-    for fdef in defs:
-        if str(fdef.get("type","")).strip().lower() == "video":
-            video_key = (str(fdef.get("key","")).strip().lower() or "video")
-            break
-    if not video_key: return (None, None)
-    if not isinstance(flex_vals, dict): return (video_key, None)
-    for k, v in flex_vals.items():
-        if str(k).strip().lower() == video_key:
-            return (video_key, v)
-    return (video_key, None)
 
 
 # ─────────────────────────────────────────────────────────
@@ -452,8 +429,8 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
                 media = [InputMediaPhoto(media=pid) for pid in photo_ids]
                 pmsgs = await bot.send_media_group(chat_id, media=media)
                 message_ids.extend([m.message_id for m in pmsgs])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[services_edit_overview.py] _render_overview ✗ photo_send_failed | chat_id={chat_id} listing_id={listing_id} | {type(e).__name__}: {e}")
 
     msg = await answer_method(
         text,
@@ -477,8 +454,8 @@ async def _render_overview(chat_id: int, bot, answer_method, listing_id: int):
                 try:
                     vmsg2 = await bot.send_message(chat_id, sval)
                     message_ids.append(vmsg2.message_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[services_edit_overview.py] _render_overview ✗ video_fallback_failed | chat_id={chat_id} listing_id={listing_id} | {type(e).__name__}: {e}")
 
     # 8) регистрируем для последующей зачистки
     last_bot_messages[chat_id] = message_ids
@@ -513,39 +490,6 @@ async def service_edit_overview(cb: CallbackQuery):
     await cb.answer()
     _pp("services_edit_overview.py", "service_edit_overview", chat_id=chat_id, user_id=cb.from_user.id, listing_id=listing_id, msg_id=cb.message.message_id)
 
-# Короткое RU-пояснение: алиасы на случай других префиксов.
-@router.callback_query(F.data.startswith("services_edit_overview:"))
-async def services_edit_overview_alias(cb: CallbackQuery):
-    """Алиас входа: 'services_edit_overview:{id}'."""
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.message.bot)
-    listing_id = _extract_first_int(cb.data)
-    if not listing_id:
-        await cb.answer(await get_text("err_invalid_id", "ru") or "Некорректный идентификатор.", show_alert=True)
-        print(f"[services_edit_overview.py] services_edit_overview_alias ✗ bad_id | data={cb.data}")
-        return
-    if not await _authorize_service_callback(cb, listing_id):
-        return
-    await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
-    await cb.answer()
-    _pp("services_edit_overview.py", "services_edit_overview_alias", chat_id=chat_id, user_id=cb.from_user.id, listing_id=listing_id, msg_id=cb.message.message_id)
-
-@router.callback_query(F.data.startswith("sv:edit:"))
-async def sv_edit_alias(cb: CallbackQuery):
-    """Алиас входа: поддержка 'sv:edit:{listing_id}[:...]'."""
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.message.bot)
-    listing_id = _extract_first_int(cb.data)
-    if not listing_id:
-        await cb.answer(await get_text("err_invalid_id", "ru") or "Некорректный идентификатор.", show_alert=True)
-        print(f"[services_edit_overview.py] sv_edit_alias ✗ bad_id | data={cb.data}")
-        return
-    if not await _authorize_service_callback(cb, listing_id):
-        return
-    await _render_overview(chat_id, cb.message.bot, cb.message.answer, listing_id)
-    await cb.answer()
-    _pp("services_edit_overview.py", "sv_edit_alias", chat_id=chat_id, user_id=cb.from_user.id, listing_id=listing_id, extra=cb.data, msg_id=cb.message.message_id)
-
 # -----------------------------------------------------------------------------
 # Основные поля: ввод → запись → возврат к обзору
 # -----------------------------------------------------------------------------
@@ -579,7 +523,11 @@ async def sef_main_title(cb: CallbackQuery, state: FSMContext):
     """Начать редактирование заголовка (title)."""
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
-    listing_id = int(cb.data.split(":")[3])
+    try:
+        listing_id = int(cb.data.split(":")[3])
+    except Exception:
+        await cb.answer(await get_text("err_invalid_id", "ru") or "Некорректный идентификатор.", show_alert=True)
+        return
     if not await _authorize_service_callback(cb, listing_id):
         return
 
@@ -600,7 +548,11 @@ async def sef_main_descr(cb: CallbackQuery, state: FSMContext):
     """Начать редактирование описания (descr)."""
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
-    listing_id = int(cb.data.split(":")[3])
+    try:
+        listing_id = int(cb.data.split(":")[3])
+    except Exception:
+        await cb.answer(await get_text("err_invalid_id", "ru") or "Некорректный идентификатор.", show_alert=True)
+        return
     if not await _authorize_service_callback(cb, listing_id):
         return
 
@@ -619,7 +571,11 @@ async def sef_main_price(cb: CallbackQuery, state: FSMContext):
     """Начать редактирование цены (price)."""
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
-    listing_id = int(cb.data.split(":")[3])
+    try:
+        listing_id = int(cb.data.split(":")[3])
+    except Exception:
+        await cb.answer(await get_text("err_invalid_id", "ru") or "Некорректный идентификатор.", show_alert=True)
+        return
     if not await _authorize_service_callback(cb, listing_id):
         return
 
@@ -687,8 +643,12 @@ async def sefx_start(cb: CallbackQuery, state: FSMContext):
     """Начать ввод flex-поля (text/textarea/number/checkbox/select/multiselect/video как строка)."""
     chat_id = cb.message.chat.id
     await clear_bot_messages(chat_id, cb.message.bot)
-    _, _, key, listing_id_str = cb.data.split(":")
-    listing_id = int(listing_id_str)
+    try:
+        _, _, key, listing_id_str = cb.data.split(":")
+        listing_id = int(listing_id_str)
+    except Exception:
+        await cb.answer(await get_text("err_invalid_id", "ru") or "Некорректный идентификатор.", show_alert=True)
+        return
     if not await _authorize_service_callback(cb, listing_id):
         return
 

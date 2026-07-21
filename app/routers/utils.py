@@ -169,7 +169,7 @@ async def delete_photo_prompts(message: Message, state: FSMContext):
         except Exception:
             pass
     await state.update_data(photo_prompt_msgs=[])
-    print(f"[services_add.py] delete_photo_prompts ✓ | chat_id={message.chat.id} | ids={ids}")
+    print(f"[utils.py] delete_photo_prompts ✓ | chat_id={message.chat.id} | ids={ids}")
 
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton

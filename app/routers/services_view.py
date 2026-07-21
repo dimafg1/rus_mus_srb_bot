@@ -350,7 +350,10 @@ async def sv_city(cb: CallbackQuery):
     except Exception: pass
 
     async with SessionLocal() as s:
-        city = (await s.execute(select(City).where(City.id == city_id))).scalar_one()
+        city = (await s.execute(select(City).where(City.id == city_id))).scalar_one_or_none()
+        if city is None:
+            await cb.answer(await get_text("services_add_city_not_found", "ru") or "Город не найден.", show_alert=True)
+            return
         cats = (await s.execute(
             select(Category).where(Category.parent_id == SERVICES_ROOT_CATEGORY_ID).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
@@ -390,8 +393,11 @@ async def sv_cat(cb: CallbackQuery):
         pass
 
     async with SessionLocal() as s:
-        city = (await s.execute(select(City).where(City.id == city_id))).scalar_one()
-        cat  = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one()
+        city = (await s.execute(select(City).where(City.id == city_id))).scalar_one_or_none()
+        cat  = (await s.execute(select(Category).where(Category.id == cat_id))).scalar_one_or_none()
+        if city is None or cat is None:
+            await cb.answer(await get_text("services_add_city_or_cat_gone", "ru") or "Город или категория больше недоступны.", show_alert=True)
+            return
         children = (await s.execute(
             select(Category).where(Category.parent_id == cat_id).order_by(sql_text("order_num"), Category.name)
         )).scalars().all()
@@ -419,7 +425,10 @@ async def sv_cat(cb: CallbackQuery):
                 return
 
             # назад к подкатегориям родителя (сиблинги)
-            parent = (await s.execute(select(Category).where(Category.id == parent_id))).scalar_one()
+            parent = (await s.execute(select(Category).where(Category.id == parent_id))).scalar_one_or_none()
+            if parent is None:
+                await cb.answer(await get_text("services_add_city_or_cat_gone", "ru") or "Город или категория больше недоступны.", show_alert=True)
+                return
             siblings = (await s.execute(
                 select(Category).where(Category.parent_id == parent_id).order_by(sql_text("order_num"), Category.name)
             )).scalars().all()
@@ -1097,24 +1106,6 @@ async def my_services_page(cb: CallbackQuery):
 # callback_data `services_search`, поэтому заглушка удалена, чтобы не перехватывать запрос.
 
 
-# ───────────── Назад в главное меню бота ────────────────────────────────────
-
-@router.callback_query(F.data == "go_services_menu_back")
-async def go_services_menu_back(cb: CallbackQuery):
-    """Возврат в главное меню бота."""
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
-    try: await cb.message.delete()
-    except Exception: pass
-
-    markup = await build_main_menu()
-    text = await get_text("bot_welcome", "ru") or "Бот русского музыкального сообщества Сербии."
-    msg = await cb.bot.send_message(chat_id, text, reply_markup=markup)
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-    await cb.answer()
-    print(f"[services_view.py] go_services_menu_back ✓ | chat_id={chat_id} user_id={cb.from_user.id} msg_id={msg.message_id}")
-
 # ───────────────────────────── «ПОИСК УСЛУГ» ────────────────────────────────
 
 @router.callback_query(F.data == "services_search_back")
@@ -1527,40 +1518,6 @@ async def services_search_new(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ServiceSearch.waiting_for_query)
     await cb.answer()
     print(f"[services_view.py] services_search_new ✓ | chat_id={chat_id}")
-
-
-@router.callback_query(F.data == "services_menu_back")
-async def services_menu_back(cb: CallbackQuery, state: FSMContext):
-    chat_id = cb.message.chat.id
-
-    # Сбрасываем хвосты поиска
-    services_search_ctx_by_chat.pop(chat_id, None)
-
-    # Удаляем служебные сообщения поиска
-    for mid in (services_last_search_menu_message.pop(chat_id, None),
-                services_last_search_query_message.pop(chat_id, None)):
-        if mid:
-            try:
-                await cb.bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
-
-    # Очистка FSM и возврат в меню Услуг
-    await clear_bot_messages(chat_id, cb.bot)
-    try:
-        await state.clear()
-    except Exception:
-        pass
-
-    kb = await _services_main_menu_kb()
-    title = await get_text("services_menu_title", "ru") or "Раздел «Услуги». Выберите действие:"
-    msg = await cb.message.answer(title, reply_markup=kb)
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-
-    await cb.answer()
-    print(f"[services_view.py] services_menu_back ✓ | chat_id={chat_id} user_id={cb.from_user.id}")
-
 
 
 @router.callback_query(F.data.startswith("services_search_page:"))

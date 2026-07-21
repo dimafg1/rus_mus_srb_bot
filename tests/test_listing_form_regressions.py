@@ -150,11 +150,9 @@ class ListingFormHelperTests(unittest.IsolatedAsyncioTestCase):
 
 class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
-        services_add.media_group_cache.clear()
         services_add.media_group_tasks.clear()
         services_add.media_group_wait_msg.clear()
         services_add._service_publish_locks.clear()
-        market_add.media_group_cache.clear()
         market_add.media_group_tasks.clear()
         market_add.media_group_wait_msg.clear()
         vacancy_add._vacancy_publish_locks.clear()
@@ -266,9 +264,10 @@ class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_service_album_of_three_reaches_confirmation(self):
         key = (1001, "album")
-        services_add.media_group_cache[key] = ["photo-0", "photo-1", "photo-2"]
+        # Фото альбома уже записаны в FSM по прибытии (см. service_photo) —
+        # finalize_album их только читает, не мержит из отдельного кэша.
         state = FakeState(
-            {"photos": []},
+            {"photos": ["photo-0", "photo-1", "photo-2"]},
             current_state=services_add.ServiceForm.photo.state,
         )
         message = SimpleNamespace(
@@ -288,18 +287,76 @@ class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.current_state, services_add.ServiceForm.confirm.state)
         preview.assert_awaited_once()
 
+    async def test_service_album_photo_persists_to_fsm_immediately(self):
+        """Фото альбома должно попасть в FSM (БД) сразу по прибытии, а не только
+        после debounce-финализации — иначе рестарт бота в этом окне теряет
+        уже присланные фото (см. CLAUDE.md, «потеря альбома фото»)."""
+        key = (1001, "live-service-album")
+        state = FakeState(
+            {"photos": []},
+            current_state=services_add.ServiceForm.photo.state,
+        )
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=1001),
+            bot=SimpleNamespace(),
+            from_user=SimpleNamespace(id=17),
+            message_id=1,
+            media_group_id="live-service-album",
+            photo=[SimpleNamespace(file_id="photo-0")],
+            answer=AsyncMock(return_value=SimpleNamespace(message_id=999)),
+            delete=AsyncMock(),
+        )
+        with (
+            patch.object(services_add, "get_text", AsyncMock(return_value=None)),
+            patch.object(services_add, "_finalize_album", AsyncMock()),
+            patch("builtins.print"),
+        ):
+            await services_add.service_photo(message, state)
+            task = services_add.media_group_tasks.get(key)
+            if task:
+                await task
+
+        self.assertEqual(state.values["photos"], ["photo-0"])
+
+    async def test_market_album_photo_persists_to_fsm_immediately(self):
+        key = (1001, "live-market-album")
+        state = FakeState(
+            {"photos": []},
+            current_state=market_add.Sell.photo.state,
+        )
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=1001),
+            bot=SimpleNamespace(),
+            from_user=SimpleNamespace(id=17),
+            message_id=1,
+            media_group_id="live-market-album",
+            photo=[SimpleNamespace(file_id="photo-0")],
+            answer=AsyncMock(return_value=SimpleNamespace(message_id=999)),
+            delete=AsyncMock(),
+        )
+        with (
+            patch.object(market_add, "get_text", AsyncMock(return_value=None)),
+            patch.object(market_add, "finalize_album", AsyncMock()),
+            patch("builtins.print"),
+        ):
+            await market_add.sell_photo(message, state)
+            task = market_add.media_group_tasks.get(key)
+            if task:
+                await task
+
+        self.assertEqual(state.values["photos"], ["photo-0"])
+
     async def test_album_cleanup_is_isolated_by_chat(self):
-        services_add.media_group_cache[(1, "album-a")] = ["a"]
-        services_add.media_group_cache[(2, "album-b")] = ["b"]
+        services_add.media_group_wait_msg[(1, "album-a")] = 11
+        services_add.media_group_wait_msg[(2, "album-b")] = 22
 
         await services_add._clear_album_cache(1)
 
-        self.assertNotIn((1, "album-a"), services_add.media_group_cache)
-        self.assertEqual(services_add.media_group_cache[(2, "album-b")], ["b"])
+        self.assertNotIn((1, "album-a"), services_add.media_group_wait_msg)
+        self.assertEqual(services_add.media_group_wait_msg[(2, "album-b")], 22)
 
     async def test_service_album_cannot_resurrect_cleared_form(self):
         key = (1001, "stale-service-album")
-        services_add.media_group_cache[key] = ["photo"]
         services_add.media_group_wait_msg[key] = 55
         state = FakeState(current_state=None)
         message = SimpleNamespace(
@@ -315,16 +372,15 @@ class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
             await services_add._finalize_album(message, state, key)
 
         self.assertEqual(state.values, {})
-        self.assertNotIn(key, services_add.media_group_cache)
+        self.assertNotIn(key, services_add.media_group_wait_msg)
         preview.assert_not_awaited()
         prompt.assert_not_awaited()
 
     async def test_market_album_cleanup_is_per_chat_and_stale_safe(self):
         stale = (1001, "stale-market-album")
         other = (2002, "other-market-album")
-        market_add.media_group_cache[stale] = ["stale"]
-        market_add.media_group_cache[other] = ["other"]
         market_add.media_group_wait_msg[stale] = 77
+        market_add.media_group_wait_msg[other] = 88
         state = FakeState(current_state=None)
         message = SimpleNamespace(
             chat=SimpleNamespace(id=1001),
@@ -339,8 +395,8 @@ class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
             await market_add.finalize_album(message, state, stale)
 
         self.assertEqual(state.values, {})
-        self.assertNotIn(stale, market_add.media_group_cache)
-        self.assertEqual(market_add.media_group_cache[other], ["other"])
+        self.assertNotIn(stale, market_add.media_group_wait_msg)
+        self.assertEqual(market_add.media_group_wait_msg[other], 88)
         preview.assert_not_awaited()
         prompt.assert_not_awaited()
 

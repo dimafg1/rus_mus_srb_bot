@@ -65,7 +65,6 @@ router = Router(name="market_addl")
 # Telegram не гарантирует уникальность media_group_id между разными чатами,
 # поэтому все временные данные изолированы ключом (chat_id, media_group_id).
 AlbumKey = tuple[int, str]
-media_group_cache: dict[AlbumKey, list[str]] = {}
 media_group_tasks: dict[AlbumKey, asyncio.Task | None] = {}
 media_group_wait_msg: dict[AlbumKey, int] = {}
 
@@ -73,15 +72,13 @@ media_group_wait_msg: dict[AlbumKey, int] = {}
 async def _clear_market_album_cache(chat_id: int, bot=None) -> None:
     """Отменить незавершённые альбомы только текущего чата."""
     current = asyncio.current_task()
-    keys = {key for key in media_group_cache if key[0] == chat_id}
-    keys.update(key for key in media_group_tasks if key[0] == chat_id)
+    keys = {key for key in media_group_tasks if key[0] == chat_id}
     keys.update(key for key in media_group_wait_msg if key[0] == chat_id)
     wait_ids: list[int] = []
     for key in keys:
         task = media_group_tasks.pop(key, None)
         if task and task is not current and not task.done():
             task.cancel()
-        media_group_cache.pop(key, None)
         wait_id = media_group_wait_msg.pop(key, None)
         if isinstance(wait_id, int) and wait_id > 0:
             wait_ids.append(wait_id)
@@ -669,9 +666,15 @@ async def sell_price(m: Message, state: FSMContext):
 async def sell_photo(m: Message, state: FSMContext):
     if m.media_group_id:
         key: AlbumKey = (m.chat.id, str(m.media_group_id))
-        if key not in media_group_cache:
-            media_group_cache[key] = []
-        media_group_cache[key].append(m.photo[-1].file_id)
+        # Пишем file_id в FSM (БД) сразу, а не только в in-memory кэш — иначе
+        # рестарт бота в окне debounce-ожидания безвозвратно теряет уже
+        # присланные фото альбома (см. CLAUDE.md, «потеря альбома фото»).
+        data = await state.get_data()
+        photos = data.get("photos", []) or []
+        if len(photos) < 3:
+            photos.append(m.photo[-1].file_id)
+            photos = photos[:3]
+            await state.update_data(photos=photos)
         await _remember_and_delete_user_media(m)
 
         if key not in media_group_tasks:
@@ -711,16 +714,12 @@ async def finalize_album(m: Message, state: FSMContext, key: AlbumKey):
         await _clear_market_album_cache(m.chat.id, m.bot)
         return
 
-    album_photos = media_group_cache.pop(key, [])
     media_group_tasks.pop(key, None)
 
+    # Фото уже записаны в FSM сразу по прибытии (см. sell_photo) — здесь
+    # только читаем актуальное значение.
     data = await state.get_data()
     photos = data.get("photos", []) or []
-    for fid in album_photos:
-        if len(photos) < 3:
-            photos.append(fid)
-    photos = photos[:3]
-    await state.update_data(photos=photos)
 
     wait_msg_id = media_group_wait_msg.pop(key, None)
     if wait_msg_id:

@@ -213,8 +213,8 @@ async def _render_photo_editor(chat_id: int, bot, send, listing_id: int, state: 
                 media = [InputMediaPhoto(media=fid) for fid in draft]
                 msgs = await bot.send_media_group(chat_id, media=media)
                 message_ids.extend([m.message_id for m in msgs])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[services_edit_photos.py] _render_photo_editor ✗ photo_send_failed | chat_id={chat_id} listing_id={listing_id} | {type(e).__name__}: {e}")
 
     msg = await send(
         text,
@@ -254,8 +254,8 @@ async def _show_confirmation(
                 media = [InputMediaPhoto(media=fid) for fid in preview_photo_ids]
                 msgs = await bot.send_media_group(chat_id, media=media)
                 message_ids.extend([m.message_id for m in msgs])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[services_edit_photos.py] _show_confirmation ✗ photo_send_failed | chat_id={chat_id} listing_id={listing_id} | {type(e).__name__}: {e}")
 
     msg = await send(text, reply_markup=await _confirm_kb(listing_id))
     message_ids.append(msg.message_id)

@@ -1,5 +1,6 @@
 .env
 .env.ai
+bot.lock
 *.db
 backups/
 logs/
