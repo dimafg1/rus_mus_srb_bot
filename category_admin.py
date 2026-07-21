@@ -2457,7 +2457,7 @@ async def _run_broadcast(text_ru: str, user_ids: list[int]) -> None:
 
 
 @app.post("/api/broadcast/send")
-def broadcast_send(body: BroadcastSendBody):
+async def broadcast_send(body: BroadcastSendBody):
     if _broadcast_state["running"]:
         raise HTTPException(409, "Рассылка уже выполняется")
     text_ru = (body.text_ru or "").strip()
