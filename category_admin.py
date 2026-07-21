@@ -2281,6 +2281,42 @@ def menu_update(item_id: int, body: MenuUpdateBody):
     return {"ok": True}
 
 
+# ─────────────────────────── Настройки (feature_flags) ───────────────────────────
+# Рубильники функций бота. ВАЖНО: category_admin.py и бот — разные процессы,
+# у is_enabled() в app/features.py свой in-memory кэш на 30 сек (CACHE_TTL) —
+# правка здесь применяется в боте не мгновенно, а в течение этого окна.
+
+@app.get("/api/feature_flags")
+def feature_flags_list():
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, key, enabled, audience, note, updated_at FROM feature_flags ORDER BY key"
+        ).fetchall()
+    return {"rows": [{
+        "id": r[0], "key": r[1], "enabled": bool(r[2]),
+        "audience": r[3] or "all", "note": r[4] or "", "updated_at": r[5] or "",
+    } for r in rows]}
+
+
+class FeatureFlagUpdateBody(BaseModel):
+    enabled: bool = False
+    audience: str = "all"
+    note: str = ""
+
+
+@app.post("/api/feature_flags/{flag_id}")
+def feature_flags_update(flag_id: int, body: FeatureFlagUpdateBody):
+    audience = (body.audience or "all").strip() or "all"
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE feature_flags SET enabled=?, audience=?, note=?, updated_at=datetime('now') WHERE id=?",
+            (1 if body.enabled else 0, audience, body.note, flag_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Флаг не найден")
+    return {"ok": True}
+
+
 @app.get("/api/catalog/sections")
 def catalog_sections():
     with db() as conn:
@@ -2556,6 +2592,13 @@ td.txt-td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rte-edit:focus{border-color:#5a9cf5}
 .rte-edit code{background:#1a2340;padding:1px 4px;border-radius:3px;font-family:monospace}
 .rte-edit a{color:#7eb8f7}
+.ff-switch{position:relative;display:inline-block;width:38px;height:20px;cursor:pointer}
+.ff-switch input{opacity:0;width:0;height:0}
+.ff-switch-track{position:absolute;inset:0;background:#2a2a45;border-radius:20px;transition:.15s}
+.ff-switch-track::before{content:'';position:absolute;left:2px;top:2px;width:16px;height:16px;
+  background:#889;border-radius:50%;transition:.15s}
+.ff-switch input:checked + .ff-switch-track{background:#3a6a3a}
+.ff-switch input:checked + .ff-switch-track::before{transform:translateX(18px);background:#8ef58e}
 .btn{padding:6px 13px;border-radius:7px;border:none;cursor:pointer;
      font-size:12px;font-weight:500;transition:opacity .15s;white-space:nowrap}
 .btn:hover{opacity:.82}
@@ -2862,6 +2905,7 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
   <button class="tab" onclick="switchTab('artists')">🎤 Исполнители</button>
   <button class="tab" onclick="switchTab('feedback')">✉️ Обратная связь</button>
   <button class="tab" onclick="switchTab('texts')">📝 Тексты</button>
+  <button class="tab" onclick="switchTab('settings')">⚡ Настройки</button>
 </div>
 
 <div id="panel-categories" class="panel active">
@@ -3045,6 +3089,16 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
     </div>
     <div id="menu-items-content"></div>
   </div>
+</div>
+
+<div id="panel-settings" class="panel">
+  <div class="toolbar">
+    <button class="btn btn-ghost btn-sm" onclick="loadFeatureFlags()">↻ Обновить</button>
+  </div>
+  <div style="font-size:11px;color:#556;margin-bottom:12px">
+    Изменение применяется в боте не мгновенно — до 30 секунд (кэш выключателей в отдельном процессе бота).
+  </div>
+  <div id="feature-flags-content"></div>
 </div>
 
 <!-- Text edit modal -->
@@ -3612,7 +3666,7 @@ document.querySelectorAll('.overlay').forEach(o=>{
 });
 
 // ── tabs ──
-const ALL_TABS = ['categories','analytics','catalog','releases','artists','feedback','texts'];
+const ALL_TABS = ['categories','analytics','catalog','releases','artists','feedback','texts','settings'];
 function switchTab(section) {
   currentTab=section;
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ALL_TABS[i]===section));
@@ -3625,6 +3679,7 @@ function switchTab(section) {
   else if (section==='feedback') loadFeedback();
   else if (section==='texts') txtSetSubtab(txtSubtab);
   else if (section==='categories') catSetSubtab(catSubtab);
+  else if (section==='settings') loadFeatureFlags();
 }
 
 // ── Категории: под-вкладки Барахолка/Услуги/Вакансии внутри одной вкладки ──
@@ -4317,6 +4372,70 @@ async function menuSave(id) {
     }).then(x=>x.json());
     statusEl.style.color = r.ok ? '#7c9' : '#f66';
     statusEl.textContent = r.ok ? '✅' : '⚠️';
+  } catch(e) {
+    statusEl.style.color = '#f66';
+    statusEl.textContent = '⚠️';
+  }
+}
+
+// ── Настройки (feature_flags) ──
+async function loadFeatureFlags() {
+  const el = document.getElementById('feature-flags-content');
+  el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  const data = await fetch('/api/feature_flags').then(r=>r.json());
+  const rows = data.rows || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Флагов нет</div>';
+    return;
+  }
+  el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:#556;font-size:11px;text-align:left">
+      <th style="padding:6px 8px">Ключ</th>
+      <th style="padding:6px 8px;text-align:center">Включено</th>
+      <th style="padding:6px 8px">Аудитория</th>
+      <th style="padding:6px 8px">Заметка</th>
+      <th style="padding:6px 8px">Изменено</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr style="border-top:1px solid #0d1628" id="ff-row-${r.id}">
+        <td style="padding:7px 8px;font-family:monospace;color:#9bc">${esc(r.key)}</td>
+        <td style="padding:7px 8px;text-align:center">
+          <label class="ff-switch">
+            <input type="checkbox" id="ff-enabled-${r.id}" ${r.enabled?'checked':''}>
+            <span class="ff-switch-track"></span>
+          </label>
+        </td>
+        <td style="padding:7px 8px"><input id="ff-audience-${r.id}" value="${esc(r.audience)}"
+          title="all / admins / список user_id через запятую"
+          style="width:100%;min-width:110px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:5px;padding:5px 8px;font:inherit"></td>
+        <td style="padding:7px 8px"><input id="ff-note-${r.id}" value="${esc(r.note)}"
+          style="width:100%;min-width:140px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:5px;padding:5px 8px;font:inherit"></td>
+        <td style="padding:7px 8px;color:#556;font-size:11px;white-space:nowrap">${esc(r.updated_at)}</td>
+        <td style="padding:7px 8px;white-space:nowrap">
+          <button class="btn btn-sm" onclick="featureFlagSave(${r.id})">💾</button>
+          <span id="ff-status-${r.id}" style="font-size:11px;margin-left:6px"></span>
+        </td>
+      </tr>`).join('')}</tbody>
+  </table>
+  <div style="font-size:11px;color:#556;margin-top:10px">Аудитория: <code>all</code> — всем, <code>admins</code> — только администраторам, либо список ID через запятую (например <code>123,456</code>).</div>`;
+}
+
+async function featureFlagSave(id) {
+  const enabled = document.getElementById(`ff-enabled-${id}`).checked;
+  const audience = document.getElementById(`ff-audience-${id}`).value;
+  const note = document.getElementById(`ff-note-${id}`).value;
+  const statusEl = document.getElementById(`ff-status-${id}`);
+  statusEl.style.color = '#889';
+  statusEl.textContent = '…';
+  try {
+    const r = await fetch(`/api/feature_flags/${id}`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enabled, audience, note})
+    }).then(x=>x.json());
+    statusEl.style.color = r.ok ? '#7c9' : '#f66';
+    statusEl.textContent = r.ok ? '✅' : '⚠️';
+    if (r.ok) loadFeatureFlags();
   } catch(e) {
     statusEl.style.color = '#f66';
     statusEl.textContent = '⚠️';
