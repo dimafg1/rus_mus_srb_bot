@@ -182,6 +182,7 @@ class BotText(SQLModel, table=True):
     title: Optional[str] = Field(default=None, sa_column=Column(String(255)))
     text_ru: str = Field(default="", sa_column=Column(Text, nullable=False))
     text_en: str = Field(default="", sa_column=Column(Text, nullable=False))
+    text_kk: str = Field(default="", sa_column=Column(Text, nullable=False))
     updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
 
@@ -194,6 +195,7 @@ class Menu(SQLModel, table=True):
     parent_code: str = Field(sa_column=Column(String(100), index=True, nullable=False))
     text: str = Field(sa_column=Column(Text, nullable=False))       # text_ru (основной)
     text_en: str = Field(default="", sa_column=Column(Text, nullable=False))
+    text_kk: str = Field(default="", sa_column=Column(Text, nullable=False))
     callback_data: str = Field(sa_column=Column(String(255), nullable=False))
     order_num: int = Field(sa_column=Column(Integer, nullable=False))
     visible: int = Field(sa_column=Column(Integer, nullable=False))

@@ -192,6 +192,18 @@ def migrate():
                     conn.execute("UPDATE category SET order_num=? WHERE id=?", (i * 10, cid))
             conn.commit()
 
+        # Казахский — третий целевой язык проекта (RU/EN/KK), колонка была
+        # запланирована заранее, но не заведена до появления редактора текстов.
+        bottext_cols = [r[1] for r in conn.execute('PRAGMA table_info("BotText")').fetchall()]
+        if "text_kk" not in bottext_cols:
+            conn.execute('ALTER TABLE "BotText" ADD COLUMN text_kk TEXT NOT NULL DEFAULT \'\'')
+            conn.commit()
+
+        menu_cols = [r[1] for r in conn.execute("PRAGMA table_info(menu)").fetchall()]
+        if "text_kk" not in menu_cols:
+            conn.execute("ALTER TABLE menu ADD COLUMN text_kk TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+
 
 @app.on_event("startup")
 def _startup_migrate() -> None:
@@ -2187,7 +2199,7 @@ def texts_list(q: str = Query(""), offset: int = Query(0), limit: int = Query(50
             params = ()
         total = conn.execute(f"SELECT COUNT(*) FROM BotText {where}", params).fetchone()[0] or 0
         rows = conn.execute(
-            f"SELECT id, code, title, text_ru, text_en, updated_at FROM BotText {where} "
+            f"SELECT id, code, title, text_ru, text_en, text_kk, updated_at FROM BotText {where} "
             f"ORDER BY code LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
@@ -2195,7 +2207,8 @@ def texts_list(q: str = Query(""), offset: int = Query(0), limit: int = Query(50
         "total": total,
         "rows": [{
             "id": r[0], "code": r[1], "title": r[2] or "",
-            "text_ru": r[3] or "", "text_en": r[4] or "", "updated_at": r[5] or "",
+            "text_ru": r[3] or "", "text_en": r[4] or "", "text_kk": r[5] or "",
+            "updated_at": r[6] or "",
         } for r in rows],
     }
 
@@ -2204,13 +2217,14 @@ def texts_list(q: str = Query(""), offset: int = Query(0), limit: int = Query(50
 def texts_get(code: str):
     with db() as conn:
         row = conn.execute(
-            "SELECT id, code, title, text_ru, text_en, updated_at FROM BotText WHERE code=?", (code,)
+            "SELECT id, code, title, text_ru, text_en, text_kk, updated_at FROM BotText WHERE code=?", (code,)
         ).fetchone()
         if not row:
             raise HTTPException(404, "Текст не найден")
     return {
         "id": row[0], "code": row[1], "title": row[2] or "",
-        "text_ru": row[3] or "", "text_en": row[4] or "", "updated_at": row[5] or "",
+        "text_ru": row[3] or "", "text_en": row[4] or "", "text_kk": row[5] or "",
+        "updated_at": row[6] or "",
     }
 
 
@@ -2218,14 +2232,15 @@ class TextUpdateBody(BaseModel):
     title: str = ""
     text_ru: str = ""
     text_en: str = ""
+    text_kk: str = ""
 
 
 @app.post("/api/texts/{code}")
 def texts_update(code: str, body: TextUpdateBody):
     with db() as conn:
         cur = conn.execute(
-            "UPDATE BotText SET title=?, text_ru=?, text_en=?, updated_at=CURRENT_TIMESTAMP WHERE code=?",
-            (body.title, body.text_ru, body.text_en, code),
+            "UPDATE BotText SET title=?, text_ru=?, text_en=?, text_kk=?, updated_at=CURRENT_TIMESTAMP WHERE code=?",
+            (body.title, body.text_ru, body.text_en, body.text_kk, code),
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "Текст не найден")
@@ -2236,19 +2251,20 @@ def texts_update(code: str, body: TextUpdateBody):
 def menu_list():
     with db() as conn:
         rows = conn.execute(
-            "SELECT id, code, parent_code, text, text_en, icon, order_num, visible "
+            "SELECT id, code, parent_code, text, text_en, text_kk, icon, order_num, visible "
             "FROM menu ORDER BY (parent_code IS NOT NULL), parent_code, order_num, code"
         ).fetchall()
     return {"rows": [{
         "id": r[0], "code": r[1], "parent_code": r[2] or "",
-        "text": r[3] or "", "text_en": r[4] or "", "icon": r[5] or "",
-        "order_num": r[6] or 0, "visible": bool(r[7]),
+        "text": r[3] or "", "text_en": r[4] or "", "text_kk": r[5] or "", "icon": r[6] or "",
+        "order_num": r[7] or 0, "visible": bool(r[8]),
     } for r in rows]}
 
 
 class MenuUpdateBody(BaseModel):
     text: str = ""
     text_en: str = ""
+    text_kk: str = ""
     icon: str = ""
     visible: bool = True
 
@@ -2257,8 +2273,8 @@ class MenuUpdateBody(BaseModel):
 def menu_update(item_id: int, body: MenuUpdateBody):
     with db() as conn:
         cur = conn.execute(
-            "UPDATE menu SET text=?, text_en=?, icon=?, visible=? WHERE id=?",
-            (body.text, body.text_en, body.icon, 1 if body.visible else 0, item_id),
+            "UPDATE menu SET text=?, text_en=?, text_kk=?, icon=?, visible=? WHERE id=?",
+            (body.text, body.text_en, body.text_kk, body.icon, 1 if body.visible else 0, item_id),
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "Пункт меню не найден")
@@ -2526,6 +2542,10 @@ h1{font-size:18px;color:#fff;letter-spacing:-.3px}
 
 /* toolbar */
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.col-resize{position:absolute;right:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5}
+.col-resize:hover{background:#3a5a9c}
+th.txt-th{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+td.txt-td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .btn{padding:6px 13px;border-radius:7px;border:none;cursor:pointer;
      font-size:12px;font-weight:500;transition:opacity .15s;white-space:nowrap}
 .btn:hover{opacity:.82}
@@ -3883,6 +3903,116 @@ function txtSearchDebounced() {
   }, 300);
 }
 
+// ── Настраиваемые столбцы таблицы текстов: показать/скрыть, ширина, порядок.
+// Настройки живут в localStorage браузера — это локальный инструмент одного
+// администратора, серверное хранение не нужно.
+const TXT_COLUMNS_DEF = [
+  {key:'code',    label:'Код',      minWidth:110, defaultWidth:170, locked:true},
+  {key:'title',   label:'Название', minWidth:100, defaultWidth:200},
+  {key:'text_ru', label:'RU',       minWidth:120, defaultWidth:300},
+  {key:'text_en', label:'EN',       minWidth:120, defaultWidth:300},
+  {key:'text_kk', label:'KK',       minWidth:120, defaultWidth:300},
+];
+const TXT_COLS_STORAGE_KEY = 'admin_txt_columns_v1';
+
+function txtLoadColumnPrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(TXT_COLS_STORAGE_KEY) || '{}'); } catch(e) {}
+  const allKeys = TXT_COLUMNS_DEF.map(c => c.key);
+  let order = Array.isArray(saved.order) ? saved.order.filter(k => allKeys.includes(k)) : [];
+  allKeys.forEach(k => { if (!order.includes(k)) order.push(k); });
+  const widths = saved.widths || {};
+  const visible = saved.visible || {};
+  TXT_COLUMNS_DEF.forEach(c => {
+    if (typeof widths[c.key] !== 'number') widths[c.key] = c.defaultWidth;
+    if (typeof visible[c.key] !== 'boolean') visible[c.key] = true;
+    if (c.locked) visible[c.key] = true;
+  });
+  return {order, widths, visible};
+}
+let txtCols = txtLoadColumnPrefs();
+function txtSaveColumnPrefs() {
+  localStorage.setItem(TXT_COLS_STORAGE_KEY, JSON.stringify(txtCols));
+}
+function txtVisibleColumns() {
+  return txtCols.order
+    .filter(k => txtCols.visible[k] !== false)
+    .map(k => TXT_COLUMNS_DEF.find(c => c.key===k));
+}
+function txtToggleColumn(key, checked) {
+  txtCols.visible[key] = checked;
+  txtSaveColumnPrefs();
+  loadTexts();
+}
+function txtToggleColsPanel() {
+  const p = document.getElementById('txt-cols-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('txt-cols-panel');
+  const btn = document.getElementById('txt-cols-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && e.target !== btn) {
+    panel.style.display = 'none';
+  }
+});
+
+// Перетаскивание заголовков столбцов для смены порядка
+let _txtDragKey = null;
+function txtColDragStart(e) {
+  _txtDragKey = e.currentTarget.dataset.col;
+  e.dataTransfer.effectAllowed = 'move';
+}
+function txtColDragOver(e) { e.preventDefault(); }
+function txtColDrop(e) {
+  e.preventDefault();
+  const targetKey = e.currentTarget.dataset.col;
+  if (!_txtDragKey || _txtDragKey === targetKey) return;
+  const order = txtCols.order;
+  const from = order.indexOf(_txtDragKey);
+  const to = order.indexOf(targetKey);
+  if (from === -1 || to === -1) return;
+  order.splice(from, 1);
+  order.splice(to, 0, _txtDragKey);
+  txtSaveColumnPrefs();
+  loadTexts();
+}
+
+// Растягивание столбца за правый край заголовка
+let _txtResizeState = null;
+function txtColResizeStart(e, key) {
+  e.preventDefault();
+  e.stopPropagation();
+  _txtResizeState = { key, startX: e.clientX, startWidth: txtCols.widths[key] };
+  document.addEventListener('mousemove', txtColResizeMove);
+  document.addEventListener('mouseup', txtColResizeEnd);
+}
+function txtColResizeMove(e) {
+  if (!_txtResizeState) return;
+  const def = TXT_COLUMNS_DEF.find(c => c.key === _txtResizeState.key);
+  const delta = e.clientX - _txtResizeState.startX;
+  const newWidth = Math.max(def.minWidth, _txtResizeState.startWidth + delta);
+  txtCols.widths[_txtResizeState.key] = newWidth;
+  const idx = txtVisibleColumns().findIndex(c => c.key === _txtResizeState.key);
+  const table = document.querySelector('#texts-content table');
+  if (table && idx !== -1) {
+    const colEl = table.querySelectorAll('colgroup col')[idx];
+    if (colEl) colEl.style.width = newWidth + 'px';
+  }
+}
+function txtColResizeEnd() {
+  document.removeEventListener('mousemove', txtColResizeMove);
+  document.removeEventListener('mouseup', txtColResizeEnd);
+  _txtResizeState = null;
+  txtSaveColumnPrefs();
+}
+
+function txtCellHtml(row, key) {
+  if (key === 'code') return `<span style="font-family:monospace;color:#9bc">${esc(row.code)}</span>`;
+  const val = row[key] || '';
+  const preview = val.slice(0, 70).replace(/\n/g, ' ');
+  return esc(preview) + (val.length > 70 ? '…' : '');
+}
+
 async function loadTexts() {
   const el = document.getElementById('texts-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
@@ -3894,21 +4024,37 @@ async function loadTexts() {
   }
   const pages = Math.max(1, Math.ceil(data.total / TXT_LIMIT));
   const page = Math.floor(txtOffset / TXT_LIMIT) + 1;
-  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${data.total} текстов</div>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="color:#556;font-size:11px;text-align:left">
-      <th style="padding:6px 8px">Код</th>
-      <th style="padding:6px 8px">Название</th>
-      <th style="padding:6px 8px">Текст (RU)</th>
-      <th style="padding:6px 8px"></th>
-    </tr></thead>
-    <tbody>${rows.map(r => `
+  const cols = txtVisibleColumns();
+  const colgroup = cols.map(c => `<col style="width:${txtCols.widths[c.key]}px">`).join('') + '<col style="width:90px">';
+  const thead = cols.map(c => `
+      <th class="txt-th" data-col="${c.key}" draggable="${!c.locked}"
+        ondragstart="txtColDragStart(event)" ondragover="txtColDragOver(event)" ondrop="txtColDrop(event)"
+        style="padding:6px 8px;position:relative;${c.locked?'':'cursor:grab'}">
+        ${esc(c.label)}<span class="col-resize" onmousedown="txtColResizeStart(event,'${c.key}')"></span>
+      </th>`).join('') + '<th></th>';
+  const tbody = rows.map(r => `
       <tr style="border-top:1px solid #0d1628;cursor:pointer" onclick="openText(${jsArg(r.code)})">
-        <td style="padding:7px 8px;font-family:monospace;color:#9bc">${esc(r.code)}</td>
-        <td style="padding:7px 8px;color:#889">${esc(r.title||'')}</td>
-        <td style="padding:7px 8px;color:#ccd">${esc((r.text_ru||'').slice(0,70).replace(/\n/g,' '))}${(r.text_ru||'').length>70?'…':''}</td>
+        ${cols.map(c => `<td class="txt-td" style="padding:7px 8px">${txtCellHtml(r, c.key)}</td>`).join('')}
         <td style="padding:7px 8px;white-space:nowrap"><button class="btn btn-sm" onclick="event.stopPropagation();openText(${jsArg(r.code)})">✏️ Править</button></td>
-      </tr>`).join('')}</tbody>
+      </tr>`).join('');
+  const colsPanel = TXT_COLUMNS_DEF.map(c => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0;${c.locked?'opacity:.5':''}">
+        <input type="checkbox" ${txtCols.visible[c.key]!==false?'checked':''} ${c.locked?'disabled':''}
+          onchange="txtToggleColumn('${c.key}', this.checked)"> ${esc(c.label)}
+      </label>`).join('');
+  el.innerHTML = `
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div style="font-size:12px;color:#556">${data.total} текстов</div>
+    <div style="position:relative">
+      <button class="btn btn-ghost btn-sm" id="txt-cols-btn" onclick="txtToggleColsPanel()">⚙ Столбцы</button>
+      <div id="txt-cols-panel" style="display:none;position:absolute;right:0;top:28px;background:#1e1e35;
+        border:1px solid #333;border-radius:8px;padding:10px 14px;z-index:20;min-width:150px">${colsPanel}</div>
+    </div>
+  </div>
+  <table style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
+    <colgroup>${colgroup}</colgroup>
+    <thead><tr style="color:#556;font-size:11px;text-align:left">${thead}</tr></thead>
+    <tbody>${tbody}</tbody>
   </table>
   ${pages > 1 ? `<div class="an-pagination">
     <button onclick="txtPage(${Math.max(0, txtOffset - TXT_LIMIT)})" ${txtOffset===0?'disabled':''}>◀</button>
@@ -3935,7 +4081,7 @@ async function openText(code) {
 
 function renderTextModal(d) {
   const el = document.getElementById('text-modal-content');
-  const taStyle = 'width:100%;min-height:110px;background:#0d1424;color:#dde;border:1px solid #223;' +
+  const taStyle = 'width:100%;min-height:100px;background:#0d1424;color:#dde;border:1px solid #223;' +
     'border-radius:6px;padding:8px;font:13px/1.5 monospace;box-sizing:border-box;white-space:pre-wrap';
   el.innerHTML = `
     <div style="font-size:12px;color:#778;margin-bottom:4px">Код: <span style="font-family:monospace;color:#9bc">${esc(d.code)}</span></div>
@@ -3952,6 +4098,10 @@ function renderTextModal(d) {
       <label style="display:block;font-size:12px;color:#889;margin-bottom:4px">Текст EN</label>
       <textarea id="txt-en-input" style="${taStyle}">${esc(d.text_en||'')}</textarea>
     </div>
+    <div style="margin-bottom:10px">
+      <label style="display:block;font-size:12px;color:#889;margin-bottom:4px">Текст KK</label>
+      <textarea id="txt-kk-input" style="${taStyle}">${esc(d.text_kk||'')}</textarea>
+    </div>
     <div style="font-size:11px;color:#556;margin-bottom:12px">Поддерживается Telegram-разметка: &lt;b&gt;, &lt;i&gt;, &lt;code&gt;, &lt;a href&gt;. Обычный текст — без визуального редактора, чтобы не поломать теги.</div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-primary" onclick="txtSave(${jsArg(d.code)})">💾 Сохранить</button>
@@ -3963,13 +4113,14 @@ async function txtSave(code) {
   const title = document.getElementById('txt-title-input').value;
   const text_ru = document.getElementById('txt-ru-input').value;
   const text_en = document.getElementById('txt-en-input').value;
+  const text_kk = document.getElementById('txt-kk-input').value;
   const statusEl = document.getElementById('txt-save-status');
   statusEl.style.color = '#889';
   statusEl.textContent = 'Сохранение…';
   try {
     const r = await fetch(`/api/texts/${encodeURIComponent(code)}`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({title, text_ru, text_en})
+      body: JSON.stringify({title, text_ru, text_en, text_kk})
     }).then(x=>x.json());
     if (r.ok) {
       statusEl.style.color = '#7c9';
@@ -4004,6 +4155,7 @@ async function loadMenuItems() {
       <th style="padding:6px 8px">Иконка</th>
       <th style="padding:6px 8px">Текст RU</th>
       <th style="padding:6px 8px">Текст EN</th>
+      <th style="padding:6px 8px">Текст KK</th>
       <th style="padding:6px 8px">Видно</th>
       <th style="padding:6px 8px"></th>
     </tr></thead>
@@ -4013,6 +4165,7 @@ async function loadMenuItems() {
         <td style="padding:7px 8px"><input id="menu-icon-${r.id}" value="${esc(r.icon||'')}" style="width:44px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:5px;padding:5px 6px;font:inherit;text-align:center"></td>
         <td style="padding:7px 8px"><input id="menu-text-${r.id}" value="${esc(r.text||'')}" style="width:100%;min-width:120px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:5px;padding:5px 8px;font:inherit"></td>
         <td style="padding:7px 8px"><input id="menu-texten-${r.id}" value="${esc(r.text_en||'')}" style="width:100%;min-width:120px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:5px;padding:5px 8px;font:inherit"></td>
+        <td style="padding:7px 8px"><input id="menu-textkk-${r.id}" value="${esc(r.text_kk||'')}" style="width:100%;min-width:120px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:5px;padding:5px 8px;font:inherit"></td>
         <td style="padding:7px 8px;text-align:center"><input type="checkbox" id="menu-vis-${r.id}" ${r.visible?'checked':''}></td>
         <td style="padding:7px 8px;white-space:nowrap">
           <button class="btn btn-sm" onclick="menuSave(${r.id})">💾</button>
@@ -4025,6 +4178,7 @@ async function loadMenuItems() {
 async function menuSave(id) {
   const text = document.getElementById(`menu-text-${id}`).value;
   const text_en = document.getElementById(`menu-texten-${id}`).value;
+  const text_kk = document.getElementById(`menu-textkk-${id}`).value;
   const icon = document.getElementById(`menu-icon-${id}`).value;
   const visible = document.getElementById(`menu-vis-${id}`).checked;
   const statusEl = document.getElementById(`menu-status-${id}`);
@@ -4033,7 +4187,7 @@ async function menuSave(id) {
   try {
     const r = await fetch(`/api/menu/${id}`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({text, text_en, icon, visible})
+      body: JSON.stringify({text, text_en, text_kk, icon, visible})
     }).then(x=>x.json());
     statusEl.style.color = r.ok ? '#7c9' : '#f66';
     statusEl.textContent = r.ok ? '✅' : '⚠️';

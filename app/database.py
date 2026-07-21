@@ -141,3 +141,10 @@ async def init_db() -> None:
             except Exception as e:
                 if not _is_duplicate_column(e):
                     raise  # колонка уже есть — нормально; остальное — громко наружу
+        # Миграция: казахский — третий целевой язык проекта (RU/EN/KK)
+        for tbl in ('"BotText"', "menu"):
+            try:
+                await conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN text_kk TEXT NOT NULL DEFAULT ''"))
+            except Exception as e:
+                if not _is_duplicate_column(e):
+                    raise  # колонка уже есть — нормально; остальное — громко наружу
