@@ -2691,12 +2691,29 @@ def catalog_drill_views(cat_id: int = 0, stype: str = "", action: str = "open",
         for r in rows]}
 
 
+# Разрешённые колонки сортировки таблицы объявлений в веб-админке —
+# whitelist, чтобы sort/order из query-параметров никогда не попадали
+# в SQL напрямую (защита от SQL-инъекции через ORDER BY).
+LISTINGS_SORT_COLUMNS = {
+    "created_at": "l.created_at",
+    "title": "l.title",
+    "price": "l.price",
+    "city": "city_name",
+    "category": "category_name",
+    "type": "l.type",
+    "status": "l.status",
+    "opens": "opens",
+}
+
+
 @app.get("/api/listings")
 def listings_catalog(offset: int = 0, limit: int = 24,
                      section: str = "", category_id: int = 0,
                      only_photo: bool = False,
                      only_active: bool = False, q: str = "",
-                     activity: str = ""):
+                     activity: str = "", sort: str = "created_at", order: str = "desc"):
+    sort_col = LISTINGS_SORT_COLUMNS.get(sort, "l.created_at")
+    sort_dir = "ASC" if order == "asc" else "DESC"
     with db() as conn:
         wheres = []
         params: list = []
@@ -2729,7 +2746,7 @@ def listings_catalog(offset: int = 0, limit: int = 24,
                 LEFT JOIN listing_views lv ON lv.listing_id=l.id AND lv.action='open'
                 {where_sql}
                 GROUP BY l.id
-                ORDER BY l.created_at DESC
+                ORDER BY {sort_col} {sort_dir}
                 LIMIT ? OFFSET ?
             """, params + [limit, offset]).fetchall()
         except Exception as e:
@@ -2743,7 +2760,9 @@ def listings_catalog(offset: int = 0, limit: int = 24,
         result.append({
             "id": r[0], "title": r[1] or "", "price": r[2] or "",
             "contact": r[3] or "", "photo_ids": photo_ids, **video,
-            "is_sold": bool(r[6]), "created_at": (r[7] or "")[:10],
+            # Полная дата-время (не срез [:10]) — фронтенд сам форматирует
+            # в ДД.ММ.ГГГГ ЧЧ:ММ через общую fmtDateTime().
+            "is_sold": bool(r[6]), "created_at": r[7] or "",
             "type": r[8] or "", "status": r[9] or "",
             "city": r[10] or "", "category": r[11] or "", "opens": r[12] or 0,
         })
@@ -3038,6 +3057,10 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 .cat-card-video-badge{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.7);
   border-radius:5px;padding:2px 7px;font-size:11px;color:#fff}
 .cat-card-status{position:absolute;bottom:6px;left:8px;padding:2px 8px;border-radius:5px;
+  font-size:10px;font-weight:700;letter-spacing:.3px}
+/* Тот же вид, что у .cat-card-status, но без абсолютного позиционирования —
+   для ячейки таблицы (там нет позиционированного родителя .cat-card-media). */
+.cat-table-status{display:inline-block;padding:2px 8px;border-radius:5px;
   font-size:10px;font-weight:700;letter-spacing:.3px}
 .st-active{background:rgba(16,90,50,.9);color:#a7f3c8}
 .st-inactive{background:rgba(70,75,88,.9);color:#d7dbe2}
@@ -3546,6 +3569,15 @@ function toggleNode(el) {
   el.textContent = open ? '▶' : '▼';
 }
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+// Единый формат даты/времени по всей веб-админке: ДД.ММ.ГГГГ ЧЧ:ММ
+// (обычный для RU порядок день.месяц, в отличие от голого среза ISO-строки).
+function fmtDateTime(s) {
+  if (!s) return '—';
+  const clean = s.replace('T',' ').split('+')[0].split('.')[0];
+  const [date, time=''] = clean.split(' ');
+  const [y,m,day] = (date||'').split('-');
+  return y && m && day ? `${day}.${m}.${y}${time ? ' '+time.slice(0,5) : ''}` : s;
+}
 function jsArg(value){ return esc(JSON.stringify(String(value ?? ''))) }
 function safeHttpUrl(raw) {
   try {
@@ -5200,6 +5232,31 @@ let _catListingOffset = 0;
 
 let _catActivity = '';
 
+// Превью (карточки) или таблица — выбор живёт в localStorage браузера,
+// как и настройки столбцов таблицы «Тексты».
+let _catViewMode = localStorage.getItem('admin_cat_view_mode') || 'grid';
+function catSetViewMode(mode, catId, stype) {
+  _catViewMode = mode;
+  localStorage.setItem('admin_cat_view_mode', mode);
+  catalogShowListings(catId, stype, _catListingOffset);
+}
+
+// Сортировка таблицы (клик по заголовку столбца) — например, чтобы найти
+// объявление/релиз с наибольшим числом просмотров.
+let _catSortKey = 'created_at';
+let _catSortDir = 'desc';
+function catSortBy(key, catId, stype) {
+  const def = CAT_COLUMNS_DEF.find(c => c.key === key);
+  if (!def || def.sortable === false) return;
+  if (_catSortKey === key) {
+    _catSortDir = _catSortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    _catSortKey = key;
+    _catSortDir = 'desc';
+  }
+  catalogShowListings(catId, stype, 0);
+}
+
 function catSetActivity(v, catId, stype) {
   _catActivity = v;
   catalogShowListings(catId, stype, 0);
@@ -5218,17 +5275,27 @@ async function catalogShowListings(catId, stype, offset=0) {
   const el = document.getElementById('catalog-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
   catalogSetBreadcrumb();
-  const params = new URLSearchParams({category_id: catId, offset, limit: CAT_LISTING_LIMIT});
+  const params = new URLSearchParams({
+    category_id: catId, offset, limit: CAT_LISTING_LIMIT,
+    sort: _catSortKey, order: _catSortDir,
+  });
   if (_catActivity) params.set('activity', _catActivity);
   const data = await fetch(`/api/listings?${params}`).then(r=>r.json());
-  const activityBar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-    <span style="font-size:12px;color:#556">${data.total} объявлений</span>
-    <select onchange="catSetActivity(this.value,${catId},'${stype}')"
-      style="background:#0d1f45;color:#ccd;border:1px solid #1a2a55;border-radius:6px;padding:3px 8px;font-size:12px">
-      <option value="" ${_catActivity===''?'selected':''}>Все</option>
-      <option value="active" ${_catActivity==='active'?'selected':''}>🟢 Активные</option>
-      <option value="inactive" ${_catActivity==='inactive'?'selected':''}>⚪ Неактивные</option>
-    </select>
+  const viewToggle = `<div style="display:flex;gap:4px">
+    <button class="btn btn-sm" style="${_catViewMode==='grid'?'background:#2a3a70':''}" onclick="catSetViewMode('grid',${catId},'${stype}')">🖼 Превью</button>
+    <button class="btn btn-sm" style="${_catViewMode==='table'?'background:#2a3a70':''}" onclick="catSetViewMode('table',${catId},'${stype}')">📋 Таблица</button>
+  </div>`;
+  const activityBar = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="font-size:12px;color:#556">${data.total} объявлений</span>
+      <select onchange="catSetActivity(this.value,${catId},'${stype}')"
+        style="background:#0d1f45;color:#ccd;border:1px solid #1a2a55;border-radius:6px;padding:3px 8px;font-size:12px">
+        <option value="" ${_catActivity===''?'selected':''}>Все</option>
+        <option value="active" ${_catActivity==='active'?'selected':''}>🟢 Активные</option>
+        <option value="inactive" ${_catActivity==='inactive'?'selected':''}>⚪ Неактивные</option>
+      </select>
+    </div>
+    ${viewToggle}
   </div>`;
   if (!data.rows.length) {
     el.innerHTML = activityBar + '<div class="empty" style="padding:30px;text-align:center">Нет объявлений</div>';
@@ -5241,8 +5308,169 @@ async function catalogShowListings(catId, stype, offset=0) {
     <span>${curPage} / ${totalPages}</span>
     <button onclick="catalogShowListings(${catId},'${stype}',${offset+CAT_LISTING_LIMIT})" ${offset+CAT_LISTING_LIMIT>=data.total?'disabled':''}>▶</button>
   </div>` : '';
-  el.innerHTML = activityBar +
-    `<div class="catalog-listings-grid">${data.rows.map(r=>catCardHtml(r)).join('')}</div>${pag}`;
+  const body = _catViewMode === 'table'
+    ? catTableHtml(data.rows, catId, stype)
+    : `<div class="catalog-listings-grid">${data.rows.map(r=>catCardHtml(r)).join('')}</div>`;
+  el.innerHTML = activityBar + body + pag;
+}
+
+// ── Таблица объявлений: настраиваемые столбцы (тот же паттерн, что и у
+//    таблицы «Тексты») + сортировка по клику на заголовок ──
+const CAT_COLUMNS_DEF = [
+  {key:'photo',      label:'',          minWidth:50,  defaultWidth:50,  locked:true, sortable:false},
+  {key:'title',      label:'Название',  minWidth:120, defaultWidth:220, sortable:true},
+  {key:'price',      label:'Цена',      minWidth:70,  defaultWidth:100, sortable:true},
+  {key:'city',       label:'Город',     minWidth:70,  defaultWidth:110, sortable:true},
+  {key:'category',   label:'Категория', minWidth:90,  defaultWidth:150, sortable:true},
+  {key:'type',       label:'Раздел',    minWidth:70,  defaultWidth:100, sortable:true},
+  {key:'status',     label:'Статус',    minWidth:70,  defaultWidth:90,  sortable:true},
+  {key:'opens',      label:'Просмотры',minWidth:70,  defaultWidth:100, sortable:true},
+  {key:'created_at', label:'Дата',      minWidth:90,  defaultWidth:135, sortable:true},
+];
+const CAT_COLS_STORAGE_KEY = 'admin_cat_columns_v1';
+
+function catLoadColumnPrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(CAT_COLS_STORAGE_KEY) || '{}'); } catch(e) {}
+  const allKeys = CAT_COLUMNS_DEF.map(c => c.key);
+  let order = Array.isArray(saved.order) ? saved.order.filter(k => allKeys.includes(k)) : [];
+  allKeys.forEach(k => { if (!order.includes(k)) order.push(k); });
+  const widths = saved.widths || {};
+  const visible = saved.visible || {};
+  CAT_COLUMNS_DEF.forEach(c => {
+    if (typeof widths[c.key] !== 'number') widths[c.key] = c.defaultWidth;
+    if (typeof visible[c.key] !== 'boolean') visible[c.key] = true;
+    if (c.locked) visible[c.key] = true;
+  });
+  return {order, widths, visible};
+}
+let catCols = catLoadColumnPrefs();
+function catSaveColumnPrefs() {
+  localStorage.setItem(CAT_COLS_STORAGE_KEY, JSON.stringify(catCols));
+}
+function catVisibleColumns() {
+  return catCols.order
+    .filter(k => catCols.visible[k] !== false)
+    .map(k => CAT_COLUMNS_DEF.find(c => c.key===k));
+}
+function catToggleColumn(key, checked, catId, stype) {
+  catCols.visible[key] = checked;
+  catSaveColumnPrefs();
+  catalogShowListings(catId, stype, _catListingOffset);
+}
+function catToggleColsPanel() {
+  const p = document.getElementById('cat-cols-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('cat-cols-panel');
+  const btn = document.getElementById('cat-cols-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && e.target !== btn) {
+    panel.style.display = 'none';
+  }
+});
+
+let _catDragKey = null;
+function catColDragStart(e) {
+  _catDragKey = e.currentTarget.dataset.col;
+  e.dataTransfer.effectAllowed = 'move';
+}
+function catColDragOver(e) { e.preventDefault(); }
+function catColDrop(e, catId, stype) {
+  e.preventDefault();
+  const targetKey = e.currentTarget.dataset.col;
+  if (!_catDragKey || _catDragKey === targetKey) return;
+  const order = catCols.order;
+  const from = order.indexOf(_catDragKey);
+  const to = order.indexOf(targetKey);
+  if (from === -1 || to === -1) return;
+  order.splice(from, 1);
+  order.splice(to, 0, _catDragKey);
+  catSaveColumnPrefs();
+  catalogShowListings(catId, stype, _catListingOffset);
+}
+
+let _catResizeState = null;
+function catColResizeStart(e, key) {
+  e.preventDefault();
+  e.stopPropagation();
+  _catResizeState = { key, startX: e.clientX, startWidth: catCols.widths[key] };
+  document.addEventListener('mousemove', catColResizeMove);
+  document.addEventListener('mouseup', catColResizeEnd);
+}
+function catColResizeMove(e) {
+  if (!_catResizeState) return;
+  const def = CAT_COLUMNS_DEF.find(c => c.key === _catResizeState.key);
+  const delta = e.clientX - _catResizeState.startX;
+  const newWidth = Math.max(def.minWidth, _catResizeState.startWidth + delta);
+  catCols.widths[_catResizeState.key] = newWidth;
+  const idx = catVisibleColumns().findIndex(c => c.key === _catResizeState.key);
+  const table = document.querySelector('#catalog-content table.cat-table');
+  if (table && idx !== -1) {
+    const colEl = table.querySelectorAll('colgroup col')[idx];
+    if (colEl) colEl.style.width = newWidth + 'px';
+  }
+}
+function catColResizeEnd() {
+  document.removeEventListener('mousemove', catColResizeMove);
+  document.removeEventListener('mouseup', catColResizeEnd);
+  _catResizeState = null;
+  catSaveColumnPrefs();
+}
+
+function catCellHtml(row, key) {
+  if (key === 'photo') {
+    const fp = (row.photo_ids||[])[0];
+    if (fp) return `<img src="/api/tg_photo/${encodeURIComponent(fp)}" style="width:36px;height:36px;object-fit:cover;border-radius:4px" onerror="this.style.display='none'">`;
+    if (row.video_type === 'youtube' && row.video_id) return `<img src="https://img.youtube.com/vi/${row.video_id}/mqdefault.jpg" style="width:36px;height:36px;object-fit:cover;border-radius:4px">`;
+    return `<span style="opacity:.4">${row.video_type?'▶️':'📋'}</span>`;
+  }
+  if (key === 'title') return esc(row.title || 'Без названия');
+  if (key === 'price') return row.price ? esc(row.price) : '—';
+  if (key === 'city') return row.city ? esc(row.city) : '—';
+  if (key === 'category') return row.category ? esc(row.category) : '—';
+  if (key === 'type') return esc(sectionName(row.type));
+  if (key === 'status') {
+    const isActive = !row.status || row.status === 'active';
+    return isActive ? '<span class="cat-table-status st-active">активно</span>'
+      : `<span class="cat-table-status st-inactive">${row.status==='archived'?'в архиве':esc(row.status)}</span>`;
+  }
+  if (key === 'opens') return String(row.opens || 0);
+  if (key === 'created_at') return fmtDateTime(row.created_at);
+  return '';
+}
+
+function catTableHtml(rows, catId, stype) {
+  const cols = catVisibleColumns();
+  const colgroup = cols.map(c => `<col style="width:${catCols.widths[c.key]}px">`).join('');
+  const thead = cols.map(c => {
+    const sortable = c.sortable !== false;
+    const arrow = _catSortKey === c.key ? (_catSortDir === 'desc' ? ' ▼' : ' ▲') : '';
+    return `<th class="txt-th" data-col="${c.key}" draggable="${!c.locked}"
+      ondragstart="catColDragStart(event)" ondragover="catColDragOver(event)" ondrop="catColDrop(event,${catId},'${stype}')"
+      style="padding:6px 8px;position:relative;${c.locked?'':'cursor:grab'}${sortable?';cursor:pointer':''}"
+      ${sortable ? `onclick="catSortBy('${c.key}',${catId},'${stype}')"` : ''}>${esc(c.label)}${arrow}<span class="col-resize" onmousedown="catColResizeStart(event,'${c.key}')"></span></th>`;
+  }).join('');
+  const tbody = rows.map(r => `
+    <tr style="border-top:1px solid #0d1628;cursor:pointer" onclick="openListing(${r.id})">
+      ${cols.map(c => `<td class="txt-td" style="padding:6px 8px">${catCellHtml(r, c.key)}</td>`).join('')}
+    </tr>`).join('');
+  const colsPanel = CAT_COLUMNS_DEF.filter(c => !c.locked).map(c => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0">
+        <input type="checkbox" ${catCols.visible[c.key]!==false?'checked':''}
+          onchange="catToggleColumn('${c.key}', this.checked, ${catId}, '${stype}')"> ${esc(c.label)}
+      </label>`).join('');
+  return `
+  <div style="display:flex;justify-content:flex-end;margin-bottom:8px;position:relative">
+    <button class="btn btn-ghost btn-sm" id="cat-cols-btn" onclick="catToggleColsPanel()">⚙ Столбцы</button>
+    <div id="cat-cols-panel" style="display:none;position:absolute;right:0;top:28px;background:#1e1e35;
+      border:1px solid #333;border-radius:8px;padding:10px 14px;z-index:20;min-width:150px">${colsPanel}</div>
+  </div>
+  <table class="cat-table" style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
+    <colgroup>${colgroup}</colgroup>
+    <thead><tr style="color:#556;font-size:11px;text-align:left">${thead}</tr></thead>
+    <tbody>${tbody}</tbody>
+  </table>`;
 }
 
 function catCardHtml(r) {
@@ -5259,7 +5487,6 @@ function catCardHtml(r) {
   } else {
     mediaHtml = `<div class="cat-card-media-empty">${hasVideo?'▶️':'📋'}</div>`;
   }
-  const fmtDate = s => s ? s.slice(5).replace('-','.') : '';
   const isActive = !r.status || r.status === 'active';
   const statusBadge = isActive
     ? '<span class="cat-card-status st-active">активно</span>'
@@ -5276,7 +5503,7 @@ function catCardHtml(r) {
       <div class="cat-card-title">${esc(r.title||'Без названия')}</div>
       ${r.price ? `<div class="cat-card-price">${esc(r.price)}</div>` : ''}
       <div class="cat-card-meta">${r.city?esc(r.city):''}${r.category?' · '+esc(r.category):''}</div>
-      <div class="cat-card-stats">👁 ${r.opens} · ${fmtDate(r.created_at)}</div>
+      <div class="cat-card-stats">👁 ${r.opens} · ${fmtDateTime(r.created_at)}</div>
     </div>
   </div>`;
 }
@@ -5698,14 +5925,6 @@ function renderListingModal(d) {
       </div>`
     : '';
 
-  const fmtDate = s => {
-    if (!s) return '—';
-    const clean = s.replace('T',' ').split('+')[0].split('.')[0];
-    const [date, time=''] = clean.split(' ');
-    const [y,m,day] = (date||'').split('-');
-    return y && m && day ? `${day}.${m}.${y} ${time.slice(0,5)}` : s;
-  };
-
   const tgUsername = d.contact && /^@[A-Za-z0-9_]{1,32}$/.test(d.contact)
     ? d.contact.slice(1) : '';
   const contact = d.contact
@@ -5753,7 +5972,7 @@ function renderListingModal(d) {
       <span class="listing-meta-key">Исполнитель</span><span class="listing-meta-val">${d.release.artist?`<a style="color:#7eb8f7;cursor:pointer" onclick="openArtistCard(${d.release.artist_id||0})">🎤 ${esc(d.release.artist)}</a>`:'—'}</span>
       <span class="listing-meta-key">Тип релиза</span><span class="listing-meta-val">${esc(RTYPE_LABELS[d.release.rtype]||d.release.rtype||'—')}${d.release.date?' · '+esc(d.release.date):''}</span>
       <span class="listing-meta-key">Контакт</span><span class="listing-meta-val" id="lm-contact">${contact}</span>
-      <span class="listing-meta-key">Опубликовано</span><span class="listing-meta-val">${fmtDate(d.created_at)}</span>
+      <span class="listing-meta-key">Опубликовано</span><span class="listing-meta-val">${fmtDateTime(d.created_at)}</span>
       <span class="listing-meta-key">Статус релиза</span><span class="listing-meta-val">${d.release.status==='published'?'🟢 опубликован':'⚪ '+(d.release.status==='hidden'?'скрыт':esc(d.release.status||'—'))}</span>
       <span class="listing-meta-key">Треков / ссылок</span><span class="listing-meta-val">${d.release.tracks} / ${d.release.links}</span>
       ${d.release.recorded ? `<span class="listing-meta-key">Записано</span><span class="listing-meta-val">${esc(d.release.recorded)}</span>` : ''}`
@@ -5761,11 +5980,11 @@ function renderListingModal(d) {
       ${d.city ? `<span class="listing-meta-key">Город</span><span class="listing-meta-val">${esc(d.city)}</span>` : ''}
       <span class="listing-meta-key">Контакт</span><span class="listing-meta-val" id="lm-contact">${contact}</span>
       <span class="listing-meta-key">Раздел</span><span class="listing-meta-val">${esc(sectionName(d.type))}</span>
-      <span class="listing-meta-key">Опубликовано</span><span class="listing-meta-val">${fmtDate(d.created_at)}</span>
+      <span class="listing-meta-key">Опубликовано</span><span class="listing-meta-val">${fmtDateTime(d.created_at)}</span>
       <span class="listing-meta-key">Статус</span><span class="listing-meta-val">${(!d.status||d.status==='active')
         ? '🟢 активно'
         : '⚪ '+(d.status==='archived'?'в архиве':esc(d.status))+(d.archive_reason?' · '+esc(d.archive_reason):'')}</span>
-      ${d.expires_at ? `<span class="listing-meta-key">Действует до</span><span class="listing-meta-val">${fmtDate(d.expires_at)}</span>` : ''}`}
+      ${d.expires_at ? `<span class="listing-meta-key">Действует до</span><span class="listing-meta-val">${fmtDateTime(d.expires_at)}</span>` : ''}`}
     </div>
     ${flexRows ? `<div class="listing-meta" id="lm-flex">${flexRows}</div>` : `<div id="lm-flex"></div>`}
     <div class="listing-stats">
