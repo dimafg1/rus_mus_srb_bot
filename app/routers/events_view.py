@@ -189,43 +189,6 @@ async def _kb_calendar_month_all(year: int, month: int, marks: set[int]) -> Inli
 
 
 
-async def _afisha_root_kb() -> InlineKeyboardMarkup:
-    print("[events_view.py] _afisha_root_kb CALLED")
-    rows: list[list[InlineKeyboardButton]] = []
-    try:
-        async with SessionLocal() as s:
-            res = await s.execute(sql("SELECT id, name FROM city ORDER BY id ASC LIMIT 20"))
-            cities = res.fetchall()
-    except Exception:
-        cities = []
-
-    row: list[InlineKeyboardButton] = []
-    for cid, name in cities:
-        row.append(InlineKeyboardButton(text=str(name), callback_data=f"af:ecity:{int(cid)}"))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-
-    rows.append([InlineKeyboardButton(text=(await get_text("btn_search", "ru") or "🔎 Поиск"), callback_data="af:search")])
-    rows.append([InlineKeyboardButton(text=(await get_text("btn_my_events", "ru") or "👤 Мои объявления"), callback_data="af:my")])
-
-    rows.append([InlineKeyboardButton(text=(await get_text("btn_near_events", "ru") or "Ближайшие мероприятия"), callback_data="events:near")])
-    rows.append([InlineKeyboardButton(text=(await get_text("btn_add_event", "ru") or "➕ Разместить информацию"), callback_data="event_new")])
-
-    try:
-        mm = await get_common_menu_button("main_menu")
-        if mm:
-            rows.append([InlineKeyboardButton(text=mm.text, callback_data=mm.callback_data)])
-    except Exception:
-        pass
-
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    print(f"[events_view.py][_afisha_root_kb][done] cities={len(cities)} rows={len(rows)}")
-    return kb
-
-
 async def _fetch_events(offset: int, limit: int, city_id: int | None = None):
     now_utc = int(datetime.now(_TZ).astimezone(timezone.utc).timestamp())
     params = {"now_utc": now_utc, "limit": int(limit), "offset": int(offset)}
@@ -925,47 +888,6 @@ async def _count_search_events(query: str) -> int:
     print(f"[events_view.py][_count_search_events][done] q={(query or '').strip()!r} total={total}")
     return total
 
-@router.callback_query(F.data == "afisha")
-async def afisha_entry(cb: CallbackQuery, state: FSMContext):
-    print("[events_view.py] afisha_entry CALLED")
-    chat_id = cb.message.chat.id
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
-
-    await clear_bot_messages(chat_id, cb.bot)
-
-    title = await get_text("events_choose_city", "ru") or "🗓 <b>Афиша —------------------------------</b>"
-    kb = await _afisha_root_kb()
-
-    msg = await cb.message.answer(title, parse_mode="HTML", reply_markup=kb)
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-    log("[events_view.py] afisha_entry | shown")
-    await cb.answer()
-    print(f"[events_view.py][afisha_entry][done] chat_id={chat_id} cb_data={cb.data} msg_id={msg.message_id}")
-
-
-@router.callback_query(F.data == "af:root")
-async def af_root(cb: CallbackQuery):
-    chat_id = cb.message.chat.id
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
-    await clear_bot_messages(chat_id, cb.bot)
-
-    title = await get_text("events_choose_city", "ru") or "🗓 <b>Афиша —------------------------------</b>"
-    kb = await _afisha_root_kb()
-    msg = await cb.message.answer(title, parse_mode="HTML", reply_markup=kb)
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-    log("[events_view.py] af_root | shown")
-    await cb.answer()
-    print(f"[events_view.py][af_root][done] chat_id={chat_id} cb_data={cb.data} msg_id={msg.message_id}")
-
-
 @router.callback_query(F.data == "events:near")
 async def events_near(cb: CallbackQuery):
     chat_id = cb.message.chat.id
@@ -1230,108 +1152,6 @@ async def af_open_event(cb: CallbackQuery):
     await cb.answer()
     print(f"[events_view.py][af_open_event][done] chat_id={chat_id} cb_data={cb.data} listing_id={listing_id} context={context} back_cb={back_cb} msg_id={msg.message_id} has_photo={int(bool(photo))}")
 
-
-
-@router.callback_query(F.data.startswith("af:ecity:"))
-async def af_city_list(cb: CallbackQuery):
-    chat_id = cb.message.chat.id
-    try:
-        city_id = int(cb.data.split(":")[-1])
-    except Exception:
-        await cb.answer(await get_text("events_view_city_not_recognized", "ru") or "Город не распознан.")
-        print(f"[events_view.py][af_city_list][done] chat_id={chat_id} cb_data={cb.data} parse_city_id_failed=1")
-        return
-
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
-    await clear_bot_messages(chat_id, cb.bot)
-
-    items = await _fetch_events(offset=0, limit=AFISHA_PAGE_SIZE, city_id=city_id)
-
-    if not items:
-        kb = await _kb_back_and_main("af:root")
-        msg = await cb.message.answer(await get_text("events_view_no_events_in_city", "ru") or "В этом городе пока нет ближайших событий.", reply_markup=kb)
-        last_bot_messages[chat_id] = [msg.message_id]
-        await register_bot_messages(chat_id, [msg.message_id])
-        await cb.answer()
-        print(f"[events_view.py][af_city_list][done] chat_id={chat_id} cb_data={cb.data} city_id={city_id} empty=1 msg_id={msg.message_id}")
-        return
-
-    rows: list[list[InlineKeyboardButton]] = []
-    for it in items:
-        d, t = await _fmt_dt(it["start_at_utc"])
-        rows.append([InlineKeyboardButton(
-            text=f"{d} {t} — {it['title']}",
-            callback_data=f"af:open:{it['listing_id']}:city:{city_id}"
-        )])
-
-    has_more = len(items) == AFISHA_PAGE_SIZE
-    more_cb = f"af:city:more:{city_id}:{AFISHA_PAGE_SIZE}" if has_more else None
-    nav = await _kb_list_nav(back_cb="go_events", more_cb=more_cb)
-    kb = InlineKeyboardMarkup(inline_keyboard=rows + nav.inline_keyboard)
-
-    city_name = await _city_name_by_id(city_id)
-    by_city_title_tmpl = await get_text("events_view_by_city_title_tmpl", "ru") or "🗓 <b>Афиша — {city}</b>"
-    by_city_title_plain = await get_text("events_view_by_city_title_plain", "ru") or "🗓 <b>События по городу</b>"
-    header = by_city_title_tmpl.format(city=city_name) if city_name else by_city_title_plain
-    msg = await cb.message.answer(header, parse_mode="HTML", reply_markup=kb)
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-    log(f"[events_view.py] af_city_list | city_id={city_id} | count={len(items)}")
-    await cb.answer()
-    print(f"[events_view.py][af_city_list][done] chat_id={chat_id} cb_data={cb.data} city_id={city_id} count={len(items)} has_more={int(has_more)} msg_id={msg.message_id} more_cb={more_cb}")
-
-
-@router.callback_query(F.data.startswith("af:city:more:"))
-async def af_city_more(cb: CallbackQuery):
-    chat_id = cb.message.chat.id
-    parts = cb.data.split(":")
-    try:
-        city_id = int(parts[3])
-        offset = int(parts[4])
-    except Exception:
-        city_id, offset = 0, 0
-
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
-
-    items = await _fetch_events(offset=offset, limit=AFISHA_PAGE_SIZE, city_id=city_id)
-    if not items:
-        kb = await _kb_back_and_main(f"af:ecity:{city_id}")
-        msg = await cb.message.answer(await get_text("events_view_end_for_now", "ru") or "Это всё на сейчас.", reply_markup=kb)
-        last_bot_messages[chat_id] = [msg.message_id]
-        await register_bot_messages(chat_id, [msg.message_id])
-        await cb.answer()
-        print(f"[events_view.py][af_city_more][done] chat_id={chat_id} cb_data={cb.data} city_id={city_id} offset={offset} empty=1 msg_id={msg.message_id}")
-        return
-
-    rows: list[list[InlineKeyboardButton]] = []
-    for it in items:
-        d, t = await _fmt_dt(it["start_at_utc"])
-        rows.append([InlineKeyboardButton(
-            text=f"{d} {t} — {it['title']}",
-            callback_data=f"af:open:{it['listing_id']}:city:{city_id}"
-        )])
-
-    has_more = len(items) == AFISHA_PAGE_SIZE
-    more_cb = f"af:city:more:{city_id}:{offset + AFISHA_PAGE_SIZE}" if has_more else None
-    nav = await _kb_list_nav(back_cb=f"af:ecity:{city_id}", more_cb=more_cb)
-    kb = InlineKeyboardMarkup(inline_keyboard=rows + nav.inline_keyboard)
-
-    city_name = await _city_name_by_id(city_id)
-    by_city_title_tmpl = await get_text("events_view_by_city_title_tmpl", "ru") or "🗓 <b>Афиша — {city}</b>"
-    by_city_title_plain = await get_text("events_view_by_city_title_plain", "ru") or "🗓 <b>События по городу</b>"
-    header = by_city_title_tmpl.format(city=city_name) if city_name else by_city_title_plain
-    msg = await cb.message.answer(header, parse_mode="HTML", reply_markup=kb)
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-    log(f"[events_view.py] af_city_more | city_id={city_id} | offset={offset} | count={len(items)}")
-    await cb.answer()
-    print(f"[events_view.py][af_city_more][done] chat_id={chat_id} cb_data={cb.data} city_id={city_id} offset={offset} count={len(items)} has_more={int(has_more)} msg_id={msg.message_id} more_cb={more_cb}")
 
 
 @router.callback_query(F.data.startswith("ecity:"))
@@ -1644,7 +1464,7 @@ async def af_search_results_first(cb: CallbackQuery, state: FSMContext):
     if not q:
         msg = await cb.message.answer(
             await get_text("events_view_search_context_lost", "ru") or "Контекст поиска потерян. Нажмите «🔎 Поиск» заново.",
-            reply_markup=await _kb_back_and_main("af:root")
+            reply_markup=await _kb_back_and_main("go_events")
         )
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
@@ -1758,7 +1578,7 @@ async def af_search_more(cb: CallbackQuery, state: FSMContext):
         q = (af_search_ctx_by_chat.get(chat_id) or {}).get("q", "")
 
     if not q:
-        msg = await cb.message.answer(await get_text("events_view_search_context_lost", "ru") or "Контекст поиска потерян. Нажмите «🔎 Поиск» заново.", reply_markup=await _kb_back_and_main("af:root"))
+        msg = await cb.message.answer(await get_text("events_view_search_context_lost", "ru") or "Контекст поиска потерян. Нажмите «🔎 Поиск» заново.", reply_markup=await _kb_back_and_main("go_events"))
         last_bot_messages[chat_id] = [msg.message_id]
         await register_bot_messages(chat_id, [msg.message_id])
         await cb.answer()

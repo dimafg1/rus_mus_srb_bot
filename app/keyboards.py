@@ -419,12 +419,12 @@ async def events_main_inline(lang="ru"):
 
     # --- МЕНЮ: Поиск -> Города -> Мои объявления -> остальное ---
     keyboard = [
-        [InlineKeyboardButton(text="🔎 Поиск", callback_data="af:search")],
+        [InlineKeyboardButton(text=(await get_text("btn_search", lang) or "🔎 Поиск"), callback_data="af:search")],
         [InlineKeyboardButton(text="🗓 Календарь", callback_data="af:cal:all")],
     ] + city_rows + [
-        [InlineKeyboardButton(text="👤 Мои объявления", callback_data="af:my")],
-        [InlineKeyboardButton(text="Ближайшие мероприятия", callback_data="events:near")],
-        [InlineKeyboardButton(text="➕ РАЗМЕСТИТЬ ИНФОРМАЦИЮ", callback_data="event_new")],
+        [InlineKeyboardButton(text=(await get_text("btn_my_events", lang) or "👤 Мои объявления"), callback_data="af:my")],
+        [InlineKeyboardButton(text=(await get_text("btn_near_events", lang) or "Ближайшие мероприятия"), callback_data="events:near")],
+        [InlineKeyboardButton(text=(await get_text("btn_add_event", lang) or "➕ РАЗМЕСТИТЬ ИНФОРМАЦИЮ"), callback_data="event_new")],
     ]
 
     main_menu_btn = await get_common_menu_button('main_menu', lang)

@@ -8,6 +8,7 @@ from sqlalchemy import text
 from app.database import SessionLocal
 from html import escape as html_escape
 import inspect
+import time
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.keyboards import get_common_menu_button
@@ -259,9 +260,10 @@ _admin_reply_target: dict[int, dict] = {}
 
 
 def _arm_admin_reply(feedback_id: int, user_id: int, original: str) -> None:
+    now = time.time()
     for admin_id in ADMIN_IDS:
         _admin_reply_target[admin_id] = {
-            "fb_id": feedback_id, "user_id": user_id, "original": original or ""}
+            "fb_id": feedback_id, "user_id": user_id, "original": original or "", "set_at": now}
 
 
 async def _deliver_reply(bot, admin_chat_id: int, feedback_id, target_user_id: int,
@@ -314,13 +316,15 @@ async def _deliver_reply(bot, admin_chat_id: int, feedback_id, target_user_id: i
 
 def _admin_can_quick_reply(message: Message) -> bool:
     """Фильтр: админ «вооружён» активным обращением и печатает обычный текст."""
-    return (
-        message.from_user is not None
-        and message.from_user.id in ADMIN_IDS
-        and message.from_user.id in _admin_reply_target
-        and bool(message.text)
-        and not message.text.startswith("/")
-    )
+    if message.from_user is None or message.from_user.id not in ADMIN_IDS:
+        return False
+    target = _admin_reply_target.get(message.from_user.id)
+    if not target:
+        return False
+    if time.time() - target.get("set_at", 0) > 300:
+        _admin_reply_target.pop(message.from_user.id, None)
+        return False
+    return bool(message.text) and not message.text.startswith("/")
 
 
 async def _show_user_note(cb: CallbackQuery, note_html: str):
@@ -349,11 +353,14 @@ async def fb_need(cb: CallbackQuery):
 
     # Помечаем обращение (только своё) как ждущее ответа
     async with SessionLocal() as session:
-        await session.execute(
+        result = await session.execute(
             text("UPDATE feedback SET needs_reply=1 WHERE id=:id AND user_id=:uid"),
             {"id": feedback_id, "uid": user_id},
         )
         await session.commit()
+        if result.rowcount == 0:
+            await cb.answer(await get_text("feedback_not_found", "ru") or "Обращение не найдено.", show_alert=True)
+            return
 
     await _show_user_note(
         cb,
@@ -387,6 +394,11 @@ async def fb_noneed(cb: CallbackQuery):
     )
     # Обновляем то же уведомление админам (без нового сообщения)
     if feedback_id:
+        async with SessionLocal() as session:
+            result = await session.execute(text("SELECT 1 FROM feedback WHERE id=:id AND user_id=:uid"), {"id": feedback_id, "uid": cb.from_user.id})
+            if not result.first():
+                await cb.answer(await get_text("feedback_not_found", "ru") or "Обращение не найдено.", show_alert=True)
+                return
         await _update_admin_notif(
             cb.bot, feedback_id, "ℹ️ <b>Ответ не требуется.</b>",
             with_reply=False, create_if_missing=False,

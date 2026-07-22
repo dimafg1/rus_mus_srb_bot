@@ -1087,6 +1087,20 @@ async def _sell_ok_locked(cb: CallbackQuery, state: FSMContext):
         async with SessionLocal() as s2:
             city = (await s2.execute(select(City).where(City.id == l.city_id))).scalar_one()
             cat  = (await s2.execute(select(Category).where(Category.id == l.category_id))).scalar_one()
+            
+        has_fields = cat.fields and cat.fields.strip() not in ("", "[]", "null")
+        if has_fields:
+            await state.update_data(
+                listing_id=l.id,
+                extra_owner_id=cb.from_user.id,
+                extra_listing_type="market",
+            )
+            msg = await cb.message.answer(f"{text_pub}\n\n{text_extra}")
+            last_bot_messages[chat_id] = [msg.message_id]
+            await register_bot_messages(chat_id, [msg.message_id])
+            await start_extra_fields_for_category(cb, state, cat.id, f"edit_listing_overview:{l.id}")
+            return
+
         rows = [
             [InlineKeyboardButton(
                 text=await get_text("vac_edit_all", "ru") or "✏️ Редактировать все поля",

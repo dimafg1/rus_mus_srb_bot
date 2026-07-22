@@ -1136,11 +1136,13 @@ async def afisha_edit_title_apply(message: Message, state: FSMContext):
     # обновляем БД
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE listing
                 SET title = :title
                 WHERE id = :id AND owner_id = :owner AND type='events' AND is_sold=0
             """), {"title": new_title, "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
             await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id}")
@@ -1276,7 +1278,7 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
 
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE events_meta
                 SET start_at_utc = :ts
                 WHERE listing_id = :id
@@ -1288,6 +1290,8 @@ async def afisha_edit_date_apply(message: Message, state: FSMContext):
                         AND is_sold=0
                   )
             """), {"ts": int(start_at_utc), "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
             await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} ts={start_at_utc}")
@@ -1412,7 +1416,7 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
 
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE events_meta
                 SET start_at_utc = :ts
                 WHERE listing_id = :id
@@ -1424,6 +1428,8 @@ async def afisha_edit_time_apply(message: Message, state: FSMContext):
                         AND is_sold=0
                   )
             """), {"ts": int(start_at_utc), "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
             await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} ts={start_at_utc}")
@@ -1545,7 +1551,7 @@ async def _afisha_edit_price_apply_value(
 
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE events_meta
                 SET price_text = :pt
                 WHERE listing_id = :id
@@ -1557,6 +1563,8 @@ async def _afisha_edit_price_apply_value(
                         AND is_sold=0
                   )
             """), {"pt": new_price_text, "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
 
             await s.execute(sql("""
                 UPDATE listing
@@ -1633,7 +1641,7 @@ async def afisha_edit_price_apply(message: Message, state: FSMContext):
     try:
         async with SessionLocal() as s:
             # 1) events_meta.price_text (как “истина” для отображения)
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE events_meta
                 SET price_text = :pt
                 WHERE listing_id = :id
@@ -1645,6 +1653,8 @@ async def afisha_edit_price_apply(message: Message, state: FSMContext):
                         AND is_sold=0
                   )
             """), {"pt": new_price_text, "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
 
             # 2) listing.price (число или NULL)
             await s.execute(sql("""
@@ -1804,7 +1814,7 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
     # 4) Обычный город: обновляем БД: listing.city_id + events_meta.city_text
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE listing
                 SET city_id = :cid
                 WHERE id = :id
@@ -1812,12 +1822,21 @@ async def afisha_edit_city_pick(cb: CallbackQuery, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"cid": int(city_id), "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
 
             await s.execute(sql("""
                 UPDATE events_meta
                 SET city_text = :ct
                 WHERE listing_id = :id
-            """), {"ct": city_name, "id": int(listing_id)})
+                  AND EXISTS (
+                      SELECT 1 FROM listing
+                      WHERE id = :id
+                        AND owner_id = :owner
+                        AND type='events'
+                        AND is_sold=0
+                  )
+            """), {"ct": city_name, "id": int(listing_id), "owner": int(owner_id)})
 
             await _mark_event_pending(s, listing_id)
             await s.commit()
@@ -1868,7 +1887,7 @@ async def afisha_edit_city_text_apply(message: Message, state: FSMContext):
 
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE listing
                 SET city_id = :cid
                 WHERE id = :id
@@ -1876,12 +1895,21 @@ async def afisha_edit_city_text_apply(message: Message, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"cid": int(other_city_id), "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
 
             await s.execute(sql("""
                 UPDATE events_meta
                 SET city_text = :ct
                 WHERE listing_id = :id
-            """), {"ct": raw, "id": int(listing_id)})
+                  AND EXISTS (
+                      SELECT 1 FROM listing
+                      WHERE id = :id
+                        AND owner_id = :owner
+                        AND type='events'
+                        AND is_sold=0
+                  )
+            """), {"ct": raw, "id": int(listing_id), "owner": int(owner_id)})
 
             await _mark_event_pending(s, listing_id)
             await s.commit()
@@ -1969,7 +1997,7 @@ async def afisha_edit_venue_apply(message: Message, state: FSMContext):
 
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE events_meta
                 SET venue_text = :vt
                 WHERE listing_id = :id
@@ -1981,6 +2009,8 @@ async def afisha_edit_venue_apply(message: Message, state: FSMContext):
                         AND is_sold=0
                   )
             """), {"vt": raw, "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
             await _mark_event_pending(s, listing_id)
             await s.commit()
 
@@ -2077,7 +2107,7 @@ async def afisha_edit_descr_apply(message: Message, state: FSMContext):
     # сохраняем в listing.descr (так у вас и читается в карточках)
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE listing
                 SET descr = :d
                 WHERE id = :id
@@ -2085,6 +2115,8 @@ async def afisha_edit_descr_apply(message: Message, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"d": new_descr, "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
             await _mark_event_pending(s, listing_id)
             await s.commit()
 
@@ -2246,7 +2278,7 @@ async def afisha_edit_photo_delete_yes(cb: CallbackQuery, state: FSMContext):
 
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE listing
                 SET photo_file_id = NULL
                 WHERE id = :id
@@ -2254,6 +2286,8 @@ async def afisha_edit_photo_delete_yes(cb: CallbackQuery, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
             await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} photo=NULL")
@@ -2301,7 +2335,7 @@ async def afisha_edit_photo_apply(message: Message, state: FSMContext):
 
     try:
         async with SessionLocal() as s:
-            await s.execute(sql("""
+            result = await s.execute(sql("""
                 UPDATE listing
                 SET photo_file_id = :ph
                 WHERE id = :id
@@ -2309,6 +2343,8 @@ async def afisha_edit_photo_apply(message: Message, state: FSMContext):
                   AND type='events'
                   AND is_sold=0
             """), {"ph": file_id, "id": int(listing_id), "owner": int(owner_id)})
+            if result.rowcount == 0:
+                raise Exception("Not owner or not found")
             await _mark_event_pending(s, listing_id)
             await s.commit()
         _af_dbg(func, "db.ok", f"id={listing_id} photo=set")

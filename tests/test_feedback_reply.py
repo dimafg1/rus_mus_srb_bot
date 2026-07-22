@@ -12,8 +12,9 @@
 """
 
 import unittest
+import time
+from unittest.mock import patch, AsyncMock, MagicMock, PropertyMock, ANY
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 from app.routers import feedback
 from app.routers.feedback import AdminReplyStates
@@ -245,7 +246,7 @@ class FbReplySendTests(FbBase):
 
 class FbQuickReplyTests(FbBase):
     def test_filter_true_only_when_armed(self):
-        feedback._admin_reply_target[111] = {"fb_id": 42, "user_id": 2002, "original": "в"}
+        feedback._admin_reply_target[111] = {"set_at": time.time(), "fb_id": 42, "user_id": 2002, "original": "в"}
         with _MultiPatch(_patches(SimpleNamespace(execute=AsyncMock(), commit=AsyncMock()))):
             armed = _admin_msg("привет", admin_id=111)
             self.assertTrue(feedback._admin_can_quick_reply(armed))
@@ -258,7 +259,7 @@ class FbQuickReplyTests(FbBase):
             self.assertFalse(feedback._admin_can_quick_reply(_admin_msg("привет", admin_id=111)))
 
     async def test_quick_reply_delivers_and_disarms(self):
-        feedback._admin_reply_target[111] = {"fb_id": 42, "user_id": 2002, "original": "мой вопрос"}
+        feedback._admin_reply_target[111] = {"set_at": time.time(), "fb_id": 42, "user_id": 2002, "original": "мой вопрос"}
         msg = _admin_msg("быстрый ответ", deliver=True, admin_id=111)
         session = SimpleNamespace(execute=AsyncMock(), commit=AsyncMock())
         with _MultiPatch(_patches(session)):
@@ -352,7 +353,7 @@ class FbMineDeleteTests(FbBase):
 
     async def test_delete_clears_stale_admin_refs(self):
         feedback._fb_admin_notifs[42] = {"who": "@t", "user_id": 17, "body": "x", "msgs": []}
-        feedback._admin_reply_target[111] = {"fb_id": 42, "user_id": 17, "original": "x"}
+        feedback._admin_reply_target[111] = {"set_at": time.time(), "fb_id": 42, "user_id": 17, "original": "x"}
         cb = _fake_cb("fb:minedel_yes:42", user_id=17)
         session = SimpleNamespace(execute=AsyncMock(side_effect=[
             None,

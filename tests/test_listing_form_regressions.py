@@ -530,14 +530,14 @@ class ListingFormAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.answer.await_args.args[0], "Публикуем, пожалуйста, подождите.")
 
     async def test_legacy_vacancy_entry_checks_owner_and_type_before_render(self):
-        callback = fake_callback("edit_vacancy_overview:10")
+        callback = fake_callback("vacancy_edit_overview:10")
         state = FakeState()
         with (
-            patch.object(vacancy_edit, "clear_bot_messages", AsyncMock()),
-            patch.object(vacancy_edit, "_authorize_vacancy_callback", AsyncMock(return_value=False)),
-            patch.object(vacancy_edit, "_render_overview", AsyncMock()) as render,
+            patch.object(vacancy_edit_overview, "clear_bot_messages", AsyncMock()),
+            patch.object(vacancy_edit_overview, "_authorize_vacancy_callback", AsyncMock(return_value=False)),
+            patch.object(vacancy_edit_overview, "_render_overview", AsyncMock()) as render,
         ):
-            await vacancy_edit.vacancy_edit_overview_entry(callback, state)
+            await vacancy_edit_overview.vacancy_edit_overview_entry(callback, state)
 
         render.assert_not_awaited()
 

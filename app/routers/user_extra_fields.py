@@ -155,7 +155,7 @@ async def start_extra_fields_for_category(ev, state: FSMContext, cat_id: int, re
             listing = (await s.execute(select(Listing).where(
                 Listing.id == int(listing_id),
                 Listing.owner_id == owner_id,
-                Listing.type.in_(("market", "service")),
+                Listing.type.in_(("market", "service", "vacancy")),
             ))).scalar_one_or_none()
             if listing is None:
                 await state.clear()
@@ -224,7 +224,7 @@ async def _ask_current_field(ev, state: FSMContext):
                         Listing.id == int(listing_id),
                         Listing.owner_id == owner_id,
                         Listing.type == listing_type,
-                        Listing.type.in_(("market", "service")),
+                        Listing.type.in_(("market", "service", "vacancy")),
                     ))).scalar_one_or_none()
                     if l:
                         l.flex = json_str

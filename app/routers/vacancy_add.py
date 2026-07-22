@@ -64,7 +64,6 @@ from datetime import datetime
 from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import Listing, City, Category
-from app.routers.vacancy_utils import _flex_to_db
 
 from app.routers.utils_category_title import format_category_title
 
@@ -159,25 +158,6 @@ async def _vacancy_categories_kb_add(city_slug: str, parent_id: int | None) -> I
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _flex_to_db(value):
-    """Превращает dict/list/любое значение в JSON-строку для БД."""
-    if not value:
-        return None  # в БД пойдёт NULL
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if isinstance(value, str):
-        return value  # допустим, уже JSON
-    # числа/булевы/даты и пр. — тоже в JSON
-    return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
-
-def _flex_from_db(raw):
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {}  # на всякий случай
-
 
 router = Router(name="vacancy_add")
 _vacancy_publish_locks: dict[int, asyncio.Lock] = {}
@@ -191,263 +171,10 @@ class VacForm(StatesGroup):
     title = State()
     descr = State()
     price = State()
-    flex = State()
-    confirm = State()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers for navigation and extra fields
-
-async def _vacancy_nav_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
-    """Return a keyboard with back and main menu buttons for vacancy flow."""
-    back_btn = await get_common_menu_button('back', lang)
-    main_btn = await get_common_menu_button('main_menu', lang)
-    rows: List[List[InlineKeyboardButton]] = []
-    if back_btn:
-        rows.append([InlineKeyboardButton(text=back_btn.text, callback_data="go_isk")])
-    if main_btn:
-        rows.append([main_btn])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-async def _vacancy_send_with_nav(m: Message, text: str, parse_mode: Optional[str] = None) -> Message:
-    """Send a message preceded by the navigation buttons.
-
-    The first message contains the navigation keyboard, and the second
-    contains the actual prompt.  Both message ids are stored in
-    ``last_bot_messages`` for subsequent cleanup.
-    """
-    chat_id = m.chat.id
-    nav_text = await get_text('return_to_menu', 'ru') or "Возврат"
-    nav_kb = await _vacancy_nav_keyboard()
-    msg_nav = await m.answer(nav_text, reply_markup=nav_kb)
-    last_bot_messages.setdefault(chat_id, []).append(msg_nav.message_id)
-    await register_bot_messages(chat_id, [msg_nav.message_id])
-    msg = await m.answer(text, parse_mode=parse_mode)
-    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
-    await register_bot_messages(chat_id, [msg.message_id])
-    return msg
-
-
-async def _load_category_fields(session, cat_id: int) -> List[dict]:
-    """Load the JSON-defined extra fields for a category."""
-    cat = (await session.execute(select(Category).where(Category.id == cat_id))).scalar_one()
-    try:
-        raw = (cat.fields or "").strip()
-        data = json.loads(raw) if raw else []
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-async def _start_flex_flow(m_or_cbmsg, state: FSMContext):
-    """Launch the extra fields wizard if the category defines any."""
-    data = await state.get_data()
-    cat_id = int(data.get("cat_id"))
-    async with SessionLocal() as s:
-        raw_fields = await _load_category_fields(s, cat_id)
-    default_flex_label = await get_text("vac_add_flex_default_label", "ru") or "Поле"
-    supported = {"text", "number", "select", "checkbox"}
-    fields: List[dict] = []
-    for f in raw_fields or []:
-        if isinstance(f, dict) and str(f.get("type", "text")).lower() in supported:
-            fld = {
-                "type": str(f.get("type", "text")).lower(),
-                "label": (str(f.get("label") or "") or default_flex_label).strip(),
-                "key": (str(f.get("key") or "field")).strip().lower() or "field",
-                "required": bool(f.get("required", False)),
-            }
-            if fld["type"] == "select":
-                opts = f.get("options") if isinstance(f.get("options"), list) else []
-                fld["options"] = [str(o).strip() for o in opts if str(o).strip()]
-            fields.append(fld)
-
-    if not fields:
-        # no extra fields defined – go straight to preview
-        await vacancy_preview_and_confirm(m_or_cbmsg, state)
-        await state.set_state(VacForm.confirm)
-        return
-    # Initialise flex fields data
-    await state.update_data(flex_fields=fields, flex_idx=0, flex_values={})
-    await _ask_current_flex_field(m_or_cbmsg, state)
-
-
-async def _ask_current_flex_field(m_or_cbmsg, state: FSMContext):
-    """Ask the user the next extra field question."""
-    chat_id = m_or_cbmsg.chat.id
-    bot = m_or_cbmsg.bot
-    await clear_bot_messages(chat_id, bot)
-    data = await state.get_data()
-    fields = data.get("flex_fields", []) or []
-    idx = int(data.get("flex_idx", 0))
-    # If we've asked all fields, proceed to preview
-    if idx >= len(fields):
-        await vacancy_preview_and_confirm(m_or_cbmsg, state)
-        await state.set_state(VacForm.confirm)
-        return
-    default_flex_label = await get_text("vac_add_flex_default_label", "ru") or "Поле"
-    f_def = fields[idx]
-    label = f_def.get("label") or default_flex_label
-    ftype = f_def.get("type")
-    required = bool(f_def.get("required"))
-    rows: List[List[InlineKeyboardButton]] = []
-    prompt = ""
-    if ftype == "select":
-        for i, opt in enumerate(f_def.get("options", [])):
-            rows.append([
-                InlineKeyboardButton(
-                    text=str(opt),
-                    callback_data=f"vac_flex_select:{i}"
-                )
-            ])
-        if not required:
-            rows.append([
-                InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_flex_skip")
-            ])
-        select_prompt_tmpl = await get_text("vac_add_flex_select_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВыберите один из вариантов:"
-        prompt = select_prompt_tmpl.format(idx=idx+1, total=len(fields), label=_esc(label))
-    elif ftype == "checkbox":
-        rows.append([
-            InlineKeyboardButton(text=(await get_text("vac_add_checkbox_yes", "ru") or "✅ Да"), callback_data="vac_flex_checkbox:1"),
-            InlineKeyboardButton(text=(await get_text("admin_panel_btn_no", "ru") or "❌ Нет"), callback_data="vac_flex_checkbox:0"),
-        ])
-        if not required:
-            rows.append([
-                InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_flex_skip")
-            ])
-        checkbox_prompt_tmpl = await get_text("vac_add_flex_checkbox_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВыберите вариант:"
-        prompt = checkbox_prompt_tmpl.format(idx=idx+1, total=len(fields), label=_esc(label))
-    else:
-        # text or number
-        if not required:
-            rows.append([
-                InlineKeyboardButton(text=(await get_text("btn_skip", "ru") or "Пропустить"), callback_data="vac_flex_skip")
-            ])
-        number_suffix = await get_text("vac_add_flex_number_suffix", "ru") or " (число)."
-        text_prompt_tmpl = await get_text("vac_add_flex_text_prompt_tmpl", "ru") or "({idx}/{total}) <b>{label}</b>\n\nВведите значение{suffix}"
-        prompt = text_prompt_tmpl.format(idx=idx+1, total=len(fields), label=_esc(label), suffix=number_suffix if ftype == "number" else ".")
-    # Append nav buttons
-    back_btn = await get_common_menu_button('back')
-    main_btn = await get_common_menu_button('main_menu')
-    nav: List[InlineKeyboardButton] = []
-    if back_btn:
-        nav.append(InlineKeyboardButton(text=back_btn.text, callback_data="go_isk"))
-    if main_btn:
-        nav.append(main_btn)
-    if nav:
-        rows.append(nav)
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    msg = await m_or_cbmsg.answer(prompt, reply_markup=kb, parse_mode="HTML")
-    last_bot_messages.setdefault(chat_id, []).append(msg.message_id)
-    await register_bot_messages(chat_id, [msg.message_id])
-    await state.set_state(VacForm.flex)
-
-
-async def _update_flex_value(state: FSMContext, value: Optional[str]):
-    """Store the user's answer for the current flex field and advance the index."""
-    data = await state.get_data()
-    idx = int(data.get("flex_idx", 0))
-    fields = data.get("flex_fields", []) or []
-    if 0 <= idx < len(fields):
-        key = fields[idx].get("key")
-        fv = data.get("flex_values", {}) or {}
-        if value is not None:
-            fv[key] = value
-        await state.update_data(flex_values=fv, flex_idx=idx + 1)
-
-
-async def vacancy_preview_and_confirm(m_or_cbmsg, state: FSMContext):
-    """Compile a preview of the vacancy and ask for confirmation."""
-    data = await state.get_data()
-    city_name = data.get("city_name")
-    cat_name = data.get("cat_name")
-    title = data.get("title")
-    descr = data.get("descr") or "—"
-    price = data.get("price") or "—"
-    flex_vals = data.get("flex_values", {}) or {}
-    # Build flex block text
-    flex_lines: List[str] = []
-    for k, v in flex_vals.items():
-        flex_lines.append(f"• {_esc(k.capitalize())}: <i>{_esc(str(v))}</i>")
-    flex_block = "\n".join(flex_lines)
-    preview_tmpl = await get_text("vac_add_preview_tmpl", "ru") or (
-        "<b>Город:</b> {city}\n<b>Категория:</b> {category}\n<b>Заголовок:</b> {title}\n"
-        "<b>Описание:</b> {descr}\n<b>Зарплата:</b> {price}"
-    )
-    preview_text = preview_tmpl.format(
-        city=_esc(city_name), category=_esc(cat_name), title=_esc(title),
-        descr=_esc(descr), price=_esc(price),
-    )
-    if flex_block:
-        preview_text += "\n" + flex_block
-    rows = [
-        [InlineKeyboardButton(text=(await get_text("vac_add_btn_publish", "ru") or "✅ Опубликовать"), callback_data="vac_publish")],
-        [InlineKeyboardButton(text=(await get_text("vac_add_btn_cancel_publish", "ru") or "❌ Отменить"), callback_data="vac_cancel")],
-    ]
-    back_btn = await get_common_menu_button('back', 'ru')
-    if back_btn:
-        back_btn.callback_data = "vac_confirm_back"
-        rows.insert(0, [back_btn])
-    main_btn = await get_common_menu_button('main_menu', 'ru')
-    if main_btn:
-        rows.append([main_btn])
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    msg = await m_or_cbmsg.answer(preview_text, reply_markup=kb, parse_mode="HTML")
-    last_bot_messages.setdefault(m_or_cbmsg.chat.id, []).append(msg.message_id)
-    await register_bot_messages(m_or_cbmsg.chat.id, [msg.message_id])
-
-
-# RU: «Назад» с экрана подтверждения — к последнему доп.полю, если они были
-#     у категории, иначе — к шагу цены (тот же экран, что и после описания).
-@router.callback_query(VacForm.confirm, F.data == "vac_confirm_back")
-async def vacancy_confirm_back(cb: CallbackQuery, state: FSMContext):
-    from html import escape as _esc
-
-    chat_id = cb.message.chat.id
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
-    await clear_bot_messages(chat_id, cb.bot)
-
-    data = await state.get_data()
-    fields = data.get("flex_fields") or []
-    if fields:
-        await state.update_data(flex_idx=len(fields) - 1)
-        await _ask_current_flex_field(cb.message, state)
-        await cb.answer()
-        print(f"[vacancy_add.py] vacancy_confirm_back -> flex ✓ | chat_id={chat_id}")
-        return
-
-    await state.set_state(VacForm.price)
-    descr = data.get("descr")
-
-    buttons: list[list[InlineKeyboardButton]] = []
-    back_btn = await get_common_menu_button('back', 'ru')
-    if back_btn:
-        back_btn.callback_data = "vac_add_back:descr"
-        buttons.append([back_btn])
-    main_btn = await get_common_menu_button('main_menu', 'ru')
-    if main_btn:
-        buttons.append([main_btn])
-    nav_msg = await cb.message.answer(
-        (await get_text("vac_add_nav_return", "ru") or "◀️ Возврат"),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML",
-    )
-    await state.update_data(nav_msg_id=nav_msg.message_id)
-
-    tmpl = await get_text('vac_ask_price', 'ru') or "Укажите стоимость оплаты или нажмите на нужную кнопку:"
-    title = _esc(data.get("title") or "—")
-    already_entered_title_descr_tmpl = await get_text("vac_add_already_entered_title_descr_tmpl", "ru") or "<b>Вы уже ввели</b>\n• Заголовок: <i>{title}</i>\n• Описание: <i>{descr}</i>"
-    helper = already_entered_title_descr_tmpl.format(title=title, descr=_esc(descr) if descr else "—")
-    kb_quick = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=(await get_text("btn_free", "ru") or "Бесплатно"), callback_data="vac_price_choice:free"),
-        InlineKeyboardButton(text=(await get_text("btn_by_agreement", "ru") or "По договоренности"), callback_data="vac_price_choice:deal"),
-    ]])
-    prompt_msg = await cb.message.answer(f"{helper}\n\n{tmpl}", reply_markup=kb_quick, parse_mode="HTML")
-    await state.update_data(prompt_id=prompt_msg.message_id)
-    await cb.answer()
-    print(f"[vacancy_add.py] vacancy_confirm_back -> price ✓ | chat_id={chat_id}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1365,6 +1092,20 @@ async def _vacancy_input_price_locked(m: Message, state: FSMContext):
     t_open = (await get_text("vac_go_listing", "ru")) or "📄 К объявлению"
     t_menu = (await get_text("vac_to_menu", "ru")) or "≡ Меню вакансий"
 
+    has_fields = cat.fields and cat.fields.strip() not in ("", "[]", "null")
+    if has_fields:
+        await state.update_data(
+            listing_id=listing_id,
+            extra_owner_id=m.from_user.id,
+            extra_listing_type="vacancy",
+        )
+        msg = await m.answer(f"{t_pub}\n\n{t_off}")
+        last_bot_messages[chat_id] = [msg.message_id]
+        await register_bot_messages(chat_id, [msg.message_id])
+        from app.routers.user_extra_fields import start_extra_fields_for_category
+        await start_extra_fields_for_category(m, state, cat.id, f"vacancy_edit_overview:{listing_id}")
+        return
+
     # 1) Редактирование всех полей
     kb.row(InlineKeyboardButton(text=t_edit, callback_data=f"vacancy_edit_overview:{listing_id}"))
     # 2) К объявлению (собственный роутер вакансий)
@@ -1385,151 +1126,3 @@ async def _vacancy_input_price_locked(m: Message, state: FSMContext):
     print(f"[vacancy_add.py] handler=vacancy_input_price published_id={listing_id} city_id={city.id} cat_id={cat.id}")
 
 
-@router.callback_query(F.data.startswith("vac_flex_select:"), VacForm.flex)
-async def vacancy_flex_select(cb: CallbackQuery, state: FSMContext):
-    """Handle selection for a select-type extra field."""
-    _, idx_str = cb.data.split(":", 1)
-    idx = int(idx_str)
-    data = await state.get_data()
-    fields = data.get("flex_fields", []) or []
-    field = fields[int(data.get("flex_idx", 0))]
-    options = field.get("options", [])
-    value = options[idx] if 0 <= idx < len(options) else None
-    await _update_flex_value(state, value)
-    await _ask_current_flex_field(cb, state)
-    await cb.answer()
-
-
-@router.callback_query(F.data.startswith("vac_flex_checkbox:"), VacForm.flex)
-async def vacancy_flex_checkbox(cb: CallbackQuery, state: FSMContext):
-    """Handle yes/no for checkbox-type extra field."""
-    _, val = cb.data.split(":", 1)
-    value = True if val == "1" else False if val == "0" else None
-    await _update_flex_value(state, value)
-    await _ask_current_flex_field(cb, state)
-    await cb.answer()
-
-
-@router.callback_query(F.data == "vac_flex_skip", VacForm.flex)
-async def vacancy_flex_skip(cb: CallbackQuery, state: FSMContext):
-    """Skip an optional extra field."""
-    await _update_flex_value(state, None)
-    await _ask_current_flex_field(cb, state)
-    await cb.answer()
-
-
-@router.callback_query(VacForm.confirm, F.data == "vac_publish")
-async def vacancy_publish(cb: CallbackQuery, state: FSMContext):
-    lock = _vacancy_publish_locks.setdefault(cb.from_user.id, asyncio.Lock())
-    if lock.locked():
-        await cb.answer(await get_text("services_add_publishing_wait", "ru") or "Публикуем, пожалуйста, подождите.")
-        return
-    async with lock:
-        if await state.get_state() != VacForm.confirm.state:
-            await cb.answer(await get_text("services_add_already_published", "ru") or "Объявление уже опубликовано.")
-            return
-        await _vacancy_publish_locked(cb, state)
-
-
-async def _vacancy_publish_locked(cb: CallbackQuery, state: FSMContext):
-    """RU: финальный шаг — коммит в БД и показ меню редактирования/просмотра."""
-    chat_id = cb.message.chat.id
-
-    # Канон: чистим предыдущие сообщения/меню
-    try:
-        from app.routers.utils import clear_user_messages
-        await clear_user_messages(chat_id, cb.bot)
-    except Exception:
-        pass
-    await clear_bot_messages(chat_id, cb.bot)
-
-    data = await state.get_data()
-
-    # 1) Считать обязательные данные мастера (заполнялись на предыдущих шагах)
-    city_slug = data.get("pub_city_slug")
-    cat_id = int(data.get("pub_cat_id") or 0)
-    title = (data.get("title") or "").strip()
-    price = (data.get("price") or "").strip()
-    descr = (data.get("descr") or "").strip()
-    contact = (data.get("contact") or "").strip()
-    extra_cat1 = data.get("extra_category_id1")
-    extra_cat2 = data.get("extra_category_id2")
-    flex_dict = data.get("flex") or {}
-
-    if not city_slug or not cat_id or not title:
-        await cb.answer(await get_text("vac_err_no_data", "ru") or "Не хватает данных для публикации. Вернитесь и заполните поля.", show_alert=True)
-        print("[vacancy_add.py] handler=vacancy_publish missing city/title/cat", data)
-        return
-
-    city_id = await _city_id_by_slug(city_slug)
-    if not city_id:
-        await cb.answer(await get_text("vac_err_no_city", "ru") or "Город не найден. Выберите город заново.", show_alert=True)
-        print("[vacancy_add.py] handler=vacancy_publish bad city_slug=", city_slug)
-        return
-
-    # 2) Подготовить payload (flex -> сериализация)
-    flex_payload = _flex_to_db(flex_dict)  # важно: не dict в SQLite
-
-    # 3) Сохранить объявление
-    async with SessionLocal() as s:
-        obj = Listing(
-            type="vacancy",
-            city_id=city_id,
-            category_id=cat_id,
-            owner_id=cb.from_user.id,
-            title=title,
-            price=price,
-            descr=descr,
-            contact=contact,
-            photo_file_id=None,      # вакансия — без фото
-            is_sold=False,
-            created_at=utcnow_naive(),  # если в модели нет default
-            flex=flex_payload,
-            extra_category_id1=extra_cat1,
-            extra_category_id2=extra_cat2,
-        )
-        ensure_expires_at(obj)  # срок жизни 30 дней
-        s.add(obj)
-        await s.flush()            # получим obj.id без доп. запроса
-        listing_id = obj.id
-        await s.commit()
-
-    # Commit завершён: очищаем мастер до аналитики/Telegram, чтобы повторный
-    # callback не создал вторую запись при сбое необязательного шага.
-    await state.clear()
-
-    from app.analytics import log_event
-    try:
-        await log_event("listing_created", user_id=cb.from_user.id,
-                        section="vacancy", entity_type="listing", entity_id=listing_id)
-    except Exception as e:
-        print(f"[vacancy_add.py] vacancy_publish analytics error listing_id={listing_id}: {e}")
-
-    # 4) Пост-публикационное меню (аналог других разделов)
-    buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=(await get_text("vac_add_btn_edit_listing", "ru") or "✏️ Редактировать объявление"), callback_data=f"vacancy_edit_overview:{listing_id}")],
-        [InlineKeyboardButton(text=(await get_text("vac_add_btn_view", "ru") or "🔎 Посмотреть"), callback_data=f"vac_view:{listing_id}:::my")],
-        [InlineKeyboardButton(text=(await get_text("vac_to_menu", "ru") or "≡ Меню вакансий"), callback_data="go_isk")],
-    ]
-    main_btn = await get_common_menu_button("main_menu")
-    if main_btn:
-        buttons.append([main_btn])
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    msg = await cb.message.answer(await get_text("vac_published", "ru") or "✅ Объявление опубликовано.", reply_markup=kb, parse_mode="HTML")
-    last_bot_messages[chat_id] = [msg.message_id]
-    await register_bot_messages(chat_id, [msg.message_id])
-    await cb.answer()
-
-    print(f"[vacancy_add.py] handler=vacancy_publish listing_id={listing_id} user_id={cb.from_user.id}")
-
-
-@router.callback_query(F.data == "vac_cancel")
-async def vacancy_cancel(cb: CallbackQuery, state: FSMContext):
-    """Cancel the vacancy posting and reset the state."""
-    await clear_bot_messages(cb.message.chat.id, cb.bot)
-    await state.clear()
-    msg = await cb.message.answer(await get_text("vac_cancelled", "ru") or "Публикация вакансии отменена.", reply_markup=await _vacancy_nav_keyboard())
-    last_bot_messages.setdefault(cb.message.chat.id, []).append(msg.message_id)
-    await register_bot_messages(cb.message.chat.id, [msg.message_id])
-    await cb.answer()

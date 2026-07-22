@@ -258,18 +258,7 @@ async def vacancy_list(cb: CallbackQuery):
     _dbg("vacancy_list.listings", city_slug=city_slug, cat_id=cat_id, found=len(listings))
 
 
-# RU: совместимость со старыми кнопками вида vac_cat:<slug>:<cat_id> → редирект в vlist
-@router.callback_query(StateFilter(None), F.data.startswith("vac_cat:"))
-async def _compat_vac_cat_redirect(cb: CallbackQuery):
-    chat_id = cb.message.chat.id
-    await clear_bot_messages(chat_id, cb.bot)
 
-    _, city_slug, cat_id = cb.data.split(":", 2)
-    await vacancy_list(
-        # эмулируем колбэк vlist:<slug>:<cat_id>
-        type("Proxy", (), {"message": cb.message, "data": f"vlist:{city_slug}:{cat_id}", "answer": cb.answer})
-    )
-    _dbg("_compat_vac_cat_redirect", city_slug=city_slug, cat_id=cat_id, chat_id=chat_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

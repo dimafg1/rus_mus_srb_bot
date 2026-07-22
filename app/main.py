@@ -27,7 +27,7 @@ from app.events_meta import ensure_events_meta
 from app.models import City, Category, Item, Listing, BotUser
 from app.keyboards import events_main_inline
 from app.routers.market_add import router as market_add_router
-from app.routers.market_edit import router as market_edit_router   # 🔹 добавили
+
 from app.routers.market_edit_photos import router as market_edit_photos_router
 
 from app.routers.services_add import router as services_add_router
@@ -91,7 +91,7 @@ async def safe_edit_or_send(cb: CallbackQuery, text: str, reply_markup=None, par
 PAGE = 5  # Количество записей на странице
 
 # Global dictionaries to track sent listing messages and the currently expanded listing per chat.
-listing_message_ids: Dict[int, Dict[int, int]] = {}
+
 expanded_listing_by_chat: Dict[int, int] = {}
 # Новый словарь для хранения id сообщений с фото
 
@@ -320,7 +320,7 @@ dp.include_router(events_add_router)
 dp.include_router(events_admin_router)
 
 dp.include_router(market_add_router)
-dp.include_router(market_edit_router)
+
 dp.include_router(feedback.router)
 dp.include_router(user_extra_fields_router)
 
