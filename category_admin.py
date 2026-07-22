@@ -721,11 +721,45 @@ def analytics_search_quality():
             "modes": [{"mode": r[0] or "unknown", "count": r[1]} for r in mode_rows]}
 
 
+TOP_CARDS_SORT_COLUMNS = {
+    "title": "title", "section": "lv.section", "price": "l.price",
+    "contact": "l.contact", "opens": "opens", "users": "users",
+    "search_opens": "search_opens", "catalog_opens": "catalog_opens",
+    "status": "l.status",
+}
+TOP_CARDS_FILTER_FIELDS = ["title", "section", "contact", "status"]
+
+
+def _casefold_filter_paginate(rows: list, q: str, q_fields: list,
+                               f_dict: dict, filter_fields: list,
+                               offset: int, limit: int):
+    """Регистронезависимый поиск/фильтр (в т.ч. кириллица) на стороне Python —
+    SQLite LIKE и LOWER() сворачивают регистр только для ASCII, кириллица
+    (например «Микрофон» при запросе «микрофон») через них не находится."""
+    if q:
+        qf = q.casefold()
+        rows = [r for r in rows if any(qf in (r.get(f) or "").casefold() for f in q_fields)]
+    for key in filter_fields:
+        val = (f_dict.get(key) or "").strip()
+        if val:
+            vf = val.casefold()
+            rows = [r for r in rows if vf in (r.get(key) or "").casefold()]
+    total = len(rows)
+    return total, rows[offset:offset + limit]
+
+
 @app.get("/api/analytics/top_cards")
-def analytics_top_cards():
+def analytics_top_cards(offset: int = 0, limit: int = 24, q: str = "",
+                         sort: str = "opens", order: str = "desc", filters: str = ""):
+    sort_col = TOP_CARDS_SORT_COLUMNS.get(sort, "opens")
+    sort_dir = "ASC" if order == "asc" else "DESC"
+    try:
+        f_dict = json.loads(filters) if filters else {}
+    except Exception:
+        f_dict = {}
     with db() as conn:
         try:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT lv.listing_id, lv.section,
                        COUNT(*) AS opens, COUNT(DISTINCT lv.user_id) AS users,
                        SUM(CASE WHEN lv.source='search' THEN 1 ELSE 0 END) AS search_opens,
@@ -736,15 +770,19 @@ def analytics_top_cards():
                 FROM listing_views lv
                 LEFT JOIN listing l ON l.id=lv.listing_id
                 WHERE lv.action='open'
-                GROUP BY lv.listing_id ORDER BY opens DESC, users DESC LIMIT 20
+                GROUP BY lv.listing_id ORDER BY {sort_col} {sort_dir}
             """).fetchall()
-        except Exception:
-            rows = []
-    return [{"id": r[0], "section": r[1], "opens": r[2], "users": r[3],
-             "search_opens": r[4] or 0, "catalog_opens": r[5] or 0,
-             "title": r[6], "owner_id": r[7], "contact": r[8] or "",
-             "price": r[9] or "", "photo_file_id": r[10] or "",
-             "is_sold": bool(r[11]), "status": r[12] or ""} for r in rows]
+        except Exception as e:
+            return {"total": 0, "offset": offset, "limit": limit, "rows": [], "error": str(e)}
+    result = [{
+        "id": r[0], "section": r[1], "opens": r[2], "users": r[3],
+        "search_opens": r[4] or 0, "catalog_opens": r[5] or 0,
+        "title": r[6], "owner_id": r[7], "contact": r[8] or "",
+        "price": r[9] or "", "photo_file_id": r[10] or "",
+        "is_sold": bool(r[11]), "status": r[12] or ""} for r in rows]
+    total, page = _casefold_filter_paginate(
+        result, q, ["title", "contact"], f_dict, TOP_CARDS_FILTER_FIELDS, offset, limit)
+    return {"total": total, "offset": offset, "limit": limit, "rows": page}
 
 
 @app.get("/api/analytics/sources")
@@ -1578,12 +1616,28 @@ SECTION_ROOTS = {"market": 30, "service": 80, "vacancy": 90, "events": 100, "rel
 SECTION_NAMES = {"market": "Барахолка", "service": "Услуги", "vacancy": "Вакансии", "events": "Афиша", "release": "Релизы"}
 
 
+ARTISTS_SORT_COLUMNS = {
+    "name": "a.name", "type": "a.artist_type", "genres": "a.genres",
+    "city": "a.city_text", "username": "bu.username",
+    "releases": "releases", "opens": "opens",
+    "created_at": "a.created_at", "status": "a.status",
+}
+ARTISTS_FILTER_FIELDS = ["name", "type", "genres", "city", "username", "status"]
+
+
 @app.get("/api/artists")
-def artists_list():
-    """Исполнители: список для вкладки админки."""
+def artists_list(offset: int = 0, limit: int = 24, q: str = "",
+                  sort: str = "created_at", order: str = "desc", filters: str = ""):
+    """Исполнители: список для вкладки админки (пагинация/сортировка/поиск)."""
+    sort_col = ARTISTS_SORT_COLUMNS.get(sort, "a.created_at")
+    sort_dir = "ASC" if order == "asc" else "DESC"
+    try:
+        f_dict = json.loads(filters) if filters else {}
+    except Exception:
+        f_dict = {}
     with db() as conn:
         try:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT a.id, a.name, a.artist_type, a.status, a.owner_user_id,
                        a.created_at, a.genres, a.city_text, bu.username,
                        (SELECT COUNT(*) FROM release_meta rm
@@ -1592,45 +1646,104 @@ def artists_list():
                         WHERE ae.event_type='artist_opened' AND ae.entity_id=a.id) AS opens
                 FROM artist a
                 LEFT JOIN BotUser bu ON bu.user_id=a.owner_user_id
-                ORDER BY a.created_at DESC
+                ORDER BY {sort_col} {sort_dir}
             """).fetchall()
         except Exception as e:
-            return {"rows": [], "error": str(e)}
-    return {"rows": [{
+            return {"total": 0, "rows": [], "error": str(e)}
+    result = [{
         "id": r[0], "name": r[1] or "", "type": r[2] or "", "status": r[3] or "",
-        "owner_id": r[4], "created_at": (r[5] or "")[:10],
+        "owner_id": r[4], "created_at": r[5] or "",
         "genres": r[6] or "", "city": r[7] or "", "username": r[8] or "",
         "releases": r[9] or 0, "opens": r[10] or 0,
+    } for r in rows]
+    total, page = _casefold_filter_paginate(
+        result, q, ["name", "username", "genres", "city"], f_dict, ARTISTS_FILTER_FIELDS, offset, limit)
+    return {"total": total, "offset": offset, "limit": limit, "rows": page}
+
+
+@app.get("/api/artist/{artist_id}/openers")
+def artist_openers(artist_id: int):
+    """Кто и сколько раз открывал карточку исполнителя — для клика по счётчику «Открытий»."""
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT ae.user_id, bu.username, bu.full_name, COUNT(*) AS cnt,
+                   MAX(ae.created_at) AS last_open
+            FROM analytics_events ae
+            LEFT JOIN BotUser bu ON bu.user_id=ae.user_id
+            WHERE ae.event_type='artist_opened' AND ae.entity_id=?
+            GROUP BY ae.user_id
+            ORDER BY cnt DESC
+        """, (artist_id,)).fetchall()
+    return {"rows": [{
+        "user_id": r[0], "username": r[1] or "", "full_name": r[2] or "",
+        "count": r[3] or 0, "last_open": r[4] or "",
     } for r in rows]}
 
 
+RELEASES_SORT_COLUMNS = {
+    "title": "l.title", "artist": "a.name", "rtype": "rm.release_type",
+    "tracks": "tracks", "opens": "opens", "username": "bu.username",
+    "created_at": "rm.created_at", "status": "rm.status",
+}
+RELEASES_FILTER_FIELDS = ["title", "artist", "rtype", "status", "username"]
+
+
 @app.get("/api/releases")
-def releases_list():
-    """Релизы: список для отдельной вкладки админки."""
+def releases_list(offset: int = 0, limit: int = 24, q: str = "",
+                   sort: str = "created_at", order: str = "desc", filters: str = ""):
+    """Релизы: список для отдельной вкладки админки (пагинация/сортировка/поиск)."""
+    sort_col = RELEASES_SORT_COLUMNS.get(sort, "rm.created_at")
+    sort_dir = "ASC" if order == "asc" else "DESC"
+    try:
+        f_dict = json.loads(filters) if filters else {}
+    except Exception:
+        f_dict = {}
     with db() as conn:
         try:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT l.id, l.title, rm.release_type, rm.status, rm.release_date,
                        l.photo_file_id, l.created_at, l.owner_id, bu.username,
                        a.id, a.name,
-                       (SELECT COUNT(*) FROM release_track rt WHERE rt.listing_id=l.id),
+                       (SELECT COUNT(*) FROM release_track rt WHERE rt.listing_id=l.id) AS tracks,
                        (SELECT COUNT(*) FROM listing_views lv
-                        WHERE lv.listing_id=l.id AND lv.action='open')
+                        WHERE lv.listing_id=l.id AND lv.action='open') AS opens
                 FROM release_meta rm
                 JOIN listing l ON l.id=rm.listing_id
                 LEFT JOIN artist a ON a.id=rm.artist_id
                 LEFT JOIN BotUser bu ON bu.user_id=l.owner_id
                 WHERE rm.status != 'deleted'
-                ORDER BY rm.created_at DESC
+                ORDER BY {sort_col} {sort_dir}
             """).fetchall()
         except Exception as e:
-            return {"rows": [], "error": str(e)}
-    return {"rows": [{
+            return {"total": 0, "rows": [], "error": str(e)}
+    result = [{
         "id": r[0], "title": r[1] or "", "rtype": r[2] or "", "status": r[3] or "",
         "date": r[4] or "", "photo": (r[5] or "").split(",")[0].strip(),
-        "created_at": (r[6] or "")[:10], "owner_id": r[7], "username": r[8] or "",
+        "created_at": r[6] or "", "owner_id": r[7], "username": r[8] or "",
         "artist_id": r[9], "artist": r[10] or "—", "tracks": r[11] or 0,
         "opens": r[12] or 0,
+    } for r in rows]
+    total, page = _casefold_filter_paginate(
+        result, q, ["title", "artist", "username"], f_dict, RELEASES_FILTER_FIELDS, offset, limit)
+    return {"total": total, "offset": offset, "limit": limit, "rows": page}
+
+
+@app.get("/api/listing/{listing_id}/openers")
+def listing_openers(listing_id: int):
+    """Кто и сколько раз открывал объявление/релиз — для клика по счётчику «Просмотры»."""
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT lv.user_id, bu.username, bu.full_name, COUNT(*) AS cnt,
+                   datetime(MAX(lv.created_at), 'unixepoch', 'localtime') AS last_open
+            FROM listing_views lv
+            LEFT JOIN BotUser bu ON bu.user_id=lv.user_id
+            WHERE lv.listing_id=? AND lv.action='open'
+            GROUP BY lv.user_id
+            ORDER BY cnt DESC
+        """, (listing_id,)).fetchall()
+    return {"rows": [{
+        "user_id": r[0], "username": r[1] or "", "full_name": r[2] or "",
+        "count": r[3] or 0, "last_open": r[4] or "",
     } for r in rows]}
 
 
@@ -2704,6 +2817,7 @@ LISTINGS_SORT_COLUMNS = {
     "status": "l.status",
     "opens": "opens",
 }
+LISTINGS_FILTER_FIELDS = ["title", "city", "category"]
 
 
 @app.get("/api/listings")
@@ -2711,7 +2825,8 @@ def listings_catalog(offset: int = 0, limit: int = 24,
                      section: str = "", category_id: int = 0,
                      only_photo: bool = False,
                      only_active: bool = False, q: str = "",
-                     activity: str = "", sort: str = "created_at", order: str = "desc"):
+                     activity: str = "", sort: str = "created_at", order: str = "desc",
+                     filters: str = ""):
     sort_col = LISTINGS_SORT_COLUMNS.get(sort, "l.created_at")
     sort_dir = "ASC" if order == "asc" else "DESC"
     with db() as conn:
@@ -2729,17 +2844,19 @@ def listings_catalog(offset: int = 0, limit: int = 24,
             wheres.append("(l.status='active' OR l.status IS NULL)")
         elif activity == "inactive":
             wheres.append("l.status IS NOT NULL AND l.status!='active'")
-        if q:
-            wheres.append("(l.title LIKE ? OR l.descr LIKE ?)"); params += [f"%{q}%", f"%{q}%"]
+        try:
+            f_dict = json.loads(filters) if filters else {}
+        except Exception:
+            f_dict = {}
         where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
         try:
-            total = conn.execute(f"SELECT COUNT(*) FROM listing l {where_sql}", params).fetchone()[0] or 0
             rows = conn.execute(f"""
                 SELECT l.id, l.title, l.price, l.contact, l.photo_file_id, l.flex,
                        l.is_sold, l.created_at, l.type, l.status,
                        ci.name AS city_name,
                        cat.name AS category_name,
-                       COUNT(lv.id) AS opens
+                       COUNT(lv.id) AS opens,
+                       l.descr
                 FROM listing l
                 LEFT JOIN city ci ON ci.id=l.city_id
                 LEFT JOIN category cat ON cat.id=l.category_id
@@ -2747,26 +2864,30 @@ def listings_catalog(offset: int = 0, limit: int = 24,
                 {where_sql}
                 GROUP BY l.id
                 ORDER BY {sort_col} {sort_dir}
-                LIMIT ? OFFSET ?
-            """, params + [limit, offset]).fetchall()
+            """, params).fetchall()
         except Exception as e:
             return {"total": 0, "rows": [], "error": str(e)}
-    result = []
-    for r in rows:
-        photo_ids = [p.strip() for p in (r[4] or "").split(",") if p.strip()]
-        video = _parse_video(r[5] or "")
-        if not video.get("video_type") and (r[8] or "") == "release":
-            video = {**video, **_video_from_release(conn, r[0])}
-        result.append({
-            "id": r[0], "title": r[1] or "", "price": r[2] or "",
-            "contact": r[3] or "", "photo_ids": photo_ids, **video,
-            # Полная дата-время (не срез [:10]) — фронтенд сам форматирует
-            # в ДД.ММ.ГГГГ ЧЧ:ММ через общую fmtDateTime().
-            "is_sold": bool(r[6]), "created_at": r[7] or "",
-            "type": r[8] or "", "status": r[9] or "",
-            "city": r[10] or "", "category": r[11] or "", "opens": r[12] or 0,
-        })
-    return {"total": total, "offset": offset, "limit": limit, "rows": result}
+        result = []
+        for r in rows:
+            photo_ids = [p.strip() for p in (r[4] or "").split(",") if p.strip()]
+            video = _parse_video(r[5] or "")
+            if not video.get("video_type") and (r[8] or "") == "release":
+                video = {**video, **_video_from_release(conn, r[0])}
+            result.append({
+                "id": r[0], "title": r[1] or "", "price": r[2] or "",
+                "contact": r[3] or "", "photo_ids": photo_ids, **video,
+                # Полная дата-время (не срез [:10]) — фронтенд сам форматирует
+                # в ДД.ММ.ГГГГ ЧЧ:ММ через общую fmtDateTime().
+                "is_sold": bool(r[6]), "created_at": r[7] or "",
+                "type": r[8] or "", "status": r[9] or "",
+                "city": r[10] or "", "category": r[11] or "", "opens": r[12] or 0,
+                "descr": r[13] or "",
+            })
+    total, page = _casefold_filter_paginate(
+        result, q, ["title", "descr"], f_dict, LISTINGS_FILTER_FIELDS, offset, limit)
+    for row in page:
+        row.pop("descr", None)
+    return {"total": total, "offset": offset, "limit": limit, "rows": page}
 
 
 # ─────────────────────────── HTML ───────────────────────────
@@ -3013,6 +3134,7 @@ li.drag-over-below>.node{box-shadow:0 2px 0 0 #5a9cf5}
 .an-pagination button{padding:4px 10px;border-radius:5px;border:none;cursor:pointer;background:#1a2050;color:#778}
 .an-pagination button:hover{background:#22295a;color:#aab}
 .an-pagination button:disabled{opacity:.35;cursor:default}
+.an-pagination button.active{background:#3a5a9c;color:#fff;cursor:default}
 /* catalog tree */
 .catalog-breadcrumb{display:flex;align-items:center;gap:6px;margin-bottom:14px;flex-wrap:wrap;min-height:28px}
 .bc-item{font-size:13px;color:#778;cursor:pointer}
@@ -3185,6 +3307,11 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
     <button class="an-nav-btn" data-an="owners" onclick="anSwitch('owners',this)">👤 Авторы</button>
     <button class="an-nav-btn" data-an="cities" onclick="anSwitch('cities',this)">🏙 Города</button>
   </div>
+  <div class="toolbar" id="an-topcards-toolbar" style="display:none">
+    <input type="text" id="topcards-search" placeholder="🔎 Поиск по названию, контакту…"
+      style="flex:1;min-width:220px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:7px 10px;font:inherit"
+      oninput="tcSearchDebounced()">
+  </div>
   <div class="an-content" id="an-content"></div>
 </div>
 
@@ -3273,14 +3400,29 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
 <!-- Catalog panel -->
 <div id="panel-catalog" class="panel">
   <div id="catalog-breadcrumb" class="catalog-breadcrumb"></div>
+  <div class="toolbar">
+    <input type="text" id="catalog-search" placeholder="🔎 Поиск по названию и описанию…"
+      style="flex:1;min-width:220px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:7px 10px;font:inherit"
+      oninput="catSearchDebounced()">
+  </div>
   <div id="catalog-content"></div>
 </div>
 
 <div id="panel-releases" class="panel">
+  <div class="toolbar">
+    <input type="text" id="releases-search" placeholder="🔎 Поиск по названию, исполнителю, автору…"
+      style="flex:1;min-width:220px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:7px 10px;font:inherit"
+      oninput="relSearchDebounced()">
+  </div>
   <div id="releases-content"></div>
 </div>
 
 <div id="panel-artists" class="panel">
+  <div class="toolbar">
+    <input type="text" id="artists-search" placeholder="🔎 Поиск по имени, жанру, городу, автору…"
+      style="flex:1;min-width:220px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:6px;padding:7px 10px;font:inherit"
+      oninput="artSearchDebounced()">
+  </div>
   <div id="artists-content"></div>
 </div>
 
@@ -3413,6 +3555,17 @@ textarea.lm-edit-input{resize:vertical;min-height:80px}
       <button class="btn btn-ghost btn-sm" onclick="closeListingModal()">✕ Закрыть</button>
     </div>
     <div id="listing-content"><div class="empty" style="padding:40px;text-align:center">…</div></div>
+  </div>
+</div>
+
+<!-- Openers (кто открывал) modal -->
+<div class="overlay" id="modal-openers" onclick="if(event.target===this)closeOpenersModal()">
+  <div class="modal" style="width:480px;max-width:94vw;max-height:80vh;overflow-y:auto;padding:24px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 id="openers-title" style="font-size:14px;margin:0;color:#eef">Кто открывал</h2>
+      <button class="btn btn-ghost btn-sm" onclick="closeOpenersModal()">✕ Закрыть</button>
+    </div>
+    <div id="openers-content"><div class="empty" style="padding:30px;text-align:center">…</div></div>
   </div>
 </div>
 
@@ -3959,6 +4112,100 @@ document.querySelectorAll('.overlay').forEach(o=>{
   o.addEventListener('click',e=>{ if(e.target===o) closeAll(); });
 });
 
+// Перерисовка таблицы теряет фокус/курсор в постолбцовых полях поиска —
+// сохраняем id и позицию курсора активного инпута и восстанавливаем после рендера.
+async function withFocusPreserved(reloadFn) {
+  const active = document.activeElement;
+  const id = active && active.id;
+  const selStart = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+  const selEnd = active && typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
+  await reloadFn();
+  if (!id) return;
+  const el = document.getElementById(id);
+  if (el && typeof el.focus === 'function') {
+    el.focus();
+    if (selStart !== null && el.setSelectionRange) {
+      try { el.setSelectionRange(selStart, selEnd); } catch(e) {}
+    }
+  }
+}
+
+// Пагинация с номерами страниц + переход на произвольную страницу — общая
+// для Релизов/Исполнителей/Объявлений/Топ карточек (иначе с сотнями строк
+// дойти до дальней страницы можно только кликая «▶» много раз подряд).
+function paginationHtml(total, limit, offset, gotoFnName) {
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  if (totalPages <= 1) return '';
+  const curPage = Math.floor(offset / limit) + 1;
+  const pageBtn = (p) => `<button class="${p===curPage?'active':''}" onclick="${gotoFnName}(${(p-1)*limit})" ${p===curPage?'disabled':''}>${p}</button>`;
+  let nums = [];
+  if (totalPages <= 9) {
+    for (let i=1;i<=totalPages;i++) nums.push(i);
+  } else {
+    nums.push(1,2);
+    if (curPage > 4) nums.push('…');
+    for (let i=Math.max(3,curPage-2); i<=Math.min(totalPages-2,curPage+2); i++) nums.push(i);
+    if (curPage < totalPages-3) nums.push('…');
+    nums.push(totalPages-1,totalPages);
+  }
+  const seen = new Set();
+  nums = nums.filter(p => { const k=String(p); if (seen.has(k)) return false; seen.add(k); return true; });
+  const numsHtml = nums.map(p => p==='…' ? `<span style="padding:0 4px;color:#556">…</span>` : pageBtn(p)).join('');
+  return `<div class="an-pagination" style="margin-top:16px;flex-wrap:wrap">
+    <button onclick="${gotoFnName}(0)" ${curPage===1?'disabled':''}>« Первая</button>
+    <button onclick="${gotoFnName}(${Math.max(0,offset-limit)})" ${offset===0?'disabled':''}>◀</button>
+    ${numsHtml}
+    <button onclick="${gotoFnName}(${offset+limit})" ${offset+limit>=total?'disabled':''}>▶</button>
+    <button onclick="${gotoFnName}(${(totalPages-1)*limit})" ${curPage===totalPages?'disabled':''}>Последняя »</button>
+    <span style="margin-left:6px">Стр. ${curPage} / ${totalPages}</span>
+    <input type="number" min="1" max="${totalPages}" placeholder="№ стр."
+      style="width:64px;background:#0d1424;color:#dde;border:1px solid #223;border-radius:4px;padding:3px 6px;font-size:12px"
+      onkeydown="if(event.key==='Enter'){const p=Math.min(${totalPages},Math.max(1,parseInt(this.value)||1));${gotoFnName}((p-1)*${limit});this.value='';}">
+  </div>`;
+}
+
+// ── «Кто открывал» — разбивка счётчика открытий по пользователям ──
+function closeOpenersModal() {
+  document.getElementById('modal-openers').classList.remove('open');
+}
+async function openOpenersModal(kind, id, title) {
+  document.getElementById('openers-title').textContent = title || 'Кто открывал';
+  document.getElementById('openers-content').innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
+  openOverlay('modal-openers');
+  const url = kind === 'artist' ? `/api/artist/${id}/openers` : `/api/listing/${id}/openers`;
+  try {
+    const data = await fetch(url).then(r=>r.json());
+    renderOpenersModal(data.rows || []);
+  } catch(e) {
+    document.getElementById('openers-content').innerHTML = `<div class="empty" style="color:#f66">Ошибка: ${esc(e.message)}</div>`;
+  }
+}
+function renderOpenersModal(rows) {
+  const el = document.getElementById('openers-content');
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Пока никто не открывал</div>';
+    return;
+  }
+  const total = rows.reduce((s,r)=>s+(r.count||0), 0);
+  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${rows.length} пользователей · ${total} открытий</div>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="color:#556;font-size:11px;text-align:left">
+      <th style="padding:6px 8px">Пользователь</th>
+      <th style="padding:6px 8px;text-align:center">Открытий</th>
+      <th style="padding:6px 8px">Последний раз</th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr style="border-top:1px solid #0d1628">
+        <td style="padding:7px 8px">
+          <div style="color:#ccd">${r.username ? '@'+esc(r.username) : esc(r.full_name || String(r.user_id))}</div>
+          <div style="color:#556;font-size:11px;font-family:monospace">${r.user_id}</div>
+        </td>
+        <td style="padding:7px 8px;text-align:center;color:#9bc;font-weight:700">${r.count}</td>
+        <td style="padding:7px 8px;color:#778;font-size:12px;white-space:nowrap">${fmtDateTime(r.last_open)}</td>
+      </tr>`).join('')}</tbody>
+  </table>`;
+}
+
 // ── tabs ──
 const ALL_TABS = ['categories','analytics','catalog','releases','artists','feedback','texts','settings','users'];
 function switchTab(section) {
@@ -3991,52 +4238,249 @@ function catSetSubtab(name) {
 // ── Релизы (отдельная вкладка: это не объявления) ──
 const RTYPE_LABELS = {single:'Сингл', ep:'EP', album:'Альбом', clip:'Клип', live:'Live'};
 
+// ── Релизы: превью/таблица, настраиваемые столбцы, сортировка, поиск (тот же
+//    паттерн, что и у таблицы объявлений «📦 Объявления» — см. cat*) ──
+const REL_LIMIT = 24;
+let _relOffset = 0;
+let _relViewMode = localStorage.getItem('admin_rel_view_mode') || 'table';
+let _relSortKey = 'created_at';
+let _relSortDir = 'desc';
+let _relQuery = '';
+let _relSearchTimer = null;
+let _relColFilters = {};
+
+function relSearchDebounced() {
+  clearTimeout(_relSearchTimer);
+  _relSearchTimer = setTimeout(() => {
+    _relQuery = document.getElementById('releases-search').value;
+    _relOffset = 0;
+    loadReleases();
+  }, 300);
+}
+function relSetViewMode(mode) {
+  _relViewMode = mode;
+  localStorage.setItem('admin_rel_view_mode', mode);
+  loadReleases();
+}
+function relGoPage(offset) { _relOffset = offset; loadReleases(); }
+
+const REL_COLUMNS_DEF = [
+  {key:'photo',      label:'',            minWidth:50,  defaultWidth:50,  locked:true, sortable:false},
+  {key:'title',      label:'Релиз',       minWidth:120, defaultWidth:200, sortable:true,  filterable:true},
+  {key:'artist',     label:'Исполнитель', minWidth:100, defaultWidth:150, sortable:true,  filterable:true},
+  {key:'rtype',      label:'Тип',         minWidth:70,  defaultWidth:90,  sortable:true,  filterable:true},
+  {key:'tracks',     label:'Треков',      minWidth:60,  defaultWidth:80,  sortable:true},
+  {key:'opens',      label:'Открытий',    minWidth:70,  defaultWidth:100, sortable:true},
+  {key:'username',   label:'Автор',       minWidth:90,  defaultWidth:130, sortable:true,  filterable:true},
+  {key:'created_at', label:'Создан',      minWidth:90,  defaultWidth:135, sortable:true},
+  {key:'status',     label:'Статус',      minWidth:70,  defaultWidth:100, sortable:true,  filterable:true},
+];
+const REL_COLS_STORAGE_KEY = 'admin_rel_columns_v1';
+
+function relLoadColumnPrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(REL_COLS_STORAGE_KEY) || '{}'); } catch(e) {}
+  const allKeys = REL_COLUMNS_DEF.map(c => c.key);
+  let order = Array.isArray(saved.order) ? saved.order.filter(k => allKeys.includes(k)) : [];
+  allKeys.forEach(k => { if (!order.includes(k)) order.push(k); });
+  const widths = saved.widths || {};
+  const visible = saved.visible || {};
+  REL_COLUMNS_DEF.forEach(c => {
+    if (typeof widths[c.key] !== 'number') widths[c.key] = c.defaultWidth;
+    if (typeof visible[c.key] !== 'boolean') visible[c.key] = true;
+    if (c.locked) visible[c.key] = true;
+  });
+  return {order, widths, visible};
+}
+let relCols = relLoadColumnPrefs();
+function relSaveColumnPrefs() { localStorage.setItem(REL_COLS_STORAGE_KEY, JSON.stringify(relCols)); }
+function relVisibleColumns() {
+  return relCols.order.filter(k => relCols.visible[k] !== false).map(k => REL_COLUMNS_DEF.find(c => c.key===k));
+}
+function relToggleColumn(key, checked) {
+  relCols.visible[key] = checked;
+  relSaveColumnPrefs();
+  loadReleases();
+}
+function relToggleColsPanel() {
+  const p = document.getElementById('rel-cols-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('rel-cols-panel');
+  const btn = document.getElementById('rel-cols-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && e.target !== btn) {
+    panel.style.display = 'none';
+  }
+});
+
+let _relDragKey = null;
+function relColDragStart(e) { _relDragKey = e.currentTarget.dataset.col; e.dataTransfer.effectAllowed = 'move'; }
+function relColDragOver(e) { e.preventDefault(); }
+function relColDrop(e) {
+  e.preventDefault();
+  const targetKey = e.currentTarget.dataset.col;
+  if (!_relDragKey || _relDragKey === targetKey) return;
+  const order = relCols.order;
+  const from = order.indexOf(_relDragKey);
+  const to = order.indexOf(targetKey);
+  if (from === -1 || to === -1) return;
+  order.splice(from, 1);
+  order.splice(to, 0, _relDragKey);
+  relSaveColumnPrefs();
+  loadReleases();
+}
+
+let _relResizeState = null;
+function relColResizeStart(e, key) {
+  e.preventDefault(); e.stopPropagation();
+  _relResizeState = { key, startX: e.clientX, startWidth: relCols.widths[key] };
+  document.addEventListener('mousemove', relColResizeMove);
+  document.addEventListener('mouseup', relColResizeEnd);
+}
+function relColResizeMove(e) {
+  if (!_relResizeState) return;
+  const def = REL_COLUMNS_DEF.find(c => c.key === _relResizeState.key);
+  const delta = e.clientX - _relResizeState.startX;
+  const newWidth = Math.max(def.minWidth, _relResizeState.startWidth + delta);
+  relCols.widths[_relResizeState.key] = newWidth;
+  const idx = relVisibleColumns().findIndex(c => c.key === _relResizeState.key);
+  const table = document.querySelector('#releases-content table.rel-table');
+  if (table && idx !== -1) {
+    const colEl = table.querySelectorAll('colgroup col')[idx];
+    if (colEl) colEl.style.width = newWidth + 'px';
+  }
+}
+function relColResizeEnd() {
+  document.removeEventListener('mousemove', relColResizeMove);
+  document.removeEventListener('mouseup', relColResizeEnd);
+  _relResizeState = null;
+  relSaveColumnPrefs();
+}
+
+function relSortBy(key) {
+  const def = REL_COLUMNS_DEF.find(c => c.key === key);
+  if (!def || def.sortable === false) return;
+  if (_relSortKey === key) { _relSortDir = _relSortDir === 'desc' ? 'asc' : 'desc'; }
+  else { _relSortKey = key; _relSortDir = 'desc'; }
+  _relOffset = 0;
+  loadReleases();
+}
+function relFilterInput(key, value) {
+  _relColFilters[key] = value;
+  clearTimeout(_relSearchTimer);
+  _relSearchTimer = setTimeout(() => {
+    _relOffset = 0;
+    withFocusPreserved(loadReleases);
+  }, 300);
+}
+
+function relCellHtml(r, key) {
+  if (key === 'photo') return r.photo
+    ? `<img src="/api/tg_photo/${encodeURIComponent(r.photo)}" style="width:36px;height:36px;border-radius:5px;object-fit:cover" onerror="this.remove()">`
+    : '🎵';
+  if (key === 'title') return `<span class="st-dot ${r.status==='published'?'st-dot-on':'st-dot-off'}"></span> <a style="color:#7eb8f7;cursor:pointer" onclick="openListing(${r.id})">${esc(r.title)}</a>`;
+  if (key === 'artist') return r.artist_id
+    ? `<a style="color:#9bc;cursor:pointer" onclick="openArtistCard(${r.artist_id})">🎤 ${esc(r.artist)}</a>`
+    : esc(r.artist);
+  if (key === 'rtype') return esc(RTYPE_LABELS[r.rtype]||r.rtype);
+  if (key === 'tracks') return String(r.tracks || '—');
+  if (key === 'opens') return `<a style="color:#9bc;cursor:pointer;font-weight:700" onclick="openOpenersModal('listing',${r.id},${jsArg('Кто открывал: '+r.title)})">${r.opens}</a>`;
+  if (key === 'username') return r.username ? '@'+esc(r.username) : String(r.owner_id);
+  if (key === 'created_at') return fmtDateTime(r.created_at);
+  if (key === 'status') return r.status==='published' ? '<span style="color:#6ef5aa">опубликован</span>' : '<span style="color:#888">скрыт</span>';
+  return '';
+}
+
+function relTableHtml(rows) {
+  const cols = relVisibleColumns();
+  const colgroup = cols.map(c => `<col style="width:${relCols.widths[c.key]}px">`).join('');
+  const thead = cols.map(c => {
+    const sortable = c.sortable !== false;
+    const arrow = _relSortKey === c.key ? (_relSortDir === 'desc' ? ' ▼' : ' ▲') : '';
+    return `<th class="txt-th" data-col="${c.key}" draggable="${!c.locked}"
+      ondragstart="relColDragStart(event)" ondragover="relColDragOver(event)" ondrop="relColDrop(event)"
+      style="padding:6px 8px;position:relative;${c.locked?'':'cursor:grab'}${sortable?';cursor:pointer':''}"
+      ${sortable ? `onclick="relSortBy('${c.key}')"` : ''}>${esc(c.label)}${arrow}<span class="col-resize" onmousedown="relColResizeStart(event,'${c.key}')"></span></th>`;
+  }).join('');
+  const filterRow = cols.map(c => `<th style="padding:2px 6px">${c.filterable
+    ? `<input type="text" id="rel-filter-${c.key}" value="${esc(_relColFilters[c.key]||'')}" placeholder="…"
+        oninput="relFilterInput('${c.key}', this.value)"
+        style="width:100%;background:#0d1424;color:#dde;border:1px solid #223;border-radius:4px;padding:3px 6px;font-size:11px">`
+    : ''}</th>`).join('');
+  const tbody = rows.map(r => `
+    <tr style="border-top:1px solid #0d1628">
+      ${cols.map(c => `<td class="txt-td" style="padding:6px 8px">${relCellHtml(r, c.key)}</td>`).join('')}
+    </tr>`).join('');
+  const colsPanel = REL_COLUMNS_DEF.filter(c => !c.locked).map(c => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0">
+        <input type="checkbox" ${relCols.visible[c.key]!==false?'checked':''}
+          onchange="relToggleColumn('${c.key}', this.checked)"> ${esc(c.label)}
+      </label>`).join('');
+  return `
+  <div style="display:flex;justify-content:flex-end;margin-bottom:8px;position:relative">
+    <button class="btn btn-ghost btn-sm" id="rel-cols-btn" onclick="relToggleColsPanel()">⚙ Столбцы</button>
+    <div id="rel-cols-panel" style="display:none;position:absolute;right:0;top:28px;background:#1e1e35;
+      border:1px solid #333;border-radius:8px;padding:10px 14px;z-index:20;min-width:150px">${colsPanel}</div>
+  </div>
+  <table class="rel-table" style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
+    <colgroup>${colgroup}</colgroup>
+    <thead>
+      <tr style="color:#556;font-size:11px;text-align:left">${thead}</tr>
+      <tr>${filterRow}</tr>
+    </thead>
+    <tbody>${tbody}</tbody>
+  </table>`;
+}
+
+function relCardHtml(r) {
+  const media = r.photo
+    ? `<img src="/api/tg_photo/${encodeURIComponent(r.photo)}" onerror="this.parentElement.innerHTML='<div class=\\'cat-card-media-empty\\'>🎵</div>'" alt="">`
+    : `<div class="cat-card-media-empty">🎵</div>`;
+  const statusBadge = r.status === 'published'
+    ? '<span class="cat-card-status st-active">опубликован</span>'
+    : '<span class="cat-card-status st-inactive">скрыт</span>';
+  return `<div class="cat-card${r.status==='published'?'':' cat-card-off'}" onclick="openListing(${r.id})">
+    <div class="cat-card-media">
+      ${media}
+      ${statusBadge}
+    </div>
+    <div class="cat-card-body">
+      <div class="cat-card-title">${esc(r.title||'Без названия')}</div>
+      <div class="cat-card-meta">${esc(RTYPE_LABELS[r.rtype]||r.rtype)}${r.artist && r.artist !== '—' ? ' · '+esc(r.artist) : ''}</div>
+      <div class="cat-card-stats">👁 ${r.opens} · ${fmtDateTime(r.created_at)}</div>
+    </div>
+  </div>`;
+}
+
 async function loadReleases() {
   const el = document.getElementById('releases-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
-  const data = await fetch('/api/releases').then(r=>r.json());
+  const params = new URLSearchParams({offset: _relOffset, limit: REL_LIMIT, sort: _relSortKey, order: _relSortDir});
+  if (_relQuery) params.set('q', _relQuery);
+  const activeFilters = Object.fromEntries(Object.entries(_relColFilters).filter(([,v]) => v));
+  if (Object.keys(activeFilters).length) params.set('filters', JSON.stringify(activeFilters));
+  const data = await fetch(`/api/releases?${params}`).then(r=>r.json());
   const rows = data.rows || [];
+  const viewToggle = `<div style="display:flex;gap:4px">
+    <button class="btn btn-sm" style="${_relViewMode==='grid'?'background:#2a3a70':''}" onclick="relSetViewMode('grid')">🖼 Превью</button>
+    <button class="btn btn-sm" style="${_relViewMode==='table'?'background:#2a3a70':''}" onclick="relSetViewMode('table')">📋 Таблица</button>
+  </div>`;
+  const topBar = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <span style="font-size:12px;color:#556">${data.total||0} релизов</span>
+    ${viewToggle}
+  </div>`;
   if (!rows.length) {
-    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Релизов пока нет</div>';
+    // В табличном режиме таблицу (шапку + строку фильтров) не убираем — иначе
+    // вместе с ней пропадает и поле, где пользователь набирал текст фильтра,
+    // и поправить запрос становится нечем, кроме перезагрузки страницы.
+    const emptyMsg = '<div class="empty" style="padding:20px;text-align:center">Релизов не найдено</div>';
+    el.innerHTML = topBar + (_relViewMode === 'table' ? relTableHtml(rows) + emptyMsg : emptyMsg);
     return;
   }
-  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${rows.length} релизов</div>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="color:#556;font-size:11px;text-align:left">
-      <th style="padding:6px 8px"></th>
-      <th style="padding:6px 8px">Релиз</th>
-      <th style="padding:6px 8px">Исполнитель</th>
-      <th style="padding:6px 8px">Тип</th>
-      <th style="padding:6px 8px">Треков</th>
-      <th style="padding:6px 8px">Открытий</th>
-      <th style="padding:6px 8px">Автор</th>
-      <th style="padding:6px 8px">Создан</th>
-      <th style="padding:6px 8px">Статус</th>
-      <th style="padding:6px 8px"></th>
-    </tr></thead>
-    <tbody>${rows.map(r => `
-      <tr style="border-top:1px solid #0d1628">
-        <td style="padding:4px 8px">${r.photo
-          ? `<img src="/api/tg_photo/${encodeURIComponent(r.photo)}" style="width:36px;height:36px;border-radius:5px;object-fit:cover" onerror="this.remove()">`
-          : '🎵'}</td>
-        <td style="padding:7px 8px;font-weight:600">
-          <span class="st-dot ${r.status==='published'?'st-dot-on':'st-dot-off'}"></span>
-          <a style="color:#7eb8f7;cursor:pointer" onclick="openListing(${r.id})">${esc(r.title)}</a></td>
-        <td style="padding:7px 8px">${r.artist_id
-          ? `<a style="color:#9bc;cursor:pointer" onclick="openArtistCard(${r.artist_id})">🎤 ${esc(r.artist)}</a>`
-          : esc(r.artist)}</td>
-        <td style="padding:7px 8px;color:#99a">${esc(RTYPE_LABELS[r.rtype]||r.rtype)}</td>
-        <td style="padding:7px 8px;text-align:center">${r.tracks||'—'}</td>
-        <td style="padding:7px 8px;text-align:center;color:#9bc">${r.opens}</td>
-        <td style="padding:7px 8px;color:#99a">${r.username?'@'+esc(r.username):r.owner_id}</td>
-        <td style="padding:7px 8px;color:#778">${esc(r.created_at)}</td>
-        <td style="padding:7px 8px">${r.status==='published'?'<span style="color:#6ef5aa">опубликован</span>':'<span style="color:#888">скрыт</span>'}</td>
-        <td style="padding:7px 8px">
-          <button class="btn btn-sm" style="background:${r.status==='published'?'#4a2a1a':'#1a4a2a'};color:${r.status==='published'?'#fa8':'#7f7'}"
-            onclick="releaseToggle(${r.id})">${r.status==='published'?'🚫 Скрыть':'✅ Показать'}</button>
-        </td>
-      </tr>`).join('')}</tbody>
-  </table>`;
+  const pag = paginationHtml(data.total||0, REL_LIMIT, _relOffset, 'relGoPage');
+  const body = _relViewMode === 'table' ? relTableHtml(rows) : `<div class="catalog-listings-grid">${rows.map(r=>relCardHtml(r)).join('')}</div>`;
+  el.innerHTML = topBar + body + pag;
 }
 
 async function releaseToggle(id) {
@@ -4047,49 +4491,241 @@ async function releaseToggle(id) {
   } catch(e) { alert('Ошибка: ' + e.message); }
 }
 
-// ── Исполнители ──
+// ── Исполнители: тот же паттерн, что и у Релизов ──
+const ART_LIMIT = 24;
+let _artOffset = 0;
+let _artViewMode = localStorage.getItem('admin_art_view_mode') || 'table';
+let _artSortKey = 'created_at';
+let _artSortDir = 'desc';
+let _artQuery = '';
+let _artSearchTimer = null;
+let _artColFilters = {};
+
+function artSearchDebounced() {
+  clearTimeout(_artSearchTimer);
+  _artSearchTimer = setTimeout(() => {
+    _artQuery = document.getElementById('artists-search').value;
+    _artOffset = 0;
+    loadArtists();
+  }, 300);
+}
+function artSetViewMode(mode) {
+  _artViewMode = mode;
+  localStorage.setItem('admin_art_view_mode', mode);
+  loadArtists();
+}
+function artGoPage(offset) { _artOffset = offset; loadArtists(); }
+
+const ART_COLUMNS_DEF = [
+  {key:'name',       label:'Исполнитель', minWidth:120, defaultWidth:180, sortable:true, filterable:true},
+  {key:'type',       label:'Тип',         minWidth:80,  defaultWidth:120, sortable:true, filterable:true},
+  {key:'genres',     label:'Жанры',       minWidth:80,  defaultWidth:120, sortable:true, filterable:true},
+  {key:'city',       label:'Город',       minWidth:70,  defaultWidth:110, sortable:true, filterable:true},
+  {key:'username',   label:'Владелец',    minWidth:90,  defaultWidth:130, sortable:true, filterable:true},
+  {key:'releases',   label:'Релизов',     minWidth:70,  defaultWidth:90,  sortable:true},
+  {key:'opens',      label:'Открытий',    minWidth:70,  defaultWidth:100, sortable:true},
+  {key:'created_at', label:'Создан',      minWidth:90,  defaultWidth:135, sortable:true},
+  {key:'status',     label:'Статус',      minWidth:70,  defaultWidth:100, sortable:true, filterable:true},
+];
+const ART_COLS_STORAGE_KEY = 'admin_art_columns_v1';
+
+function artLoadColumnPrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(ART_COLS_STORAGE_KEY) || '{}'); } catch(e) {}
+  const allKeys = ART_COLUMNS_DEF.map(c => c.key);
+  let order = Array.isArray(saved.order) ? saved.order.filter(k => allKeys.includes(k)) : [];
+  allKeys.forEach(k => { if (!order.includes(k)) order.push(k); });
+  const widths = saved.widths || {};
+  const visible = saved.visible || {};
+  ART_COLUMNS_DEF.forEach(c => {
+    if (typeof widths[c.key] !== 'number') widths[c.key] = c.defaultWidth;
+    if (typeof visible[c.key] !== 'boolean') visible[c.key] = true;
+    if (c.locked) visible[c.key] = true;
+  });
+  return {order, widths, visible};
+}
+let artCols = artLoadColumnPrefs();
+function artSaveColumnPrefs() { localStorage.setItem(ART_COLS_STORAGE_KEY, JSON.stringify(artCols)); }
+function artVisibleColumns() {
+  return artCols.order.filter(k => artCols.visible[k] !== false).map(k => ART_COLUMNS_DEF.find(c => c.key===k));
+}
+function artToggleColumn(key, checked) {
+  artCols.visible[key] = checked;
+  artSaveColumnPrefs();
+  loadArtists();
+}
+function artToggleColsPanel() {
+  const p = document.getElementById('art-cols-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('art-cols-panel');
+  const btn = document.getElementById('art-cols-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && e.target !== btn) {
+    panel.style.display = 'none';
+  }
+});
+
+let _artDragKey = null;
+function artColDragStart(e) { _artDragKey = e.currentTarget.dataset.col; e.dataTransfer.effectAllowed = 'move'; }
+function artColDragOver(e) { e.preventDefault(); }
+function artColDrop(e) {
+  e.preventDefault();
+  const targetKey = e.currentTarget.dataset.col;
+  if (!_artDragKey || _artDragKey === targetKey) return;
+  const order = artCols.order;
+  const from = order.indexOf(_artDragKey);
+  const to = order.indexOf(targetKey);
+  if (from === -1 || to === -1) return;
+  order.splice(from, 1);
+  order.splice(to, 0, _artDragKey);
+  artSaveColumnPrefs();
+  loadArtists();
+}
+
+let _artResizeState = null;
+function artColResizeStart(e, key) {
+  e.preventDefault(); e.stopPropagation();
+  _artResizeState = { key, startX: e.clientX, startWidth: artCols.widths[key] };
+  document.addEventListener('mousemove', artColResizeMove);
+  document.addEventListener('mouseup', artColResizeEnd);
+}
+function artColResizeMove(e) {
+  if (!_artResizeState) return;
+  const def = ART_COLUMNS_DEF.find(c => c.key === _artResizeState.key);
+  const delta = e.clientX - _artResizeState.startX;
+  const newWidth = Math.max(def.minWidth, _artResizeState.startWidth + delta);
+  artCols.widths[_artResizeState.key] = newWidth;
+  const idx = artVisibleColumns().findIndex(c => c.key === _artResizeState.key);
+  const table = document.querySelector('#artists-content table.art-table');
+  if (table && idx !== -1) {
+    const colEl = table.querySelectorAll('colgroup col')[idx];
+    if (colEl) colEl.style.width = newWidth + 'px';
+  }
+}
+function artColResizeEnd() {
+  document.removeEventListener('mousemove', artColResizeMove);
+  document.removeEventListener('mouseup', artColResizeEnd);
+  _artResizeState = null;
+  artSaveColumnPrefs();
+}
+
+function artSortBy(key) {
+  const def = ART_COLUMNS_DEF.find(c => c.key === key);
+  if (!def || def.sortable === false) return;
+  if (_artSortKey === key) { _artSortDir = _artSortDir === 'desc' ? 'asc' : 'desc'; }
+  else { _artSortKey = key; _artSortDir = 'desc'; }
+  _artOffset = 0;
+  loadArtists();
+}
+function artFilterInput(key, value) {
+  _artColFilters[key] = value;
+  clearTimeout(_artSearchTimer);
+  _artSearchTimer = setTimeout(() => {
+    _artOffset = 0;
+    withFocusPreserved(loadArtists);
+  }, 300);
+}
+
+function artCellHtml(a, key) {
+  if (key === 'name') return `<span class="st-dot ${a.status==='active'?'st-dot-on':'st-dot-off'}"></span> <a style="color:#7eb8f7;cursor:pointer" onclick="openArtistCard(${a.id})">🎤 ${esc(a.name)}</a>`;
+  if (key === 'type') return esc(a.type);
+  if (key === 'genres') return esc(a.genres || '—');
+  if (key === 'city') return esc(a.city || '—');
+  if (key === 'username') return a.username ? '@'+esc(a.username) : String(a.owner_id);
+  if (key === 'releases') return a.releases
+    ? `<a style="color:#7eb8f7;cursor:pointer;font-weight:700" onclick="openArtistReleases(${a.id})">${a.releases}</a>`
+    : '0';
+  if (key === 'opens') return `<a style="color:#9bc;cursor:pointer;font-weight:700" onclick="openOpenersModal('artist',${a.id},${jsArg('Кто открывал: '+a.name)})">${a.opens}</a>`;
+  if (key === 'created_at') return fmtDateTime(a.created_at);
+  if (key === 'status') return a.status==='active' ? '<span style="color:#6ef5aa">активен</span>' : '<span style="color:#888">скрыт</span>';
+  return '';
+}
+
+function artTableHtml(rows) {
+  const cols = artVisibleColumns();
+  const colgroup = cols.map(c => `<col style="width:${artCols.widths[c.key]}px">`).join('');
+  const thead = cols.map(c => {
+    const sortable = c.sortable !== false;
+    const arrow = _artSortKey === c.key ? (_artSortDir === 'desc' ? ' ▼' : ' ▲') : '';
+    return `<th class="txt-th" data-col="${c.key}" draggable="${!c.locked}"
+      ondragstart="artColDragStart(event)" ondragover="artColDragOver(event)" ondrop="artColDrop(event)"
+      style="padding:6px 8px;position:relative;${c.locked?'':'cursor:grab'}${sortable?';cursor:pointer':''}"
+      ${sortable ? `onclick="artSortBy('${c.key}')"` : ''}>${esc(c.label)}${arrow}<span class="col-resize" onmousedown="artColResizeStart(event,'${c.key}')"></span></th>`;
+  }).join('');
+  const filterRow = cols.map(c => `<th style="padding:2px 6px">${c.filterable
+    ? `<input type="text" id="art-filter-${c.key}" value="${esc(_artColFilters[c.key]||'')}" placeholder="…"
+        oninput="artFilterInput('${c.key}', this.value)"
+        style="width:100%;background:#0d1424;color:#dde;border:1px solid #223;border-radius:4px;padding:3px 6px;font-size:11px">`
+    : ''}</th>`).join('');
+  const tbody = rows.map(a => `
+    <tr style="border-top:1px solid #0d1628">
+      ${cols.map(c => `<td class="txt-td" style="padding:6px 8px">${artCellHtml(a, c.key)}</td>`).join('')}
+    </tr>`).join('');
+  const colsPanel = ART_COLUMNS_DEF.filter(c => !c.locked).map(c => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0">
+        <input type="checkbox" ${artCols.visible[c.key]!==false?'checked':''}
+          onchange="artToggleColumn('${c.key}', this.checked)"> ${esc(c.label)}
+      </label>`).join('');
+  return `
+  <div style="display:flex;justify-content:flex-end;margin-bottom:8px;position:relative">
+    <button class="btn btn-ghost btn-sm" id="art-cols-btn" onclick="artToggleColsPanel()">⚙ Столбцы</button>
+    <div id="art-cols-panel" style="display:none;position:absolute;right:0;top:28px;background:#1e1e35;
+      border:1px solid #333;border-radius:8px;padding:10px 14px;z-index:20;min-width:150px">${colsPanel}</div>
+  </div>
+  <table class="art-table" style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
+    <colgroup>${colgroup}</colgroup>
+    <thead>
+      <tr style="color:#556;font-size:11px;text-align:left">${thead}</tr>
+      <tr>${filterRow}</tr>
+    </thead>
+    <tbody>${tbody}</tbody>
+  </table>`;
+}
+
+function artCardHtml(a) {
+  const statusBadge = a.status === 'active'
+    ? '<span class="cat-card-status st-active">активен</span>'
+    : '<span class="cat-card-status st-inactive">скрыт</span>';
+  const meta = [a.type, [a.genres,a.city].filter(Boolean).join(' · ')].filter(Boolean).join(' · ');
+  return `<div class="cat-card${a.status==='active'?'':' cat-card-off'}" onclick="openArtistCard(${a.id})">
+    <div class="cat-card-media">
+      <div class="cat-card-media-empty">🎤</div>
+      ${statusBadge}
+    </div>
+    <div class="cat-card-body">
+      <div class="cat-card-title">${esc(a.name)}</div>
+      <div class="cat-card-meta">${esc(meta || '—')}</div>
+      <div class="cat-card-stats">🎵 ${a.releases||0} релизов · 👁 ${a.opens||0}</div>
+    </div>
+  </div>`;
+}
+
 async function loadArtists() {
   const el = document.getElementById('artists-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
-  const data = await fetch('/api/artists').then(r=>r.json());
+  const params = new URLSearchParams({offset: _artOffset, limit: ART_LIMIT, sort: _artSortKey, order: _artSortDir});
+  if (_artQuery) params.set('q', _artQuery);
+  const activeFilters = Object.fromEntries(Object.entries(_artColFilters).filter(([,v]) => v));
+  if (Object.keys(activeFilters).length) params.set('filters', JSON.stringify(activeFilters));
+  const data = await fetch(`/api/artists?${params}`).then(r=>r.json());
   const rows = data.rows || [];
+  const viewToggle = `<div style="display:flex;gap:4px">
+    <button class="btn btn-sm" style="${_artViewMode==='grid'?'background:#2a3a70':''}" onclick="artSetViewMode('grid')">🖼 Превью</button>
+    <button class="btn btn-sm" style="${_artViewMode==='table'?'background:#2a3a70':''}" onclick="artSetViewMode('table')">📋 Таблица</button>
+  </div>`;
+  const topBar = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <span style="font-size:12px;color:#556">${data.total||0} исполнителей</span>
+    ${viewToggle}
+  </div>`;
   if (!rows.length) {
-    el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Исполнителей пока нет</div>';
+    const emptyMsg = '<div class="empty" style="padding:20px;text-align:center">Исполнителей не найдено</div>';
+    el.innerHTML = topBar + (_artViewMode === 'table' ? artTableHtml(rows) + emptyMsg : emptyMsg);
     return;
   }
-  el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${rows.length} исполнителей</div>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="color:#556;font-size:11px;text-align:left">
-      <th style="padding:6px 8px">Исполнитель</th>
-      <th style="padding:6px 8px">Тип</th>
-      <th style="padding:6px 8px">Жанры · Город</th>
-      <th style="padding:6px 8px">Владелец</th>
-      <th style="padding:6px 8px">Релизов</th>
-      <th style="padding:6px 8px">Открытий</th>
-      <th style="padding:6px 8px">Создан</th>
-      <th style="padding:6px 8px">Статус</th>
-      <th style="padding:6px 8px"></th>
-    </tr></thead>
-    <tbody>${rows.map(a => `
-      <tr style="border-top:1px solid #0d1628">
-        <td style="padding:7px 8px;font-weight:600">
-          <span class="st-dot ${a.status==='active'?'st-dot-on':'st-dot-off'}"></span>
-          <a style="color:#7eb8f7;cursor:pointer" onclick="openArtistCard(${a.id})">🎤 ${esc(a.name)}</a></td>
-        <td style="padding:7px 8px;color:#99a">${esc(a.type)}</td>
-        <td style="padding:7px 8px;color:#778">${esc([a.genres,a.city].filter(Boolean).join(' · ')||'—')}</td>
-        <td style="padding:7px 8px;color:#99a">${a.username?'@'+esc(a.username):a.owner_id}</td>
-        <td style="padding:7px 8px;text-align:center">${a.releases
-          ? `<a style="color:#7eb8f7;cursor:pointer;font-weight:700" onclick="openArtistReleases(${a.id})">${a.releases}</a>`
-          : '0'}</td>
-        <td style="padding:7px 8px;text-align:center;color:#9bc">${a.opens}</td>
-        <td style="padding:7px 8px;color:#778">${esc(a.created_at)}</td>
-        <td style="padding:7px 8px">${a.status==='active'?'<span style="color:#6ef5aa">активен</span>':'<span style="color:#888">скрыт</span>'}</td>
-        <td style="padding:7px 8px">
-          <button class="btn btn-sm" style="background:${a.status==='active'?'#4a2a1a':'#1a4a2a'};color:${a.status==='active'?'#fa8':'#7f7'}"
-            onclick="artistToggle(${a.id})">${a.status==='active'?'🚫 Скрыть':'✅ Показать'}</button>
-        </td>
-      </tr>`).join('')}</tbody>
-  </table>`;
+  const pag = paginationHtml(data.total||0, ART_LIMIT, _artOffset, 'artGoPage');
+  const body = _artViewMode === 'table' ? artTableHtml(rows) : `<div class="catalog-listings-grid">${rows.map(a=>artCardHtml(a)).join('')}</div>`;
+  el.innerHTML = topBar + body + pag;
 }
 
 // ── Обратная связь ──
@@ -4120,8 +4756,6 @@ async function loadFeedback() {
     el.innerHTML = `<div class="empty" style="padding:30px;text-align:center">${fbUnansweredOnly ? 'Неотвеченных обращений нет 🎉' : 'Обращений пока нет'}</div>`;
     return;
   }
-  const pages = Math.max(1, Math.ceil(data.total / FB_LIMIT));
-  const page = Math.floor(fbOffset / FB_LIMIT) + 1;
   el.innerHTML = `<div style="font-size:12px;color:#556;margin-bottom:10px">${data.total} обращений</div>
   <table style="width:100%;border-collapse:collapse;font-size:13px">
     <thead><tr style="color:#556;font-size:11px;text-align:left">
@@ -4146,11 +4780,7 @@ async function loadFeedback() {
         </td>
       </tr>`).join('')}</tbody>
   </table>
-  ${pages > 1 ? `<div class="an-pagination">
-    <button onclick="fbPage(${Math.max(0, fbOffset - FB_LIMIT)})" ${fbOffset===0?'disabled':''}>◀</button>
-    <span>стр. ${page} из ${pages}</span>
-    <button onclick="fbPage(${fbOffset + FB_LIMIT})" ${fbOffset + FB_LIMIT >= data.total?'disabled':''}>▶</button>
-  </div>` : ''}`;
+  ${paginationHtml(data.total, FB_LIMIT, fbOffset, 'fbPage')}`;
 }
 
 function fbPage(offset) {
@@ -4388,8 +5018,6 @@ async function loadTexts() {
     el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Ничего не найдено</div>';
     return;
   }
-  const pages = Math.max(1, Math.ceil(data.total / txtPageSize));
-  const page = Math.floor(txtOffset / txtPageSize) + 1;
   const cols = txtVisibleColumns();
   const colgroup = cols.map(c => `<col style="width:${txtCols.widths[c.key]}px">`).join('') + '<col style="width:90px">';
   const thead = cols.map(c => `
@@ -4428,12 +5056,8 @@ async function loadTexts() {
     <label style="display:flex;align-items:center;gap:6px">на странице
       <select onchange="txtSetPageSize(this.value)" style="background:#1a2050;color:#aab;border:none;border-radius:5px;padding:4px 6px;font:inherit">${pageSizeOptions}</select>
     </label>
-    ${pages > 1 ? `
-    <button onclick="txtPage(${Math.max(0, txtOffset - txtPageSize)})" ${txtOffset===0?'disabled':''}>◀</button>
-    <span>стр. ${page} из ${pages}</span>
-    <button onclick="txtPage(${txtOffset + txtPageSize})" ${txtOffset + txtPageSize >= data.total?'disabled':''}>▶</button>
-    ` : ''}
-  </div>`;
+  </div>
+  ${paginationHtml(data.total, txtPageSize, txtOffset, 'txtPage')}`;
 }
 
 function txtPage(offset) {
@@ -5229,8 +5853,32 @@ async function catalogOpenCat(catId, catName, stype) {
 
 const CAT_LISTING_LIMIT = 24;
 let _catListingOffset = 0;
+let _catCurCatId = 0;
+let _catCurStype = '';
 
 let _catActivity = '';
+
+// Общий поиск (по названию/описанию) — поле живёт вне #catalog-content,
+// чтобы не терять фокус при перерисовке (см. #user-search).
+let _catQuery = '';
+let _catSearchTimer = null;
+function catSearchDebounced() {
+  clearTimeout(_catSearchTimer);
+  _catSearchTimer = setTimeout(() => {
+    _catQuery = document.getElementById('catalog-search').value;
+    catalogShowListings(_catCurCatId, _catCurStype, 0);
+  }, 300);
+}
+
+// Поиск по отдельному столбцу таблицы (название/город/категория).
+let _catColFilters = {};
+function catFilterInput(key, value) {
+  _catColFilters[key] = value;
+  clearTimeout(_catSearchTimer);
+  _catSearchTimer = setTimeout(() => {
+    withFocusPreserved(() => catalogShowListings(_catCurCatId, _catCurStype, 0));
+  }, 300);
+}
 
 // Превью (карточки) или таблица — выбор живёт в localStorage браузера,
 // как и настройки столбцов таблицы «Тексты».
@@ -5240,6 +5888,7 @@ function catSetViewMode(mode, catId, stype) {
   localStorage.setItem('admin_cat_view_mode', mode);
   catalogShowListings(catId, stype, _catListingOffset);
 }
+function catGoPage(offset) { catalogShowListings(_catCurCatId, _catCurStype, offset); }
 
 // Сортировка таблицы (клик по заголовку столбца) — например, чтобы найти
 // объявление/релиз с наибольшим числом просмотров.
@@ -5271,6 +5920,8 @@ function refreshCatalogIfOpen() {
 
 async function catalogShowListings(catId, stype, offset=0) {
   _catListingOffset = offset;
+  _catCurCatId = catId;
+  _catCurStype = stype;
   window._catalogRefresh = () => catalogShowListings(catId, stype, _catListingOffset);
   const el = document.getElementById('catalog-content');
   el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">…</div>';
@@ -5280,6 +5931,9 @@ async function catalogShowListings(catId, stype, offset=0) {
     sort: _catSortKey, order: _catSortDir,
   });
   if (_catActivity) params.set('activity', _catActivity);
+  if (_catQuery) params.set('q', _catQuery);
+  const activeFilters = Object.fromEntries(Object.entries(_catColFilters).filter(([,v]) => v));
+  if (Object.keys(activeFilters).length) params.set('filters', JSON.stringify(activeFilters));
   const data = await fetch(`/api/listings?${params}`).then(r=>r.json());
   const viewToggle = `<div style="display:flex;gap:4px">
     <button class="btn btn-sm" style="${_catViewMode==='grid'?'background:#2a3a70':''}" onclick="catSetViewMode('grid',${catId},'${stype}')">🖼 Превью</button>
@@ -5298,16 +5952,11 @@ async function catalogShowListings(catId, stype, offset=0) {
     ${viewToggle}
   </div>`;
   if (!data.rows.length) {
-    el.innerHTML = activityBar + '<div class="empty" style="padding:30px;text-align:center">Нет объявлений</div>';
+    const emptyMsg = '<div class="empty" style="padding:20px;text-align:center">Нет объявлений</div>';
+    el.innerHTML = activityBar + (_catViewMode === 'table' ? catTableHtml(data.rows, catId, stype) + emptyMsg : emptyMsg);
     return;
   }
-  const totalPages = Math.ceil(data.total / CAT_LISTING_LIMIT);
-  const curPage = Math.floor(offset / CAT_LISTING_LIMIT) + 1;
-  const pag = totalPages > 1 ? `<div class="an-pagination" style="margin-top:16px">
-    <button onclick="catalogShowListings(${catId},'${stype}',${Math.max(0,offset-CAT_LISTING_LIMIT)})" ${offset===0?'disabled':''}>◀</button>
-    <span>${curPage} / ${totalPages}</span>
-    <button onclick="catalogShowListings(${catId},'${stype}',${offset+CAT_LISTING_LIMIT})" ${offset+CAT_LISTING_LIMIT>=data.total?'disabled':''}>▶</button>
-  </div>` : '';
+  const pag = paginationHtml(data.total, CAT_LISTING_LIMIT, offset, 'catGoPage');
   const body = _catViewMode === 'table'
     ? catTableHtml(data.rows, catId, stype)
     : `<div class="catalog-listings-grid">${data.rows.map(r=>catCardHtml(r)).join('')}</div>`;
@@ -5318,10 +5967,10 @@ async function catalogShowListings(catId, stype, offset=0) {
 //    таблицы «Тексты») + сортировка по клику на заголовок ──
 const CAT_COLUMNS_DEF = [
   {key:'photo',      label:'',          minWidth:50,  defaultWidth:50,  locked:true, sortable:false},
-  {key:'title',      label:'Название',  minWidth:120, defaultWidth:220, sortable:true},
+  {key:'title',      label:'Название',  minWidth:120, defaultWidth:220, sortable:true, filterable:true},
   {key:'price',      label:'Цена',      minWidth:70,  defaultWidth:100, sortable:true},
-  {key:'city',       label:'Город',     minWidth:70,  defaultWidth:110, sortable:true},
-  {key:'category',   label:'Категория', minWidth:90,  defaultWidth:150, sortable:true},
+  {key:'city',       label:'Город',     minWidth:70,  defaultWidth:110, sortable:true, filterable:true},
+  {key:'category',   label:'Категория', minWidth:90,  defaultWidth:150, sortable:true, filterable:true},
   {key:'type',       label:'Раздел',    minWidth:70,  defaultWidth:100, sortable:true},
   {key:'status',     label:'Статус',    minWidth:70,  defaultWidth:90,  sortable:true},
   {key:'opens',      label:'Просмотры',minWidth:70,  defaultWidth:100, sortable:true},
@@ -5435,7 +6084,7 @@ function catCellHtml(row, key) {
     return isActive ? '<span class="cat-table-status st-active">активно</span>'
       : `<span class="cat-table-status st-inactive">${row.status==='archived'?'в архиве':esc(row.status)}</span>`;
   }
-  if (key === 'opens') return String(row.opens || 0);
+  if (key === 'opens') return `<a style="color:#9bc;cursor:pointer;font-weight:700" onclick="event.stopPropagation();openOpenersModal('listing',${row.id},${jsArg('Кто открывал: '+(row.title||'Без названия'))})">${row.opens || 0}</a>`;
   if (key === 'created_at') return fmtDateTime(row.created_at);
   return '';
 }
@@ -5451,6 +6100,11 @@ function catTableHtml(rows, catId, stype) {
       style="padding:6px 8px;position:relative;${c.locked?'':'cursor:grab'}${sortable?';cursor:pointer':''}"
       ${sortable ? `onclick="catSortBy('${c.key}',${catId},'${stype}')"` : ''}>${esc(c.label)}${arrow}<span class="col-resize" onmousedown="catColResizeStart(event,'${c.key}')"></span></th>`;
   }).join('');
+  const filterRow = cols.map(c => `<th style="padding:2px 6px">${c.filterable
+    ? `<input type="text" id="cat-filter-${c.key}" value="${esc(_catColFilters[c.key]||'')}" placeholder="…"
+        oninput="catFilterInput('${c.key}', this.value)"
+        style="width:100%;background:#0d1424;color:#dde;border:1px solid #223;border-radius:4px;padding:3px 6px;font-size:11px">`
+    : ''}</th>`).join('');
   const tbody = rows.map(r => `
     <tr style="border-top:1px solid #0d1628;cursor:pointer" onclick="openListing(${r.id})">
       ${cols.map(c => `<td class="txt-td" style="padding:6px 8px">${catCellHtml(r, c.key)}</td>`).join('')}
@@ -5468,7 +6122,10 @@ function catTableHtml(rows, catId, stype) {
   </div>
   <table class="cat-table" style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
     <colgroup>${colgroup}</colgroup>
-    <thead><tr style="color:#556;font-size:11px;text-align:left">${thead}</tr></thead>
+    <thead>
+      <tr style="color:#556;font-size:11px;text-align:left">${thead}</tr>
+      <tr>${filterRow}</tr>
+    </thead>
     <tbody>${tbody}</tbody>
   </table>`;
 }
@@ -5536,6 +6193,8 @@ function anSwitch(section, btn) {
   _anSection = section;
   document.querySelectorAll('.an-nav-btn').forEach(b=>b.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  const tcToolbar = document.getElementById('an-topcards-toolbar');
+  if (tcToolbar) tcToolbar.style.display = section === 'top_cards' ? 'flex' : 'none';
   anLoad(section);
 }
 
@@ -5766,10 +6425,236 @@ function cardRowHtml(r, idx) {
   </div>`;
 }
 
+// ── Топ карточек: превью/таблица, настраиваемые столбцы, сортировка, поиск
+//    (тот же паттерн, что у Релизов/Исполнителей/Объявлений — см. rel*/art*/cat*) ──
+const TC_LIMIT = 24;
+let _tcOffset = 0;
+let _tcViewMode = localStorage.getItem('admin_tc_view_mode') || 'table';
+let _tcSortKey = 'opens';
+let _tcSortDir = 'desc';
+let _tcQuery = '';
+let _tcSearchTimer = null;
+let _tcColFilters = {};
+
+function tcSearchDebounced() {
+  clearTimeout(_tcSearchTimer);
+  _tcSearchTimer = setTimeout(() => {
+    _tcQuery = document.getElementById('topcards-search').value;
+    _tcOffset = 0;
+    anTopCards(document.getElementById('an-content'));
+  }, 300);
+}
+function tcSetViewMode(mode) {
+  _tcViewMode = mode;
+  localStorage.setItem('admin_tc_view_mode', mode);
+  anTopCards(document.getElementById('an-content'));
+}
+function tcGoPage(offset) { _tcOffset = offset; anTopCards(document.getElementById('an-content')); }
+
+const TC_COLUMNS_DEF = [
+  {key:'photo',         label:'',           minWidth:50,  defaultWidth:50,  locked:true, sortable:false},
+  {key:'title',         label:'Название',   minWidth:130, defaultWidth:220, sortable:true, filterable:true},
+  {key:'section',       label:'Раздел',     minWidth:80,  defaultWidth:110, sortable:true, filterable:true},
+  {key:'price',         label:'Цена',       minWidth:70,  defaultWidth:100, sortable:true},
+  {key:'contact',       label:'Контакт',    minWidth:90,  defaultWidth:140, sortable:true, filterable:true},
+  {key:'opens',         label:'Открытий',   minWidth:70,  defaultWidth:100, sortable:true},
+  {key:'users',         label:'Чел.',       minWidth:60,  defaultWidth:80,  sortable:true},
+  {key:'search_opens',  label:'🔍 Поиск',   minWidth:70,  defaultWidth:90,  sortable:true},
+  {key:'catalog_opens', label:'📂 Каталог', minWidth:70,  defaultWidth:90,  sortable:true},
+  {key:'status',        label:'Статус',     minWidth:70,  defaultWidth:100, sortable:true, filterable:true},
+];
+const TC_COLS_STORAGE_KEY = 'admin_tc_columns_v1';
+
+function tcLoadColumnPrefs() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(TC_COLS_STORAGE_KEY) || '{}'); } catch(e) {}
+  const allKeys = TC_COLUMNS_DEF.map(c => c.key);
+  let order = Array.isArray(saved.order) ? saved.order.filter(k => allKeys.includes(k)) : [];
+  allKeys.forEach(k => { if (!order.includes(k)) order.push(k); });
+  const widths = saved.widths || {};
+  const visible = saved.visible || {};
+  TC_COLUMNS_DEF.forEach(c => {
+    if (typeof widths[c.key] !== 'number') widths[c.key] = c.defaultWidth;
+    if (typeof visible[c.key] !== 'boolean') visible[c.key] = true;
+    if (c.locked) visible[c.key] = true;
+  });
+  return {order, widths, visible};
+}
+let tcCols = tcLoadColumnPrefs();
+function tcSaveColumnPrefs() { localStorage.setItem(TC_COLS_STORAGE_KEY, JSON.stringify(tcCols)); }
+function tcVisibleColumns() {
+  return tcCols.order.filter(k => tcCols.visible[k] !== false).map(k => TC_COLUMNS_DEF.find(c => c.key===k));
+}
+function tcToggleColumn(key, checked) {
+  tcCols.visible[key] = checked;
+  tcSaveColumnPrefs();
+  anTopCards(document.getElementById('an-content'));
+}
+function tcToggleColsPanel() {
+  const p = document.getElementById('tc-cols-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('tc-cols-panel');
+  const btn = document.getElementById('tc-cols-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && e.target !== btn) {
+    panel.style.display = 'none';
+  }
+});
+
+let _tcDragKey = null;
+function tcColDragStart(e) { _tcDragKey = e.currentTarget.dataset.col; e.dataTransfer.effectAllowed = 'move'; }
+function tcColDragOver(e) { e.preventDefault(); }
+function tcColDrop(e) {
+  e.preventDefault();
+  const targetKey = e.currentTarget.dataset.col;
+  if (!_tcDragKey || _tcDragKey === targetKey) return;
+  const order = tcCols.order;
+  const from = order.indexOf(_tcDragKey);
+  const to = order.indexOf(targetKey);
+  if (from === -1 || to === -1) return;
+  order.splice(from, 1);
+  order.splice(to, 0, _tcDragKey);
+  tcSaveColumnPrefs();
+  anTopCards(document.getElementById('an-content'));
+}
+
+let _tcResizeState = null;
+function tcColResizeStart(e, key) {
+  e.preventDefault(); e.stopPropagation();
+  _tcResizeState = { key, startX: e.clientX, startWidth: tcCols.widths[key] };
+  document.addEventListener('mousemove', tcColResizeMove);
+  document.addEventListener('mouseup', tcColResizeEnd);
+}
+function tcColResizeMove(e) {
+  if (!_tcResizeState) return;
+  const def = TC_COLUMNS_DEF.find(c => c.key === _tcResizeState.key);
+  const delta = e.clientX - _tcResizeState.startX;
+  const newWidth = Math.max(def.minWidth, _tcResizeState.startWidth + delta);
+  tcCols.widths[_tcResizeState.key] = newWidth;
+  const idx = tcVisibleColumns().findIndex(c => c.key === _tcResizeState.key);
+  const table = document.querySelector('#an-content table.tc-table');
+  if (table && idx !== -1) {
+    const colEl = table.querySelectorAll('colgroup col')[idx];
+    if (colEl) colEl.style.width = newWidth + 'px';
+  }
+}
+function tcColResizeEnd() {
+  document.removeEventListener('mousemove', tcColResizeMove);
+  document.removeEventListener('mouseup', tcColResizeEnd);
+  _tcResizeState = null;
+  tcSaveColumnPrefs();
+}
+
+function tcSortBy(key) {
+  const def = TC_COLUMNS_DEF.find(c => c.key === key);
+  if (!def || def.sortable === false) return;
+  if (_tcSortKey === key) { _tcSortDir = _tcSortDir === 'desc' ? 'asc' : 'desc'; }
+  else { _tcSortKey = key; _tcSortDir = 'desc'; }
+  _tcOffset = 0;
+  anTopCards(document.getElementById('an-content'));
+}
+function tcFilterInput(key, value) {
+  _tcColFilters[key] = value;
+  clearTimeout(_tcSearchTimer);
+  _tcSearchTimer = setTimeout(() => {
+    _tcOffset = 0;
+    withFocusPreserved(() => anTopCards(document.getElementById('an-content')));
+  }, 300);
+}
+
+function tcCellHtml(r, key) {
+  if (key === 'photo') {
+    const fp = (r.photo_file_id||'').split(',')[0].trim();
+    return fp
+      ? `<img src="/api/tg_photo/${encodeURIComponent(fp)}" style="width:36px;height:36px;object-fit:cover;border-radius:4px" onerror="this.style.display='none'">`
+      : '<span style="opacity:.4">📋</span>';
+  }
+  if (key === 'title') {
+    const isActive = !r.status || r.status === 'active';
+    return `<span class="st-dot ${isActive?'st-dot-on':'st-dot-off'}"></span> <a style="color:#7eb8f7;cursor:pointer" onclick="openListing(${r.id})">${esc(r.title)}</a>${r.is_sold?' <span style="color:#f88;font-size:11px">продано</span>':''}`;
+  }
+  if (key === 'section') return esc(sectionName(r.section||''));
+  if (key === 'price') return r.price ? esc(r.price) : '—';
+  if (key === 'contact') return r.contact ? esc(r.contact) : '—';
+  if (key === 'opens') return `<a style="color:#9bc;cursor:pointer;font-weight:700" onclick="openOpenersModal('listing',${r.id},${jsArg('Кто открывал: '+r.title)})">${r.opens||0}</a>`;
+  if (key === 'users') return String(r.users||0);
+  if (key === 'search_opens') return String(r.search_opens||0);
+  if (key === 'catalog_opens') return String(r.catalog_opens||0);
+  if (key === 'status') {
+    const isActive = !r.status || r.status === 'active';
+    return isActive ? '<span class="cat-table-status st-active">активно</span>'
+      : `<span class="cat-table-status st-inactive">${r.status==='archived'?'в архиве':esc(r.status)}</span>`;
+  }
+  return '';
+}
+
+function tcTableHtml(rows) {
+  const cols = tcVisibleColumns();
+  const colgroup = cols.map(c => `<col style="width:${tcCols.widths[c.key]}px">`).join('');
+  const thead = cols.map(c => {
+    const sortable = c.sortable !== false;
+    const arrow = _tcSortKey === c.key ? (_tcSortDir === 'desc' ? ' ▼' : ' ▲') : '';
+    return `<th class="txt-th" data-col="${c.key}" draggable="${!c.locked}"
+      ondragstart="tcColDragStart(event)" ondragover="tcColDragOver(event)" ondrop="tcColDrop(event)"
+      style="padding:6px 8px;position:relative;${c.locked?'':'cursor:grab'}${sortable?';cursor:pointer':''}"
+      ${sortable ? `onclick="tcSortBy('${c.key}')"` : ''}>${esc(c.label)}${arrow}<span class="col-resize" onmousedown="tcColResizeStart(event,'${c.key}')"></span></th>`;
+  }).join('');
+  const filterRow = cols.map(c => `<th style="padding:2px 6px">${c.filterable
+    ? `<input type="text" id="tc-filter-${c.key}" value="${esc(_tcColFilters[c.key]||'')}" placeholder="…"
+        oninput="tcFilterInput('${c.key}', this.value)"
+        style="width:100%;background:#0d1424;color:#dde;border:1px solid #223;border-radius:4px;padding:3px 6px;font-size:11px">`
+    : ''}</th>`).join('');
+  const tbody = rows.map(r => `
+    <tr style="border-top:1px solid #0d1628">
+      ${cols.map(c => `<td class="txt-td" style="padding:6px 8px">${tcCellHtml(r, c.key)}</td>`).join('')}
+    </tr>`).join('');
+  const colsPanel = TC_COLUMNS_DEF.filter(c => !c.locked).map(c => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 0">
+        <input type="checkbox" ${tcCols.visible[c.key]!==false?'checked':''}
+          onchange="tcToggleColumn('${c.key}', this.checked)"> ${esc(c.label)}
+      </label>`).join('');
+  return `
+  <div style="display:flex;justify-content:flex-end;margin-bottom:8px;position:relative">
+    <button class="btn btn-ghost btn-sm" id="tc-cols-btn" onclick="tcToggleColsPanel()">⚙ Столбцы</button>
+    <div id="tc-cols-panel" style="display:none;position:absolute;right:0;top:28px;background:#1e1e35;
+      border:1px solid #333;border-radius:8px;padding:10px 14px;z-index:20;min-width:150px">${colsPanel}</div>
+  </div>
+  <table class="tc-table" style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
+    <colgroup>${colgroup}</colgroup>
+    <thead>
+      <tr style="color:#556;font-size:11px;text-align:left">${thead}</tr>
+      <tr>${filterRow}</tr>
+    </thead>
+    <tbody>${tbody}</tbody>
+  </table>`;
+}
+
 async function anTopCards(el) {
-  const rows = await fetch('/api/analytics/top_cards').then(r=>r.json());
-  if (!rows.length) { el.innerHTML = '<div class="empty">Нет открытий карточек</div>'; return; }
-  el.innerHTML = `<div class="card-grid">${rows.map((r,i)=>cardRowHtml(r, i+1)).join('')}</div>`;
+  const params = new URLSearchParams({offset: _tcOffset, limit: TC_LIMIT, sort: _tcSortKey, order: _tcSortDir});
+  if (_tcQuery) params.set('q', _tcQuery);
+  const activeFilters = Object.fromEntries(Object.entries(_tcColFilters).filter(([,v]) => v));
+  if (Object.keys(activeFilters).length) params.set('filters', JSON.stringify(activeFilters));
+  const data = await fetch(`/api/analytics/top_cards?${params}`).then(r=>r.json());
+  const rows = data.rows || [];
+  const viewToggle = `<div style="display:flex;gap:4px">
+    <button class="btn btn-sm" style="${_tcViewMode==='grid'?'background:#2a3a70':''}" onclick="tcSetViewMode('grid')">🖼 Превью</button>
+    <button class="btn btn-sm" style="${_tcViewMode==='table'?'background:#2a3a70':''}" onclick="tcSetViewMode('table')">📋 Таблица</button>
+  </div>`;
+  const topBar = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <span style="font-size:12px;color:#556">${data.total||0} карточек</span>
+    ${viewToggle}
+  </div>`;
+  if (!rows.length) {
+    const emptyMsg = '<div class="empty" style="padding:20px;text-align:center">Открытий не найдено</div>';
+    el.innerHTML = topBar + (_tcViewMode === 'table' ? tcTableHtml(rows) + emptyMsg : emptyMsg);
+    return;
+  }
+  const pag = paginationHtml(data.total||0, TC_LIMIT, _tcOffset, 'tcGoPage');
+  const body = _tcViewMode === 'table'
+    ? tcTableHtml(rows)
+    : `<div class="card-grid">${rows.map((r,i)=>cardRowHtml(r, _tcOffset+i+1)).join('')}</div>`;
+  el.innerHTML = topBar + body + pag;
 }
 
 // ── Sources ──
@@ -5815,11 +6700,11 @@ async function anSearchConversion(el) {
 // ── Owners ──
 let _ownerNavStack = [];  // {section:'owners'|'owner', ownerId, offset}
 
+function anOwnersGoPage(offset) { anOwners(document.getElementById('an-content'), offset); }
+
 async function anOwners(el, offset=0) {
   _ownersOffset = offset;
   const d = await fetch(`/api/analytics/owners?offset=${offset}&limit=${OWNERS_LIMIT}`).then(r=>r.json());
-  const totalPages = Math.max(1, Math.ceil(d.total/OWNERS_LIMIT));
-  const curPage = Math.floor(offset/OWNERS_LIMIT)+1;
   el.innerHTML = `
     <div style="margin-bottom:10px;font-size:13px;color:#778">Всего авторов: <b style="color:#9bc">${d.total}</b></div>
     ${d.rows.map(r=>{
@@ -5832,11 +6717,7 @@ async function anOwners(el, offset=0) {
         <div style="font-size:13px;color:#9bc">›</div>
       </div>`;
     }).join('')}
-    <div class="an-pagination">
-      <button onclick="anOwners(document.getElementById('an-content'),${Math.max(0,offset-OWNERS_LIMIT)})" ${offset===0?'disabled':''}>◀</button>
-      <span>${curPage} / ${totalPages}</span>
-      <button onclick="anOwners(document.getElementById('an-content'),${offset+OWNERS_LIMIT})" ${offset+OWNERS_LIMIT>=d.total?'disabled':''}>▶</button>
-    </div>`;
+    ${paginationHtml(d.total, OWNERS_LIMIT, offset, 'anOwnersGoPage')}`;
 }
 
 async function anOwnerDetail(ownerId) {
@@ -6423,6 +7304,10 @@ function closeDrill() {
   document.getElementById('modal-drill').classList.remove('open');
 }
 
+function drillListingsGoPage(offset) {
+  openDrillListings(_drillState.catId, _drillState.stype, _drillState.title, offset);
+}
+
 async function openDrillListings(catId, stype, title, offset=0) {
   _drillState = {type:'listings', catId, stype, title, action:''};
   const el = document.getElementById('drill-content');
@@ -6435,13 +7320,7 @@ async function openDrillListings(catId, stype, title, offset=0) {
   if (!data.rows || !data.rows.length) {
     el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Нет объявлений</div>'; return;
   }
-  const totalPages = Math.ceil(data.total / 24);
-  const curPage = Math.floor(offset / 24) + 1;
-  const pag = totalPages > 1 ? `<div class="an-pagination" style="margin-top:16px">
-    <button onclick="openDrillListings(_drillState.catId,_drillState.stype,_drillState.title,${Math.max(0,offset-24)})" ${offset===0?'disabled':''}>◀</button>
-    <span>${curPage} / ${totalPages}</span>
-    <button onclick="openDrillListings(_drillState.catId,_drillState.stype,_drillState.title,${offset+24})" ${offset+24>=data.total?'disabled':''}>▶</button>
-  </div>` : '';
+  const pag = paginationHtml(data.total, 24, offset, 'drillListingsGoPage');
   el.innerHTML = `<div class="card-grid">${data.rows.map((r,i)=>cardRowHtml({...r, search_opens:0, catalog_opens:0}, offset+i+1)).join('')}</div>${pag}`;
 }
 
@@ -6477,6 +7356,10 @@ async function openDrillUsers(catId, stype, title) {
     </tbody></table>`;
 }
 
+function drillViewsGoPage(offset) {
+  openDrillViews(_drillState.catId, _drillState.stype, _drillState.title, _drillState.action, offset);
+}
+
 async function openDrillViews(catId, stype, title, action='open', offset=0) {
   _drillState = {type:'views', catId, stype, title, action};
   const el = document.getElementById('drill-content');
@@ -6491,13 +7374,7 @@ async function openDrillViews(catId, stype, title, action='open', offset=0) {
   if (!rows.length) {
     el.innerHTML = '<div class="empty" style="padding:30px;text-align:center">Нет данных</div>'; return;
   }
-  const totalPages = Math.ceil(data.total / 50);
-  const curPage = Math.floor(offset / 50) + 1;
-  const pag = totalPages > 1 ? `<div class="an-pagination" style="margin-top:12px">
-    <button onclick="openDrillViews(_drillState.catId,_drillState.stype,_drillState.title,_drillState.action,${Math.max(0,offset-50)})" ${offset===0?'disabled':''}>◀</button>
-    <span>${curPage} / ${totalPages}</span>
-    <button onclick="openDrillViews(_drillState.catId,_drillState.stype,_drillState.title,_drillState.action,${offset+50})" ${offset+50>=data.total?'disabled':''}>▶</button>
-  </div>` : '';
+  const pag = paginationHtml(data.total, 50, offset, 'drillViewsGoPage');
   el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
     <thead><tr style="color:#556;font-size:11px;text-align:left">
       <th style="padding:6px 8px;white-space:nowrap">Дата/время</th>
