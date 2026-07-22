@@ -1079,23 +1079,26 @@ def get_listing(listing_id: int):
         ).fetchone()
         if rrow:
             try:
-                n_links = len(json.loads(rrow[2])) if rrow[2] else 0
+                links_data = json.loads(rrow[2]) if rrow[2] else []
+                if not isinstance(links_data, list):
+                    links_data = []
             except Exception:
-                n_links = 0
+                links_data = []
             release = {"rtype": rrow[0] or "", "status": rrow[1] or "",
-                       "links": n_links, "date": rrow[3] or "",
+                       "links": len(links_data), "date": rrow[3] or "",
                        "recorded": rrow[4] or "", "artist": rrow[5] or "",
-                       "tracks": rrow[6] or 0, "artist_id": rrow[7]}
+                       "tracks": rrow[6] or 0, "artist_id": rrow[7],
+                       # Полные ссылки (label+url) — для кликабельного списка в
+                       # режиме просмотра модалки; links_urls (только url,
+                       # см. ниже) — для textarea в режиме редактирования.
+                       "links_list": links_data}
             trows = conn.execute(
                 "SELECT id, position, title, duration FROM release_track "
                 "WHERE listing_id=? ORDER BY position", (listing_id,)).fetchall()
             release["tracks_list"] = [
                 {"id": t[0], "position": t[1], "title": t[2] or "", "duration": t[3] or 0}
                 for t in trows]
-            try:
-                release["links_urls"] = [l.get("url") for l in json.loads(rrow[2] or "[]")]
-            except Exception:
-                release["links_urls"] = []
+            release["links_urls"] = [l.get("url") for l in links_data]
     photo_ids = [p.strip() for p in (row[5] or "").split(",") if p.strip()]
     video = _parse_video(row[17] or "")
     if not video.get("video_type") and (row[8] or "") == "release":
@@ -6856,7 +6859,11 @@ function renderListingModal(d) {
       <span class="listing-meta-key">Опубликовано</span><span class="listing-meta-val">${fmtDateTime(d.created_at)}</span>
       <span class="listing-meta-key">Статус релиза</span><span class="listing-meta-val">${d.release.status==='published'?'🟢 опубликован':'⚪ '+(d.release.status==='hidden'?'скрыт':esc(d.release.status||'—'))}</span>
       <span class="listing-meta-key">Треков / ссылок</span><span class="listing-meta-val">${d.release.tracks} / ${d.release.links}</span>
-      ${d.release.recorded ? `<span class="listing-meta-key">Записано</span><span class="listing-meta-val">${esc(d.release.recorded)}</span>` : ''}`
+      ${d.release.recorded ? `<span class="listing-meta-key">Записано</span><span class="listing-meta-val">${esc(d.release.recorded)}</span>` : ''}
+      ${(d.release.links_list||[]).length ? `<span class="listing-meta-key">Ссылки</span><span class="listing-meta-val">${(d.release.links_list||[]).map(l=>{
+        const u = safeHttpUrl(l.url);
+        return u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(l.label||'Ссылка')}</a>` : '';
+      }).filter(Boolean).join(' · ')}</span>` : ''}`
       : `${d.category ? `<span class="listing-meta-key">Категория</span><span class="listing-meta-val">${esc(d.category)}</span>` : ''}
       ${d.city ? `<span class="listing-meta-key">Город</span><span class="listing-meta-val">${esc(d.city)}</span>` : ''}
       <span class="listing-meta-key">Контакт</span><span class="listing-meta-val" id="lm-contact">${contact}</span>
